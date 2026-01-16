@@ -1,0 +1,67 @@
+# Cursor Rules - Dog FACS Dataset Project
+
+Ten plik zawiera wytyczne dla Cursor AI podczas pracy z kodem w tym repozytorium.
+
+## Informacje o Projekcie
+
+**Dog FACS Dataset** - Pipeline do automatycznej anotacji emocji psów z wykorzystaniem AI.
+Projekt grupowy dla Politechniki Gdańskiej (WETI) - 1 semestr.
+
+## ZASADY OBOWIĄZKOWE
+
+### Język
+- **Dokumentacja**: Wszystkie dokumenty MUSZĄ być napisane po polsku
+- **Komentarze w kodzie**: Po polsku
+- **Nazwy zmiennych/funkcji**: Po angielsku (standard programistyczny)
+- **Commit messages**: Po polsku z prefiksem typu zadania
+
+### Czysty Kod
+- Przestrzegaj zasad SOLID i DRY
+- Każda funkcja robi jedną rzecz
+- Nazwy zmiennych i funkcji muszą być opisowe
+- Maksymalna długość funkcji: 50 linii
+- Dokumentuj publiczne API (docstrings po polsku)
+- Używaj type hints w Pythonie
+
+### Git Workflow
+```
+main (produkcja) ← merge po zakończeniu semestru
+develop (integracja) ← merge po zakończeniu sprintu
+sprint-X ← commity podczas pracy
+```
+
+**Zasady:**
+1. NIGDY nie pushuj bezpośrednio do `main` lub `develop`
+2. Pracuj na gałęzi sprintu: `sprint-1`, `sprint-2`, itd.
+3. Po zakończeniu sprintu → merge do `develop`
+4. Po zakończeniu semestru → merge `develop` do `main`
+
+### Format Commitów
+```
+[SPRINT-X][STORY-Y.Z] Krótki opis zmiany
+
+Co-Authored-By: Cursor <noreply@cursor.sh>
+```
+
+### Struktura Projektu
+- `apps/demo/` - Aplikacja Streamlit
+- `packages/models/` - Modele AI (YOLOv8, ViT, HRNet)
+- `packages/pipeline/` - Pipeline inference
+- `packages/data/` - Narzędzia COCO format
+- `scripts/` - Skrypty pomocnicze
+- `docs/sprints/` - Definicje sprintów i stories
+
+### Komendy
+```bash
+pip install -e ".[dev]"  # Instalacja
+pytest                    # Testy
+ruff check . --fix        # Linter
+mypy packages/            # Type check
+streamlit run apps/demo/app.py  # Demo
+```
+
+### Przed Każdym Commitem
+1. Uruchom `ruff check .`
+2. Uruchom `pytest` (jeśli są testy)
+3. Sprawdź czy kod jest czytelny
+4. Upewnij się że komentarze są po polsku

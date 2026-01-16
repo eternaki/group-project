@@ -77,5 +77,10 @@ logs/
 /dvc.lock
 /.dvc/
 
-# Claude Code local settings
+# AI Agents local settings
 .claude/
+.cursor/
+.gemini/
+.windsurf/
+_bmad/
+_bmad-output/
