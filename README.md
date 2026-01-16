@@ -21,7 +21,23 @@ This project creates a high-quality, publicly available dataset for dog emotion 
 **Supervisor:** dr hab. inż. Michał Czubenko
 **Institution:** Gdańsk University of Technology, Faculty of Electronics, Telecommunications and Informatics
 
+## Tech Stack
+
+| Category | Technology | Version |
+|----------|------------|---------|
+| Runtime | Python | 3.10+ |
+| ML Framework | PyTorch | 2.0+ |
+| Detection | Ultralytics (YOLOv8) | 8.0+ |
+| Classification | timm (EfficientNet) | 0.9+ |
+| Keypoints | HRNet (custom) | - |
+| Demo | Streamlit | 1.28+ |
+| Linting | Ruff | 0.1+ |
+
+Full documentation: [docs/plans/2025-01-16-tech-stack.md](docs/plans/2025-01-16-tech-stack.md)
+
 ## Installation
+
+### Quick Start
 
 ```bash
 # Clone repository
@@ -41,6 +57,32 @@ pip install -e ".[dev]"
 
 # Install all optional dependencies
 pip install -e ".[dev,download,notebooks]"
+```
+
+### GPU Support (Optional)
+
+```bash
+# For CUDA 11.8
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# For CUDA 12.1
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+### Verify Installation
+
+```bash
+# Check Python
+python --version
+
+# Check PyTorch + CUDA
+python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
+
+# Run tests
+pytest
+
+# Check linting
+ruff check .
 ```
 
 ## Project Structure
