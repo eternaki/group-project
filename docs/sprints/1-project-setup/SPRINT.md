@@ -31,7 +31,7 @@ This sprint focuses on establishing the project foundation. The team will resear
 | ID | Title | Status |
 |----|-------|--------|
 | [1.1](stories/1.1-repository-setup.md) | Repository Setup | Done |
-| [1.2](stories/1.2-dogfacs-coco-research.md) | DogFACS & COCO Research | To Do |
+| [1.2](stories/1.2-dogfacs-coco-research.md) | DogFACS & COCO Research | Done |
 | [1.3](stories/1.3-dataset-analysis.md) | Dataset Analysis | To Do |
 | [1.4](stories/1.4-model-architecture-research.md) | Model Architecture Research | To Do |
 | [1.5](stories/1.5-tech-stack-finalization.md) | Tech Stack Finalization | To Do |
@@ -41,7 +41,7 @@ This sprint focuses on establishing the project foundation. The team will resear
 ## Deliverables
 
 - [x] Monorepo structure with CI/CD
-- [ ] DogFACS research summary document
+- [x] DogFACS research summary document
 - [ ] Dataset evaluation report
 - [ ] Model architecture decision document
 - [ ] Finalized tech stack documentation
