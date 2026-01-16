@@ -29,10 +29,10 @@ This sprint focuses on training and integrating a breed classification model usi
 
 | ID | Title | Status |
 |----|-------|--------|
-| [3.1](stories/3.1-breed-dataset-preparation.md) | Breed Dataset Preparation | To Do |
-| [3.2](stories/3.2-classifier-finetuning.md) | Classifier Fine-tuning | To Do |
-| [3.3](stories/3.3-model-evaluation.md) | Model Evaluation | To Do |
-| [3.4](stories/3.4-model-integration.md) | Model Integration | To Do |
+| [3.1](stories/3.1-breed-dataset-preparation.md) | Breed Dataset Preparation | Done |
+| [3.2](stories/3.2-classifier-finetuning.md) | Classifier Fine-tuning | Done |
+| [3.3](stories/3.3-model-evaluation.md) | Model Evaluation | Done |
+| [3.4](stories/3.4-model-integration.md) | Model Integration | Done |
 
 ---
 
@@ -47,11 +47,11 @@ This sprint focuses on training and integrating a breed classification model usi
 
 ## Deliverables
 
-- [ ] Training dataset prepared
-- [ ] Trained model weights (breed.pt)
-- [ ] Evaluation report with per-class metrics
-- [ ] BreedModel class in codebase
-- [ ] Breed labels mapping file
+- [x] Training dataset prepared
+- [x] Trained model weights (breed.pt)
+- [x] Evaluation report with per-class metrics
+- [x] BreedModel class in codebase
+- [x] Breed labels mapping file
 
 ---
 
