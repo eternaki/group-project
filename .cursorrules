@@ -15,13 +15,30 @@ Projekt grupowy dla Politechniki Gdańskiej (WETI) - 1 semestr.
 - **Nazwy zmiennych/funkcji**: Po angielsku (standard programistyczny)
 - **Commit messages**: Po polsku z prefiksem typu zadania
 
-### Czysty Kod
-- Przestrzegaj zasad SOLID i DRY
-- Każda funkcja robi jedną rzecz
-- Nazwy zmiennych i funkcji muszą być opisowe
+### Czysty Kod (Best Practices)
+
+**Zasady podstawowe:**
+- SOLID, DRY (Don't Repeat Yourself)
+- KISS - Keep It Simple, Stupid
+- YAGNI - nie dodawaj funkcji "na zapas"
+- Każda funkcja robi JEDNĄ rzecz
 - Maksymalna długość funkcji: 50 linii
-- Dokumentuj publiczne API (docstrings po polsku)
-- Używaj type hints w Pythonie
+- Maksymalna złożoność cyklomatyczna: 10
+
+**Python Best Practices:**
+- Type hints ZAWSZE
+- PEP 8 (ruff)
+- f-strings zamiast .format()
+- Context managers (with) dla zasobów
+- Specyficzne wyjątki (nie bare except)
+
+**UNIKAJ:**
+- Kopiowania kodu
+- Magic numbers
+- Więcej niż 5-6 parametrów
+- Zagnieżdżonych if/else > 3 poziomy
+- Globalnych zmiennych
+- Hardcodowanych ścieżek
 
 ### Git Workflow
 ```

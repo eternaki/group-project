@@ -19,13 +19,59 @@ Ten plik zawiera wytyczne dla Claude Code (claude.ai/code) oraz innych agentów 
 - **Nazwy zmiennych/funkcji**: Po angielsku (standard programistyczny)
 - **Commit messages**: Po polsku z prefiksem typu zadania
 
-### Czysty Kod
+### Czysty Kod (Best Practices)
 
-- Przestrzegaj zasad SOLID i DRY
-- Każda funkcja robi jedną rzecz
-- Nazwy zmiennych i funkcji muszą być opisowe
+**Zasady podstawowe:**
+- Przestrzegaj zasad SOLID i DRY (Don't Repeat Yourself)
+- KISS - Keep It Simple, Stupid
+- YAGNI - You Aren't Gonna Need It (nie dodawaj funkcji "na zapas")
+- Każda funkcja robi JEDNĄ rzecz
+- Nazwy zmiennych i funkcji muszą być opisowe i znaczące
 - Maksymalna długość funkcji: 50 linii
+- Maksymalna złożoność cyklomatyczna: 10
 - Dokumentuj publiczne API (docstrings po polsku)
+
+**Python Best Practices:**
+- Używaj type hints ZAWSZE
+- Formatuj kod zgodnie z PEP 8 (ruff)
+- Używaj f-strings zamiast .format() lub %
+- Unikaj mutable default arguments
+- Używaj context managers (with) dla zasobów
+- Preferuj list comprehensions nad pętle gdzie to czytelne
+- Obsługuj wyjątki specyficznie, nie używaj bare except
+
+**Struktura kodu:**
+```python
+# Przykład poprawnej funkcji
+def detect_dogs(image: np.ndarray, confidence_threshold: float = 0.5) -> list[Detection]:
+    """
+    Wykrywa psy na obrazie.
+
+    Args:
+        image: Obraz w formacie numpy array (BGR)
+        confidence_threshold: Próg pewności detekcji
+
+    Returns:
+        Lista wykrytych psów z bounding boxes
+
+    Raises:
+        ValueError: Gdy obraz jest pusty
+    """
+    if image.size == 0:
+        raise ValueError("Obraz nie może być pusty")
+
+    # Implementacja...
+    return detections
+```
+
+**Czego UNIKAĆ:**
+- Kopiowania kodu (extract to function/class)
+- Magic numbers (używaj stałych z opisowymi nazwami)
+- Zbyt długich funkcji
+- Zbyt wielu parametrów funkcji (max 5-6)
+- Zagnieżdżonych if/else powyżej 3 poziomów
+- Globalnych zmiennych
+- Hardcodowanych ścieżek i wartości
 
 ### Git Workflow
 
