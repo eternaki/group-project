@@ -84,3 +84,4 @@ logs/
 .windsurf/
 _bmad/
 _bmad-output/
+.mcp.json

@@ -113,6 +113,74 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 3. Push do remote po zakończeniu logicznego bloku pracy
 4. Atomowe commity - jedna zmiana = jeden commit
 
+### Workflow po ukończeniu zadania (OBOWIĄZKOWE)
+
+Po zakończeniu każdej story/task MUSISZ wykonać następujące kroki:
+
+**1. Aktualizacja dokumentacji w repozytorium:**
+```bash
+# Zaktualizuj status w pliku SPRINT.md
+docs/sprints/X-nazwa/SPRINT.md
+# Zmień status story z "To Do" na "Done"
+
+# Zaktualizuj status w pliku story
+docs/sprints/X-nazwa/stories/X.Y-nazwa.md
+# Dodaj datę ukończenia i notatki
+```
+
+**2. Aktualizacja Linear (przez API lub UI):**
+- Zmień status zadania na **Done**
+- Dodaj komentarz z podsumowaniem zmian (jeśli potrzebne)
+- Sprawdź czy wszystkie subtaski są ukończone
+
+**3. Commit z aktualizacją dokumentacji:**
+```bash
+git add docs/sprints/
+git commit -m "[SPRINT-X][STORY-Y.Z] Aktualizacja statusu - Done
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+```
+
+**Przykład aktualizacji SPRINT.md:**
+```markdown
+## Stories
+
+| ID | Title | Status |
+|----|-------|--------|
+| [1.1](stories/1.1-repository-setup.md) | Repository Setup | Done |  ← zmień z "To Do"
+| [1.2](stories/1.2-dogfacs-coco-research.md) | DogFACS & COCO Research | To Do |
+```
+
+**Checklist po ukończeniu zadania:**
+- [ ] Kod napisany i przetestowany
+- [ ] Testy przechodzą (`pytest`)
+- [ ] Linter bez błędów (`ruff check .`)
+- [ ] Dokumentacja zaktualizowana (docs/sprints/)
+- [ ] Linear zaktualizowany (status: Done)
+- [ ] Commit wykonany z odpowiednim prefixem
+
+### Linear Integration
+
+**Zespół:** Dogs-ai (DOG)
+**URL:** https://linear.app/team/DOG
+
+**Członkowie zespołu w Linear:**
+| Rola | Imię | Linear ID |
+|------|------|-----------|
+| U1 | Danylo Lohachov | eternaki (owner) |
+| U2 | Anton Shkrebela | TODO - dodać do zespołu |
+| U3 | Danylo Zherzdiev | Mafin |
+| U4 | Mariia Volkova | TODO - dodać do zespołu |
+
+**Labels w Linear:**
+- `sprint-1` ... `sprint-12` - sprint labels
+- `documentation` - zadania dokumentacyjne
+- `model` - zadania związane z AI/ML
+- `pipeline` - zadania pipeline'u
+- `data` - zadania związane z danymi
+- `demo` - aplikacja demo
+- `research` - badania
+
 ### Konto GitHub
 
 - **Użytkownik eternaki**: Zawsze używaj `gh auth switch --user eternaki` przed operacjami git
