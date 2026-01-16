@@ -29,10 +29,10 @@ This sprint focuses on training and integrating the dog detection model. The mod
 
 | ID | Title | Status |
 |----|-------|--------|
-| [2.1](stories/2.1-training-data-preparation.md) | Training Data Preparation | To Do |
-| [2.2](stories/2.2-yolov8-finetuning.md) | YOLOv8 Fine-tuning | To Do |
-| [2.3](stories/2.3-model-evaluation.md) | Model Evaluation | To Do |
-| [2.4](stories/2.4-model-integration.md) | Model Integration | To Do |
+| [2.1](stories/2.1-training-data-preparation.md) | Training Data Preparation | Done |
+| [2.2](stories/2.2-yolov8-finetuning.md) | YOLOv8 Fine-tuning | Done |
+| [2.3](stories/2.3-model-evaluation.md) | Model Evaluation | Done |
+| [2.4](stories/2.4-model-integration.md) | Model Integration | Done |
 
 ---
 
@@ -46,11 +46,11 @@ This sprint focuses on training and integrating the dog detection model. The mod
 
 ## Deliverables
 
-- [ ] Training dataset in YOLO format
-- [ ] Trained model weights (bbox.pt)
-- [ ] Evaluation report with metrics
-- [ ] BBoxModel class in codebase
-- [ ] Unit tests for model
+- [x] Training dataset in YOLO format
+- [x] Trained model weights (bbox.pt)
+- [x] Evaluation report with metrics
+- [x] BBoxModel class in codebase
+- [x] Unit tests for model
 
 ---
 
