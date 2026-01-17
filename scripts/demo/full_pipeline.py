@@ -2,9 +2,9 @@
 """
 Полный pipeline обработки изображения собаки.
 
-Этапы:
-1. Детекция собаки (Bounding Box) - YOLOv8
-2. Обрезка изображения собаки
+Этапы для КАЖДОЙ обнаруженной собаки:
+1. Детекция собак (Bounding Box) - YOLOv8
+2. Обрезка изображения каждой собаки
 3. Классификация породы - EfficientNet-B4
 4. Детекция ключевых точек - SimpleBaseline (ResNet50)
 5. Классификация эмоций - (будет добавлено)
@@ -13,7 +13,7 @@
 """
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +28,32 @@ from packages.models.breed import BreedConfig, BreedModel, BreedPrediction
 from packages.models.keypoints import KeypointsConfig, KeypointsModel, KeypointsPrediction
 
 
+# Цвета для разных собак (до 10)
+DOG_COLORS = [
+    (0, 255, 0),    # Зелёный
+    (255, 0, 0),    # Красный
+    (0, 0, 255),    # Синий
+    (255, 255, 0),  # Жёлтый
+    (255, 0, 255),  # Пурпурный
+    (0, 255, 255),  # Голубой
+    (255, 128, 0),  # Оранжевый
+    (128, 0, 255),  # Фиолетовый
+    (0, 255, 128),  # Бирюзовый
+    (255, 128, 128),# Розовый
+]
+
+
+@dataclass
+class DogResult:
+    """Результат обработки одной собаки."""
+    dog_id: int
+    detection: Detection
+    cropped_image: np.ndarray
+    breed: Optional[BreedPrediction] = None
+    keypoints: Optional[KeypointsPrediction] = None
+    emotion: Optional[str] = None  # Для будущего
+
+
 @dataclass
 class PipelineConfig:
     """Конфигурация pipeline."""
@@ -40,17 +66,19 @@ class PipelineConfig:
 
     # Параметры
     confidence_threshold: float = 0.3
+    max_dogs: int = 10  # Максимум собак для обработки
     output_dir: Path = Path("test/pipeline_output")
 
 
 class DogPipeline:
     """
     Полный pipeline для анализа изображений собак.
+    Обрабатывает ВСЕ найденные собаки на изображении.
 
     Использование:
         pipeline = DogPipeline(config)
         pipeline.load_models()
-        results = pipeline.process("path/to/dog.jpg")
+        results = pipeline.process("path/to/dogs.jpg")
     """
 
     def __init__(self, config: PipelineConfig) -> None:
@@ -74,6 +102,7 @@ class DogPipeline:
             bbox_config = BBoxConfig(
                 weights_path=self.config.bbox_weights,
                 confidence_threshold=self.config.confidence_threshold,
+                max_detections=self.config.max_dogs,
                 device="cpu",
             )
             self.bbox_model = BBoxModel(bbox_config)
@@ -115,12 +144,13 @@ class DogPipeline:
     def process(self, image_path: str | Path) -> dict:
         """
         Обрабатывает изображение через весь pipeline.
+        Обрабатывает ВСЕ найденные собаки.
 
         Args:
             image_path: Путь к изображению
 
         Returns:
-            Словарь с результатами всех этапов
+            Словарь с результатами всех этапов для всех собак
         """
         image_path = Path(image_path)
         base_name = image_path.stem
@@ -138,154 +168,157 @@ class DogPipeline:
         results = {
             "image_path": str(image_path),
             "image_size": original_image.size,
-            "stages": {},
+            "num_dogs": 0,
+            "dogs": [],
+            "output_images": {},
         }
 
         # =============================================
-        # ЭТАП 1: Детекция собаки (BBox)
+        # ЭТАП 1: Детекция ВСЕХ собак (BBox)
         # =============================================
         print(f"\n{'─' * 40}")
-        print("ЭТАП 1: Детекция собаки")
+        print("ЭТАП 1: Детекция собак")
         print("─" * 40)
 
-        detection: Optional[Detection] = None
-        cropped_np: np.ndarray = original_np
+        detections: list[Detection] = []
 
         if self.bbox_model is not None:
             detections = self.bbox_model.filter_dogs_only(original_np)
 
             if detections:
-                detection = detections[0]  # Берём первую (наиболее уверенную)
-
                 print(f"✓ Найдено собак: {len(detections)}")
-                print(f"  Лучшая детекция: confidence={detection.confidence:.2%}")
-                print(f"  BBox: {detection.bbox}")
+                for i, det in enumerate(detections):
+                    color_name = ["зелёный", "красный", "синий", "жёлтый", "пурпурный",
+                                  "голубой", "оранжевый", "фиолетовый", "бирюзовый", "розовый"][i % 10]
+                    print(f"  Собака {i+1} ({color_name}): confidence={det.confidence:.1%}, bbox={det.bbox}")
 
-                # Сохраняем изображение с bbox
-                bbox_image = self._draw_bbox(original_image.copy(), detection)
-                bbox_path = self.config.output_dir / f"{base_name}_1_bbox.jpg"
+                # Сохраняем изображение со ВСЕМИ bbox
+                bbox_image = self._draw_all_bboxes(original_image.copy(), detections)
+                bbox_path = self.config.output_dir / f"{base_name}_1_all_bboxes.jpg"
                 bbox_image.save(bbox_path, quality=95)
-                print(f"  Сохранено: {bbox_path}")
-
-                results["stages"]["bbox"] = {
-                    "num_detections": len(detections),
-                    "best_confidence": detection.confidence,
-                    "bbox": detection.bbox,
-                    "output_image": str(bbox_path),
-                }
-
-                # Обрезаем изображение
-                x, y, w, h = detection.bbox
-                cropped_pil = original_image.crop((x, y, x + w, y + h))
-                cropped_np = np.array(cropped_pil)
+                print(f"\n  Сохранено: {bbox_path}")
+                results["output_images"]["all_bboxes"] = str(bbox_path)
             else:
-                print("✗ Собаки не найдены, используем оригинал")
-                results["stages"]["bbox"] = {"error": "Собаки не найдены"}
+                print("✗ Собаки не найдены")
+                # Используем весь оригинал как одну "собаку"
+                detections = [Detection(
+                    bbox=(0, 0, original_image.width, original_image.height),
+                    confidence=1.0,
+                )]
         else:
             print("→ BBox модель недоступна, используем оригинал")
-            results["stages"]["bbox"] = {"skipped": True}
+            detections = [Detection(
+                bbox=(0, 0, original_image.width, original_image.height),
+                confidence=1.0,
+            )]
 
-        # Сохраняем обрезанное изображение
-        cropped_pil = Image.fromarray(cropped_np)
-        cropped_path = self.config.output_dir / f"{base_name}_2_cropped.jpg"
-        cropped_pil.save(cropped_path, quality=95)
-        print(f"\n✓ Обрезанное изображение: {cropped_path}")
-        print(f"  Размер: {cropped_pil.size}")
-        results["stages"]["crop"] = {
-            "size": cropped_pil.size,
-            "output_image": str(cropped_path),
-        }
+        results["num_dogs"] = len(detections)
 
         # =============================================
-        # ЭТАП 2: Классификация породы
+        # ОБРАБОТКА КАЖДОЙ СОБАКИ
         # =============================================
-        print(f"\n{'─' * 40}")
-        print("ЭТАП 2: Классификация породы")
-        print("─" * 40)
+        dog_results: list[DogResult] = []
 
-        if self.breed_model is not None:
-            breed_pred = self.breed_model.predict(cropped_np)
+        for dog_id, detection in enumerate(detections):
+            print(f"\n{'═' * 60}")
+            print(f"СОБАКА {dog_id + 1} / {len(detections)}")
+            print("═" * 60)
 
-            print(f"✓ Порода: {breed_pred.class_name}")
-            print(f"  Уверенность: {breed_pred.confidence:.2%}")
-            print(f"\n  Top-5 предсказания:")
-            for i, (cid, name, conf) in enumerate(breed_pred.top_k, 1):
-                print(f"    {i}. {name}: {conf:.2%}")
+            # Обрезаем изображение собаки
+            x, y, w, h = detection.bbox
+            cropped_pil = original_image.crop((x, y, x + w, y + h))
+            cropped_np = np.array(cropped_pil)
 
-            # Сохраняем изображение с породой
-            breed_image = self._draw_breed(cropped_pil.copy(), breed_pred)
-            breed_path = self.config.output_dir / f"{base_name}_3_breed.jpg"
-            breed_image.save(breed_path, quality=95)
-            print(f"\n  Сохранено: {breed_path}")
-
-            results["stages"]["breed"] = {
-                "class_id": breed_pred.class_id,
-                "class_name": breed_pred.class_name,
-                "confidence": breed_pred.confidence,
-                "top_k": breed_pred.top_k,
-                "output_image": str(breed_path),
-            }
-        else:
-            print("→ Breed модель недоступна")
-            results["stages"]["breed"] = {"skipped": True}
-
-        # =============================================
-        # ЭТАП 3: Детекция ключевых точек
-        # =============================================
-        print(f"\n{'─' * 40}")
-        print("ЭТАП 3: Детекция ключевых точек")
-        print("─" * 40)
-
-        if self.keypoints_model is not None:
-            keypoints_pred = self.keypoints_model.predict(cropped_np)
-
-            print(f"✓ Обнаружено keypoints: {keypoints_pred.num_detected} / 46")
-            print(f"  Средняя уверенность: {keypoints_pred.confidence:.2%}")
-
-            # Сохраняем изображение с keypoints
-            keypoints_image_np = self.keypoints_model.draw_keypoints(
-                cropped_np.copy(), keypoints_pred
+            dog_result = DogResult(
+                dog_id=dog_id,
+                detection=detection,
+                cropped_image=cropped_np,
             )
-            keypoints_pil = Image.fromarray(keypoints_image_np)
-            keypoints_path = self.config.output_dir / f"{base_name}_4_keypoints.jpg"
-            keypoints_pil.save(keypoints_path, quality=95)
-            print(f"  Сохранено: {keypoints_path}")
 
-            results["stages"]["keypoints"] = {
-                "num_detected": keypoints_pred.num_detected,
-                "total": 46,
-                "confidence": keypoints_pred.confidence,
-                "output_image": str(keypoints_path),
-            }
-        else:
-            print("→ Keypoints модель недоступна")
-            results["stages"]["keypoints"] = {"skipped": True}
+            # Сохраняем обрезанное изображение
+            cropped_path = self.config.output_dir / f"{base_name}_dog{dog_id + 1}_2_cropped.jpg"
+            cropped_pil.save(cropped_path, quality=95)
+            print(f"✓ Обрезано: {cropped_pil.size} → {cropped_path}")
+
+            # ─────────────────────────────────────────
+            # Классификация породы
+            # ─────────────────────────────────────────
+            if self.breed_model is not None:
+                breed_pred = self.breed_model.predict(cropped_np)
+                dog_result.breed = breed_pred
+
+                print(f"✓ Порода: {breed_pred.class_name} ({breed_pred.confidence:.1%})")
+                print(f"  Top-3: {', '.join([f'{n}:{c:.0%}' for _, n, c in breed_pred.top_k[:3]])}")
+
+                # Сохраняем с породой
+                breed_image = self._draw_breed(cropped_pil.copy(), breed_pred, dog_id)
+                breed_path = self.config.output_dir / f"{base_name}_dog{dog_id + 1}_3_breed.jpg"
+                breed_image.save(breed_path, quality=95)
+
+            # ─────────────────────────────────────────
+            # Детекция ключевых точек
+            # ─────────────────────────────────────────
+            if self.keypoints_model is not None:
+                keypoints_pred = self.keypoints_model.predict(cropped_np)
+                dog_result.keypoints = keypoints_pred
+
+                print(f"✓ Keypoints: {keypoints_pred.num_detected}/46 ({keypoints_pred.confidence:.1%})")
+
+                # Сохраняем с keypoints
+                keypoints_image_np = self.keypoints_model.draw_keypoints(
+                    cropped_np.copy(), keypoints_pred
+                )
+                keypoints_pil = Image.fromarray(keypoints_image_np)
+                keypoints_path = self.config.output_dir / f"{base_name}_dog{dog_id + 1}_4_keypoints.jpg"
+                keypoints_pil.save(keypoints_path, quality=95)
+
+            # ─────────────────────────────────────────
+            # Эмоции (placeholder)
+            # ─────────────────────────────────────────
+            dog_result.emotion = "не реализовано"
+
+            dog_results.append(dog_result)
+
+            # Добавляем в результаты
+            results["dogs"].append({
+                "dog_id": dog_id + 1,
+                "bbox": detection.bbox,
+                "confidence": detection.confidence,
+                "breed": breed_pred.class_name if dog_result.breed else None,
+                "breed_confidence": breed_pred.confidence if dog_result.breed else None,
+                "keypoints_detected": keypoints_pred.num_detected if dog_result.keypoints else None,
+            })
 
         # =============================================
-        # ЭТАП 4: Классификация эмоций (будущее)
-        # =============================================
-        print(f"\n{'─' * 40}")
-        print("ЭТАП 4: Классификация эмоций")
-        print("─" * 40)
-        print("→ Будет добавлено в Sprint 5")
-        results["stages"]["emotions"] = {"not_implemented": True}
-
-        # =============================================
-        # ФИНАЛЬНОЕ КОМБИНИРОВАННОЕ ИЗОБРАЖЕНИЕ
+        # ФИНАЛЬНАЯ ВИЗУАЛИЗАЦИЯ
         # =============================================
         print(f"\n{'─' * 40}")
         print("ФИНАЛЬНАЯ ВИЗУАЛИЗАЦИЯ")
         print("─" * 40)
 
-        final_image = self._create_summary(
-            original_image,
-            cropped_pil,
-            results,
-        )
-        final_path = self.config.output_dir / f"{base_name}_5_final.jpg"
-        final_image.save(final_path, quality=95)
-        print(f"✓ Сохранено: {final_path}")
-        results["final_image"] = str(final_path)
+        # Изображение со всеми аннотациями
+        final_annotated = self._draw_all_annotations(original_image.copy(), dog_results)
+        annotated_path = self.config.output_dir / f"{base_name}_5_annotated.jpg"
+        final_annotated.save(annotated_path, quality=95)
+        print(f"✓ Аннотированное: {annotated_path}")
+        results["output_images"]["annotated"] = str(annotated_path)
+
+        # Сводная таблица
+        summary_image = self._create_summary_grid(original_image, dog_results, base_name)
+        summary_path = self.config.output_dir / f"{base_name}_6_summary.jpg"
+        summary_image.save(summary_path, quality=95)
+        print(f"✓ Сводка: {summary_path}")
+        results["output_images"]["summary"] = str(summary_path)
+
+        # Итоговая статистика
+        print(f"\n{'=' * 60}")
+        print("ИТОГИ")
+        print("=" * 60)
+        print(f"Обработано собак: {len(dog_results)}")
+        for dr in dog_results:
+            breed_str = f"{dr.breed.class_name} ({dr.breed.confidence:.0%})" if dr.breed else "N/A"
+            kp_str = f"{dr.keypoints.num_detected}/46" if dr.keypoints else "N/A"
+            print(f"  Собака {dr.dog_id + 1}: {breed_str}, keypoints: {kp_str}")
 
         print(f"\n{'=' * 60}")
         print("ГОТОВО!")
@@ -293,90 +326,165 @@ class DogPipeline:
 
         return results
 
-    def _draw_bbox(self, image: Image.Image, detection: Detection) -> Image.Image:
-        """Рисует bounding box на изображении."""
+    def _draw_all_bboxes(self, image: Image.Image, detections: list[Detection]) -> Image.Image:
+        """Рисует ВСЕ bounding boxes на изображении."""
         draw = ImageDraw.Draw(image)
-        x, y, w, h = detection.bbox
 
-        # Рисуем прямоугольник
-        draw.rectangle(
-            [(x, y), (x + w, y + h)],
-            outline=(0, 255, 0),
-            width=4,
-        )
+        for i, det in enumerate(detections):
+            x, y, w, h = det.bbox
+            color = DOG_COLORS[i % len(DOG_COLORS)]
 
-        # Подпись
-        label = f"Dog: {detection.confidence:.1%}"
-        draw.rectangle([(x, y - 30), (x + 150, y)], fill=(0, 255, 0))
-        draw.text((x + 5, y - 25), label, fill=(0, 0, 0))
+            # Рисуем прямоугольник
+            draw.rectangle(
+                [(x, y), (x + w, y + h)],
+                outline=color,
+                width=4,
+            )
+
+            # Подпись
+            label = f"Dog {i+1}: {det.confidence:.0%}"
+            # Фон для текста
+            text_bbox = draw.textbbox((x, y - 25), label)
+            draw.rectangle(
+                [(text_bbox[0] - 2, text_bbox[1] - 2), (text_bbox[2] + 2, text_bbox[3] + 2)],
+                fill=color
+            )
+            draw.text((x, y - 25), label, fill=(0, 0, 0))
 
         return image
 
-    def _draw_breed(self, image: Image.Image, prediction: BreedPrediction) -> Image.Image:
+    def _draw_breed(self, image: Image.Image, prediction: BreedPrediction, dog_id: int) -> Image.Image:
         """Добавляет информацию о породе на изображение."""
         draw = ImageDraw.Draw(image)
+        color = DOG_COLORS[dog_id % len(DOG_COLORS)]
 
         # Фон для текста
-        draw.rectangle([(0, 0), (image.width, 60)], fill=(0, 0, 0, 180))
+        draw.rectangle([(0, 0), (image.width, 50)], fill=(0, 0, 0))
 
         # Текст
-        text = f"{prediction.class_name}: {prediction.confidence:.1%}"
-        draw.text((10, 10), text, fill=(255, 255, 255))
-
-        # Top-3
-        top3_text = " | ".join([f"{name}: {conf:.0%}" for _, name, conf in prediction.top_k[:3]])
-        draw.text((10, 35), top3_text, fill=(200, 200, 200))
+        text = f"Dog {dog_id + 1}: {prediction.class_name} ({prediction.confidence:.0%})"
+        draw.text((10, 10), text, fill=color)
 
         return image
 
-    def _create_summary(
+    def _draw_all_annotations(self, image: Image.Image, dog_results: list[DogResult]) -> Image.Image:
+        """Рисует все аннотации на одном изображении."""
+        draw = ImageDraw.Draw(image)
+
+        for dr in dog_results:
+            x, y, w, h = dr.detection.bbox
+            color = DOG_COLORS[dr.dog_id % len(DOG_COLORS)]
+
+            # BBox
+            draw.rectangle([(x, y), (x + w, y + h)], outline=color, width=3)
+
+            # Подпись с породой
+            if dr.breed:
+                label = f"{dr.dog_id + 1}. {dr.breed.class_name} ({dr.breed.confidence:.0%})"
+            else:
+                label = f"Dog {dr.dog_id + 1}"
+
+            text_bbox = draw.textbbox((x, y - 20), label)
+            draw.rectangle(
+                [(text_bbox[0] - 2, text_bbox[1] - 2), (text_bbox[2] + 2, text_bbox[3] + 2)],
+                fill=color
+            )
+            draw.text((x, y - 20), label, fill=(0, 0, 0))
+
+        return image
+
+    def _create_summary_grid(
         self,
         original: Image.Image,
-        cropped: Image.Image,
-        results: dict,
+        dog_results: list[DogResult],
+        base_name: str,
     ) -> Image.Image:
-        """Создаёт финальное комбинированное изображение."""
-        # Определяем размеры
-        max_height = 600
+        """Создаёт сводное изображение со всеми собаками."""
+        # Параметры сетки
+        thumb_size = 200
+        padding = 10
+        header_height = 80
+
+        num_dogs = len(dog_results)
+        if num_dogs == 0:
+            return original
+
+        # Вычисляем размеры
+        cols = min(num_dogs, 4)
+        rows = (num_dogs + cols - 1) // cols
+
+        grid_width = cols * (thumb_size + padding) + padding
+        grid_height = rows * (thumb_size + header_height + padding) + padding
 
         # Масштабируем оригинал
-        ratio = max_height / original.height
+        orig_ratio = min(400 / original.width, 400 / original.height)
         orig_resized = original.resize(
-            (int(original.width * ratio), max_height),
+            (int(original.width * orig_ratio), int(original.height * orig_ratio)),
             Image.Resampling.LANCZOS,
         )
 
-        # Масштабируем обрезанное
-        crop_ratio = max_height / cropped.height
-        crop_resized = cropped.resize(
-            (int(cropped.width * crop_ratio), max_height),
-            Image.Resampling.LANCZOS,
-        )
+        total_width = orig_resized.width + padding + grid_width
+        total_height = max(orig_resized.height, grid_height) + 60
 
         # Создаём итоговое изображение
-        total_width = orig_resized.width + crop_resized.width + 20
-        summary = Image.new("RGB", (total_width, max_height + 100), (30, 30, 30))
+        summary = Image.new("RGB", (total_width, total_height), (40, 40, 40))
 
-        # Вставляем изображения
-        summary.paste(orig_resized, (0, 0))
-        summary.paste(crop_resized, (orig_resized.width + 20, 0))
+        # Вставляем оригинал слева
+        summary.paste(orig_resized, (padding, padding))
 
-        # Добавляем текст
+        # Вставляем миниатюры собак
+        x_offset = orig_resized.width + padding * 2
+        y_offset = padding
+
         draw = ImageDraw.Draw(summary)
 
-        y_text = max_height + 10
-        text_lines = ["Dog FACS Pipeline Results:"]
+        for i, dr in enumerate(dog_results):
+            col = i % cols
+            row = i // cols
 
-        if "breed" in results["stages"] and "class_name" in results["stages"]["breed"]:
-            breed = results["stages"]["breed"]
-            text_lines.append(f"  Breed: {breed['class_name']} ({breed['confidence']:.1%})")
+            x = x_offset + col * (thumb_size + padding)
+            y = y_offset + row * (thumb_size + header_height + padding)
 
-        if "keypoints" in results["stages"] and "num_detected" in results["stages"]["keypoints"]:
-            kp = results["stages"]["keypoints"]
-            text_lines.append(f"  Keypoints: {kp['num_detected']}/{kp['total']} detected")
+            color = DOG_COLORS[dr.dog_id % len(DOG_COLORS)]
 
-        for i, line in enumerate(text_lines):
-            draw.text((10, y_text + i * 25), line, fill=(255, 255, 255))
+            # Миниатюра
+            cropped_pil = Image.fromarray(dr.cropped_image)
+            cropped_pil.thumbnail((thumb_size, thumb_size), Image.Resampling.LANCZOS)
+
+            # Центрируем миниатюру
+            paste_x = x + (thumb_size - cropped_pil.width) // 2
+            paste_y = y + header_height
+            summary.paste(cropped_pil, (paste_x, paste_y))
+
+            # Рамка
+            draw.rectangle(
+                [(x, y + header_height), (x + thumb_size, y + header_height + thumb_size)],
+                outline=color,
+                width=3,
+            )
+
+            # Заголовок
+            draw.rectangle([(x, y), (x + thumb_size, y + header_height)], fill=color)
+
+            # Текст
+            dog_label = f"Dog {dr.dog_id + 1}"
+            draw.text((x + 5, y + 5), dog_label, fill=(0, 0, 0))
+
+            if dr.breed:
+                breed_text = f"{dr.breed.class_name[:15]}"
+                conf_text = f"{dr.breed.confidence:.0%}"
+                draw.text((x + 5, y + 25), breed_text, fill=(0, 0, 0))
+                draw.text((x + 5, y + 45), conf_text, fill=(0, 0, 0))
+
+            if dr.keypoints:
+                kp_text = f"KP: {dr.keypoints.num_detected}/46"
+                draw.text((x + 5, y + 65), kp_text, fill=(0, 0, 0))
+
+        # Нижняя строка с общей информацией
+        info_y = total_height - 50
+        draw.rectangle([(0, info_y), (total_width, total_height)], fill=(30, 30, 30))
+        info_text = f"Dog FACS Pipeline | {base_name} | {num_dogs} dog(s) detected"
+        draw.text((padding, info_y + 15), info_text, fill=(255, 255, 255))
 
         return summary
 
@@ -385,8 +493,8 @@ def main():
     """Главная функция демонстрации pipeline."""
     # Путь к тестовому изображению
     test_images = [
-        Path("test/ShihTzu-original.jpeg"),
         Path("test/spruce-pets-200-types-of-dogs-45a7bd12aacf458cb2e77b841c41abe7.jpg"),
+        Path("test/ShihTzu-original.jpeg"),
     ]
 
     # Находим первое доступное изображение
@@ -405,10 +513,11 @@ def main():
 
     # Конфигурация
     config = PipelineConfig(
-        bbox_weights=Path("models/yolov8m.pt"),  # Если нет - пропускаем
+        bbox_weights=Path("models/yolov8m.pt"),
         breed_weights=Path("models/breed.pt"),
         keypoints_weights=Path("models/keypoints_best.pt"),
         output_dir=Path("test/pipeline_output"),
+        max_dogs=10,
     )
 
     # Создаём и запускаем pipeline
@@ -422,11 +531,8 @@ def main():
     print(f"\n{'=' * 60}")
     print("ВЫХОДНЫЕ ФАЙЛЫ:")
     print("=" * 60)
-    for stage, data in results["stages"].items():
-        if isinstance(data, dict) and "output_image" in data:
-            print(f"  {stage}: {data['output_image']}")
-    if "final_image" in results:
-        print(f"  FINAL: {results['final_image']}")
+    for name, path in results["output_images"].items():
+        print(f"  {name}: {path}")
 
 
 if __name__ == "__main__":
