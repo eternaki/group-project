@@ -7,7 +7,7 @@
 2. Обрезка изображения каждой собаки
 3. Классификация породы - EfficientNet-B4
 4. Детекция ключевых точек - SimpleBaseline (ResNet50)
-5. Классификация эмоций - (будет добавлено)
+5. Классификация эмоций - EfficientNet-B0 (sad, angry, relaxed, happy)
 
 На каждом этапе сохраняется промежуточное изображение.
 """
@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from packages.models.bbox import BBoxConfig, BBoxModel, Detection
 from packages.models.breed import BreedConfig, BreedModel, BreedPrediction
 from packages.models.keypoints import KeypointsConfig, KeypointsModel, KeypointsPrediction
+from packages.models.emotion import EmotionConfig, EmotionModel, EmotionPrediction, EMOTION_CLASSES
 
 
 # Цвета для разных собак (до 10)
@@ -51,7 +52,7 @@ class DogResult:
     cropped_image: np.ndarray
     breed: Optional[BreedPrediction] = None
     keypoints: Optional[KeypointsPrediction] = None
-    emotion: Optional[str] = None  # Для будущего
+    emotion: Optional[EmotionPrediction] = None
 
 
 @dataclass
@@ -62,6 +63,7 @@ class PipelineConfig:
     bbox_weights: Path = Path("models/yolov8m.pt")  # Pretrained YOLO
     breed_weights: Path = Path("models/breed.pt")
     keypoints_weights: Path = Path("models/keypoints_best.pt")
+    emotion_weights: Path = Path("models/emotion.pt")
     breeds_json: Path = Path("packages/models/breeds.json")
 
     # Параметры
@@ -86,6 +88,7 @@ class DogPipeline:
         self.bbox_model: Optional[BBoxModel] = None
         self.breed_model: Optional[BreedModel] = None
         self.keypoints_model: Optional[KeypointsModel] = None
+        self.emotion_model: Optional[EmotionModel] = None
 
         # Создаём директорию для выходных файлов
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -98,7 +101,7 @@ class DogPipeline:
 
         # 1. BBox Model (YOLOv8)
         if self.config.bbox_weights.exists():
-            print(f"\n[1/3] BBox: {self.config.bbox_weights}")
+            print(f"\n[1/4] BBox: {self.config.bbox_weights}")
             bbox_config = BBoxConfig(
                 weights_path=self.config.bbox_weights,
                 confidence_threshold=self.config.confidence_threshold,
@@ -109,12 +112,12 @@ class DogPipeline:
             self.bbox_model.load()
             print("      ✓ Загружено")
         else:
-            print(f"\n[1/3] BBox: НЕ НАЙДЕНО ({self.config.bbox_weights})")
+            print(f"\n[1/4] BBox: НЕ НАЙДЕНО ({self.config.bbox_weights})")
             print("      → Используем ручную обрезку")
 
         # 2. Breed Model
         if self.config.breed_weights.exists():
-            print(f"\n[2/3] Breed: {self.config.breed_weights}")
+            print(f"\n[2/4] Breed: {self.config.breed_weights}")
             breed_config = BreedConfig(
                 weights_path=self.config.breed_weights,
                 labels_path=self.config.breeds_json,
@@ -124,11 +127,11 @@ class DogPipeline:
             self.breed_model.load()
             print("      ✓ Загружено")
         else:
-            print(f"\n[2/3] Breed: НЕ НАЙДЕНО ({self.config.breed_weights})")
+            print(f"\n[2/4] Breed: НЕ НАЙДЕНО ({self.config.breed_weights})")
 
         # 3. Keypoints Model
         if self.config.keypoints_weights.exists():
-            print(f"\n[3/3] Keypoints: {self.config.keypoints_weights}")
+            print(f"\n[3/4] Keypoints: {self.config.keypoints_weights}")
             keypoints_config = KeypointsConfig(
                 weights_path=self.config.keypoints_weights,
                 confidence_threshold=self.config.confidence_threshold,
@@ -137,7 +140,20 @@ class DogPipeline:
             self.keypoints_model.load()
             print("      ✓ Загружено")
         else:
-            print(f"\n[3/3] Keypoints: НЕ НАЙДЕНО ({self.config.keypoints_weights})")
+            print(f"\n[3/4] Keypoints: НЕ НАЙДЕНО ({self.config.keypoints_weights})")
+
+        # 4. Emotion Model
+        if self.config.emotion_weights.exists():
+            print(f"\n[4/4] Emotion: {self.config.emotion_weights}")
+            emotion_config = EmotionConfig(
+                weights_path=self.config.emotion_weights,
+                device="cpu",
+            )
+            self.emotion_model = EmotionModel(emotion_config)
+            self.emotion_model.load()
+            print("      ✓ Загружено")
+        else:
+            print(f"\n[4/4] Emotion: НЕ НАЙДЕНО ({self.config.emotion_weights})")
 
         print("\n" + "=" * 60)
 
@@ -273,9 +289,18 @@ class DogPipeline:
                 keypoints_pil.save(keypoints_path, quality=95)
 
             # ─────────────────────────────────────────
-            # Эмоции (placeholder)
+            # Классификация эмоций
             # ─────────────────────────────────────────
-            dog_result.emotion = "не реализовано"
+            if self.emotion_model is not None:
+                emotion_pred = self.emotion_model.predict(cropped_np)
+                dog_result.emotion = emotion_pred
+
+                print(f"✓ Эмоция: {emotion_pred.emotion.upper()} ({emotion_pred.confidence:.1%})")
+
+                # Сохраняем с эмоцией
+                emotion_image = self._draw_emotion(cropped_pil.copy(), emotion_pred, dog_id)
+                emotion_path = self.config.output_dir / f"{base_name}_dog{dog_id + 1}_5_emotion.jpg"
+                emotion_image.save(emotion_path, quality=95)
 
             dog_results.append(dog_result)
 
@@ -284,9 +309,11 @@ class DogPipeline:
                 "dog_id": dog_id + 1,
                 "bbox": detection.bbox,
                 "confidence": detection.confidence,
-                "breed": breed_pred.class_name if dog_result.breed else None,
-                "breed_confidence": breed_pred.confidence if dog_result.breed else None,
-                "keypoints_detected": keypoints_pred.num_detected if dog_result.keypoints else None,
+                "breed": dog_result.breed.class_name if dog_result.breed else None,
+                "breed_confidence": dog_result.breed.confidence if dog_result.breed else None,
+                "keypoints_detected": dog_result.keypoints.num_detected if dog_result.keypoints else None,
+                "emotion": dog_result.emotion.emotion if dog_result.emotion else None,
+                "emotion_confidence": dog_result.emotion.confidence if dog_result.emotion else None,
             })
 
         # =============================================
@@ -318,7 +345,8 @@ class DogPipeline:
         for dr in dog_results:
             breed_str = f"{dr.breed.class_name} ({dr.breed.confidence:.0%})" if dr.breed else "N/A"
             kp_str = f"{dr.keypoints.num_detected}/46" if dr.keypoints else "N/A"
-            print(f"  Собака {dr.dog_id + 1}: {breed_str}, keypoints: {kp_str}")
+            emotion_str = f"{dr.emotion.emotion.upper()} ({dr.emotion.confidence:.0%})" if dr.emotion else "N/A"
+            print(f"  Собака {dr.dog_id + 1}: {breed_str}, keypoints: {kp_str}, emotion: {emotion_str}")
 
         print(f"\n{'=' * 60}")
         print("ГОТОВО!")
@@ -367,6 +395,28 @@ class DogPipeline:
 
         return image
 
+    def _draw_emotion(self, image: Image.Image, prediction: EmotionPrediction, dog_id: int) -> Image.Image:
+        """Добавляет информацию об эмоции на изображение."""
+        draw = ImageDraw.Draw(image)
+
+        # Цвета для эмоций
+        emotion_colors = {
+            'happy': (0, 255, 0),      # Зелёный
+            'sad': (0, 0, 255),        # Синий
+            'angry': (255, 0, 0),      # Красный
+            'relaxed': (255, 255, 0),  # Жёлтый
+        }
+        color = emotion_colors.get(prediction.emotion, (128, 128, 128))
+
+        # Фон для текста
+        draw.rectangle([(0, 0), (image.width, 50)], fill=(0, 0, 0))
+
+        # Текст
+        text = f"Emotion: {prediction.emotion.upper()} ({prediction.confidence:.0%})"
+        draw.text((10, 10), text, fill=color)
+
+        return image
+
     def _draw_all_annotations(self, image: Image.Image, dog_results: list[DogResult]) -> Image.Image:
         """Рисует все аннотации на одном изображении."""
         draw = ImageDraw.Draw(image)
@@ -378,11 +428,13 @@ class DogPipeline:
             # BBox
             draw.rectangle([(x, y), (x + w, y + h)], outline=color, width=3)
 
-            # Подпись с породой
+            # Подпись с породой и эмоцией
+            parts = [f"{dr.dog_id + 1}."]
             if dr.breed:
-                label = f"{dr.dog_id + 1}. {dr.breed.class_name} ({dr.breed.confidence:.0%})"
-            else:
-                label = f"Dog {dr.dog_id + 1}"
+                parts.append(f"{dr.breed.class_name}")
+            if dr.emotion:
+                parts.append(f"[{dr.emotion.emotion.upper()}]")
+            label = " ".join(parts)
 
             text_bbox = draw.textbbox((x, y - 20), label)
             draw.rectangle(
@@ -476,9 +528,14 @@ class DogPipeline:
                 draw.text((x + 5, y + 25), breed_text, fill=(0, 0, 0))
                 draw.text((x + 5, y + 45), conf_text, fill=(0, 0, 0))
 
+            # Keypoints и эмоция в одну строку
+            info_parts = []
             if dr.keypoints:
-                kp_text = f"KP: {dr.keypoints.num_detected}/46"
-                draw.text((x + 5, y + 65), kp_text, fill=(0, 0, 0))
+                info_parts.append(f"KP:{dr.keypoints.num_detected}")
+            if dr.emotion:
+                info_parts.append(f"{dr.emotion.emotion.upper()}")
+            if info_parts:
+                draw.text((x + 5, y + 65), " | ".join(info_parts), fill=(0, 0, 0))
 
         # Нижняя строка с общей информацией
         info_y = total_height - 50
@@ -516,6 +573,7 @@ def main():
         bbox_weights=Path("models/yolov8m.pt"),
         breed_weights=Path("models/breed.pt"),
         keypoints_weights=Path("models/keypoints_best.pt"),
+        emotion_weights=Path("models/emotion.pt"),
         output_dir=Path("test/pipeline_output"),
         max_dogs=10,
     )
