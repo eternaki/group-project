@@ -33,18 +33,18 @@ except ImportError:
     sys.exit(1)
 
 
-# Konfiguracja projektu - UZUPEŁNIJ DANE ZESPOŁU
+# Konfiguracja projektu
 PROJECT_CONFIG = {
     "temat": "Dog FACS Dataset - Pipeline do automatycznej anotacji emocji psów z wykorzystaniem AI",
     "rok_akademicki": "2025/2026",
     "semestr": "1 (zimowy)",
     "katedra": "Katedra Systemów Multimedialnych",
-    "opiekun": "dr inż. [Imię Nazwisko]",
+    "opiekun": "dr inż. [Imię Nazwisko]",  # TODO: Uzupełnić imię opiekuna
     "zespol": [
-        {"imie": "Danylo Logachev", "album": "000000", "rola": "Team Lead / ML Engineer"},
-        {"imie": "Anton [Nazwisko]", "album": "000000", "rola": "ML Engineer"},
-        {"imie": "Danylo Zhernosek", "album": "000000", "rola": "Data Engineer"},
-        {"imie": "Mariia [Nazwisko]", "album": "000000", "rola": "QA / Annotator"},
+        {"imie": "Danylo Lohachov", "album": "196610", "rola": "Team Lead / ML Engineer"},
+        {"imie": "Anton Shkrebela", "album": "196637", "rola": "ML Engineer"},
+        {"imie": "Danylo Zherzdiev", "album": "196765", "rola": "Data Engineer"},
+        {"imie": "Mariia Volkova", "album": "196660", "rola": "QA / Annotator"},
     ],
     "repo_url": "https://github.com/eternaki/group-project",
     "sprinty": [
