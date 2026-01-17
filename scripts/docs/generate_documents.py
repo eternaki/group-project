@@ -39,7 +39,7 @@ PROJECT_CONFIG = {
     "rok_akademicki": "2025/2026",
     "semestr": "1 (zimowy)",
     "katedra": "Katedra Systemów Multimedialnych",
-    "opiekun": "dr inż. [Imię Nazwisko]",  # TODO: Uzupełnić imię opiekuna
+    "opiekun": "dr inż. Michał Czubenko",
     "zespol": [
         {"imie": "Danylo Lohachov", "album": "196610", "rola": "Team Lead / ML Engineer"},
         {"imie": "Anton Shkrebela", "album": "196637", "rola": "ML Engineer"},
