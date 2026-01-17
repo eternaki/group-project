@@ -1,0 +1,155 @@
+{
+  "description": "Zapytania wyszukiwania wideo dla Dog FACS Dataset",
+  "target_total": 2500,
+  "target_per_emotion": 400,
+  "target_duration_sec": 20,
+  "min_duration_sec": 10,
+  "max_duration_sec": 60,
+  "max_resolution": 720,
+  "emotions": {
+    "happy": {
+      "target_count": 500,
+      "queries": [
+        "happy dog playing",
+        "excited dog",
+        "dog wagging tail",
+        "playful puppy",
+        "dog greeting owner",
+        "happy dog running",
+        "joyful dog",
+        "dog playing fetch",
+        "excited puppy",
+        "dog happy reunion"
+      ],
+      "keywords_include": ["happy", "excited", "playful", "joyful", "wagging"],
+      "keywords_exclude": ["sad", "angry", "scared", "aggressive"]
+    },
+    "sad": {
+      "target_count": 400,
+      "queries": [
+        "sad dog",
+        "dog misses owner",
+        "lonely dog",
+        "depressed dog",
+        "dog waiting for owner",
+        "abandoned dog",
+        "heartbroken dog",
+        "dog crying",
+        "sad puppy eyes",
+        "dog separation anxiety"
+      ],
+      "keywords_include": ["sad", "lonely", "miss", "waiting", "depressed"],
+      "keywords_exclude": ["happy", "excited", "playing"]
+    },
+    "angry": {
+      "target_count": 400,
+      "queries": [
+        "angry dog barking",
+        "aggressive dog",
+        "dog growling",
+        "protective dog",
+        "dog showing teeth",
+        "territorial dog",
+        "guard dog barking",
+        "dog warning bark",
+        "defensive dog",
+        "dog snarling"
+      ],
+      "keywords_include": ["angry", "aggressive", "growl", "bark", "protective"],
+      "keywords_exclude": ["playful", "friendly", "happy"]
+    },
+    "relaxed": {
+      "target_count": 500,
+      "queries": [
+        "calm dog",
+        "sleepy dog",
+        "relaxed dog",
+        "dog resting",
+        "peaceful dog",
+        "dog sleeping",
+        "lazy dog",
+        "content dog",
+        "dog napping",
+        "serene dog"
+      ],
+      "keywords_include": ["calm", "relaxed", "sleepy", "peaceful", "resting"],
+      "keywords_exclude": ["excited", "barking", "running"]
+    },
+    "fearful": {
+      "target_count": 350,
+      "queries": [
+        "scared dog",
+        "nervous dog",
+        "dog afraid of thunder",
+        "anxious dog",
+        "frightened puppy",
+        "dog hiding",
+        "stressed dog",
+        "dog fear reaction",
+        "timid dog",
+        "dog trembling"
+      ],
+      "keywords_include": ["scared", "afraid", "nervous", "anxious", "frightened"],
+      "keywords_exclude": ["happy", "playful", "aggressive"]
+    },
+    "neutral": {
+      "target_count": 350,
+      "queries": [
+        "dog sitting",
+        "dog walking",
+        "normal dog behavior",
+        "dog standing",
+        "dog looking around",
+        "everyday dog",
+        "dog at home",
+        "casual dog",
+        "dog routine",
+        "dog daily life"
+      ],
+      "keywords_include": ["normal", "everyday", "routine", "casual"],
+      "keywords_exclude": ["excited", "sad", "angry", "scared"]
+    }
+  },
+  "quality_criteria": {
+    "min_resolution": 480,
+    "preferred_resolution": 720,
+    "max_file_size_mb": 100,
+    "required_dog_visible": true,
+    "single_dog_preferred": true
+  },
+  "exclusion_criteria": [
+    "compilation",
+    "music video",
+    "meme",
+    "funny compilation",
+    "top 10",
+    "slideshow",
+    "animation",
+    "cartoon"
+  ],
+  "breed_diversity": {
+    "target_breeds": 20,
+    "priority_breeds": [
+      "Labrador Retriever",
+      "German Shepherd",
+      "Golden Retriever",
+      "Bulldog",
+      "Beagle",
+      "Poodle",
+      "Rottweiler",
+      "Yorkshire Terrier",
+      "Boxer",
+      "Dachshund",
+      "Siberian Husky",
+      "Doberman",
+      "Shih Tzu",
+      "Great Dane",
+      "Chihuahua",
+      "Pomeranian",
+      "Border Collie",
+      "Corgi",
+      "Pit Bull",
+      "Cocker Spaniel"
+    ]
+  }
+}
