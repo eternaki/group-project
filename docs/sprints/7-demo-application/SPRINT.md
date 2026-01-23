@@ -30,11 +30,11 @@ This sprint creates a Streamlit demo application that allows uploading images/vi
 
 | ID | Title | Status |
 |----|-------|--------|
-| [7.1](stories/7.1-app-scaffold.md) | App Scaffold | To Do |
-| [7.2](stories/7.2-image-upload.md) | Image Upload | To Do |
-| [7.3](stories/7.3-video-upload.md) | Video Upload | To Do |
-| [7.4](stories/7.4-results-visualization.md) | Results Visualization | To Do |
-| [7.5](stories/7.5-export-functionality.md) | Export Functionality | To Do |
+| [7.1](stories/7.1-app-scaffold.md) | App Scaffold | Done |
+| [7.2](stories/7.2-image-upload.md) | Image Upload | Done |
+| [7.3](stories/7.3-video-upload.md) | Video Upload | Done |
+| [7.4](stories/7.4-results-visualization.md) | Results Visualization | Done |
+| [7.5](stories/7.5-export-functionality.md) | Export Functionality | Done |
 
 ---
 

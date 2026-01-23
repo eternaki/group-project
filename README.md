@@ -37,6 +37,20 @@ Full documentation: [docs/plans/2025-01-16-tech-stack.md](docs/plans/2025-01-16-
 
 ## Installation
 
+### System Requirements
+
+- **Python 3.10+**
+- **FFmpeg** (required for video export with audio)
+  ```bash
+  # macOS
+  brew install ffmpeg
+
+  # Ubuntu/Debian
+  sudo apt install ffmpeg
+
+  # Windows - download from https://ffmpeg.org/download.html
+  ```
+
 ### Quick Start
 
 ```bash

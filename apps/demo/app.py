@@ -4,15 +4,19 @@ Dog FACS Demo Application.
 Aplikacja Streamlit do demonstracji pipeline klasyfikacji emocji psów.
 Pozwala na:
 - Upload obrazów (JPG, PNG)
+- Upload wideo (MP4, MOV, AVI) lub URL (YouTube)
 - Analizę przez wszystkie 4 modele
-- Wizualizację wyników
-- Eksport anotacji do COCO JSON
+- Wizualizację wyników w czasie rzeczywistym
+- Eksport anotacji do COCO JSON i anotowanego wideo
 """
 
 import json
 import sys
+import tempfile
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import streamlit as st
@@ -22,7 +26,15 @@ from PIL import Image
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from packages.pipeline import InferencePipeline, PipelineConfig, FrameResult
+from packages.pipeline import (
+    InferencePipeline,
+    PipelineConfig,
+    FrameResult,
+    VideoProcessor,
+    VideoInfo,
+    YouTubeDownloader,
+    DownloadResult,
+)
 from packages.data import COCODataset
 
 
@@ -82,7 +94,7 @@ def visualize_results(
     Returns:
         Obraz z narysowanymi anotacjami
     """
-    from PIL import Image as PILImage, ImageDraw, ImageFont
+    from PIL import Image as PILImage, ImageDraw
 
     # Kolory dla różnych psów
     colors = [
@@ -182,6 +194,39 @@ def export_to_coco(result: FrameResult, filename: str) -> str:
     return json.dumps(dataset.to_dict(), indent=2, ensure_ascii=False)
 
 
+def export_video_to_coco(
+    results: list[FrameResult],
+    video_name: str,
+) -> str:
+    """
+    Eksportuje wszystkie klatki wideo do COCO JSON.
+
+    Args:
+        results: Lista wyników dla każdej klatki
+        video_name: Nazwa wideo
+
+    Returns:
+        JSON string
+    """
+    dataset = COCODataset(
+        description=f"Dog FACS - anotacje wideo: {video_name}"
+    )
+
+    for i, result in enumerate(results):
+        image_id = dataset.add_image(
+            file_name=f"{video_name}_frame_{i:04d}.jpg",
+            width=result.width,
+            height=result.height,
+            video_id=video_name,
+            frame_number=i,
+        )
+
+        for ann in result.annotations:
+            dataset.add_annotation_from_dog(image_id, ann)
+
+    return json.dumps(dataset.to_dict(), indent=2, ensure_ascii=False)
+
+
 def render_dog_details(result: FrameResult):
     """
     Renderuje szczegóły każdego psa.
@@ -246,66 +291,133 @@ def render_dog_details(result: FrameResult):
                     st.write("Brak danych")
 
 
-def main():
-    """Główna funkcja aplikacji."""
+def process_video_realtime(
+    video_path: Path,
+    pipeline: InferencePipeline,
+    fps: float,
+    show_bbox: bool,
+    show_keypoints: bool,
+    show_labels: bool,
+) -> tuple[list[FrameResult], list[tuple[int, np.ndarray]]]:
+    """
+    Przetwarza wideo i aktualizuje UI w czasie rzeczywistym.
 
-    # Header
-    st.title("🐕 Dog FACS - Analiza Emocji Psów")
-    st.markdown(
-        "Automatyczna anotacja psów: detekcja, klasyfikacja rasy, "
-        "punkty kluczowe i klasyfikacja emocji."
-    )
+    Args:
+        video_path: Ścieżka do pliku wideo
+        pipeline: Załadowany pipeline
+        fps: Częstotliwość próbkowania klatek
+        show_bbox: Czy pokazywać bounding boxy
+        show_keypoints: Czy pokazywać keypoints
+        show_labels: Czy pokazywać etykiety
 
-    # Sidebar
-    with st.sidebar:
-        st.header("⚙️ Ustawienia")
+    Returns:
+        Tuple (lista wyników, lista anotowanych klatek)
+    """
+    processor = VideoProcessor(fps_sample=fps)
+    info = processor.get_video_info(video_path)
 
-        confidence = st.slider(
-            "Próg pewności detekcji",
-            min_value=0.1,
-            max_value=0.9,
-            value=0.3,
-            step=0.05,
-            help="Minimalny próg pewności dla detekcji psów"
+    # Kontenery dla UI
+    col_orig, col_annot = st.columns(2)
+    with col_orig:
+        st.markdown("**Oryginał**")
+        placeholder_orig = st.empty()
+    with col_annot:
+        st.markdown("**Anotowany**")
+        placeholder_annot = st.empty()
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    # Akumulacja wyników
+    all_results: list[FrameResult] = []
+    annotated_frames: list[tuple[int, np.ndarray]] = []
+
+    total_frames = processor.count_estimated_frames(video_path)
+    if total_frames == 0:
+        total_frames = 1  # Unikaj dzielenia przez zero
+
+    for i, (frame_num, frame_rgb) in enumerate(processor.extract_frames(video_path)):
+        # Przetwarzanie klatki
+        result = pipeline.process_frame(frame_rgb, frame_id=f"frame_{frame_num}")
+        all_results.append(result)
+
+        # Wizualizacja
+        annotated = visualize_results(
+            frame_rgb, result, show_bbox, show_keypoints, show_labels
         )
+        annotated_frames.append((frame_num, annotated))
 
-        st.divider()
+        # Aktualizacja UI
+        placeholder_orig.image(frame_rgb, use_container_width=True)
+        placeholder_annot.image(annotated, use_container_width=True)
+        progress = min((i + 1) / total_frames, 1.0)
+        progress_bar.progress(progress)
+        status_text.text(f"Klatka {i + 1} / {total_frames} | Wykryto psów: {len(result.annotations)}")
 
-        st.subheader("Wizualizacja")
-        show_bbox = st.checkbox("Bounding Boxes", value=True)
-        show_keypoints = st.checkbox("Keypoints", value=True)
-        show_labels = st.checkbox("Etykiety", value=True)
+    progress_bar.progress(1.0)
+    status_text.text(f"Zakończono! Przetworzono {len(all_results)} klatek.")
 
-        st.divider()
+    return all_results, annotated_frames
 
-        st.subheader("O aplikacji")
-        st.markdown(
-            """
-            **Dog FACS Dataset**
 
-            Projekt grupowy PG WETI
+def render_video_stats(results: list[FrameResult]):
+    """
+    Renderuje statystyki dla całego wideo.
 
-            Pipeline AI:
-            - YOLOv8m (detekcja)
-            - EfficientNet-B4 (rasy)
-            - SimpleBaseline (keypoints)
-            - EfficientNet-B0 (emocje)
-            """
-        )
+    Args:
+        results: Lista wyników dla każdej klatki
+    """
+    if not results:
+        return
 
-    # Główna treść
+    total_detections = sum(len(r.annotations) for r in results)
+    frames_with_dogs = sum(1 for r in results if r.annotations)
+
+    # Zbierz wszystkie emocje
+    all_emotions = []
+    all_breeds = []
+    for r in results:
+        for ann in r.annotations:
+            if ann.emotion:
+                all_emotions.append(ann.emotion.emotion)
+            if ann.breed:
+                all_breeds.append(ann.breed.class_name)
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Klatki z psami", f"{frames_with_dogs}/{len(results)}")
+
+    with col2:
+        st.metric("Łączne detekcje", total_detections)
+
+    with col3:
+        if all_emotions:
+            most_common = max(set(all_emotions), key=all_emotions.count)
+            st.metric("Dominująca emocja", most_common.upper())
+        else:
+            st.metric("Dominująca emocja", "-")
+
+    with col4:
+        unique_breeds = len(set(all_breeds))
+        st.metric("Unikalne rasy", unique_breeds)
+
+
+def render_image_tab(confidence: float, show_bbox: bool, show_keypoints: bool, show_labels: bool):
+    """Renderuje zakładkę obrazów."""
     st.header("📸 Upload Obrazu")
 
     uploaded_file = st.file_uploader(
         "Wybierz obraz z psem",
         type=["jpg", "jpeg", "png"],
-        help="Obsługiwane formaty: JPG, JPEG, PNG. Maksymalny rozmiar: 10MB."
+        help="Obsługiwane formaty: JPG, JPEG, PNG. Maksymalny rozmiar: 10MB.",
+        key="image_uploader",
     )
 
     if uploaded_file is not None:
         # Walidacja rozmiaru
         if uploaded_file.size > 10 * 1024 * 1024:
-            st.error("❌ Plik za duży! Maksymalny rozmiar to 10MB.")
+            st.error("Plik za duży! Maksymalny rozmiar to 10MB.")
             return
 
         # Wczytaj obraz
@@ -316,7 +428,7 @@ def main():
         st.image(image, caption="Wczytany obraz", use_container_width=True)
 
         # Przycisk analizy
-        if st.button("🔍 Analizuj", type="primary", use_container_width=True):
+        if st.button("🔍 Analizuj", type="primary", use_container_width=True, key="analyze_image"):
             with st.spinner("Ładowanie pipeline..."):
                 pipeline = load_pipeline(confidence)
 
@@ -364,7 +476,6 @@ def main():
 
             with col2:
                 # Eksport obrazu
-                from io import BytesIO
                 img_buffer = BytesIO()
                 Image.fromarray(annotated).save(img_buffer, format="JPEG", quality=95)
 
@@ -404,7 +515,7 @@ def main():
                         if ann.emotion
                     ]
                     most_common = max(set(emotions), key=emotions.count) if emotions else "-"
-                    st.metric("Dominująca emocja", most_common.upper())
+                    st.metric("Dominująca emocja", most_common.upper() if most_common != "-" else "-")
                 else:
                     st.metric("Dominująca emocja", "-")
 
@@ -438,6 +549,261 @@ def main():
                         caption=img_path.name,
                         use_container_width=True,
                     )
+
+
+def render_video_tab(
+    confidence: float,
+    fps: float,
+    show_bbox: bool,
+    show_keypoints: bool,
+    show_labels: bool,
+):
+    """Renderuje zakładkę wideo."""
+    st.header("🎬 Analiza Wideo")
+
+    # Wybór źródła
+    source = st.radio(
+        "Źródło wideo",
+        ["Upload pliku", "URL (YouTube)"],
+        horizontal=True,
+        key="video_source",
+    )
+
+    video_path: Optional[Path] = None
+    video_name: str = "video"
+
+    if source == "Upload pliku":
+        uploaded_file = st.file_uploader(
+            "Wybierz wideo",
+            type=["mp4", "mov", "avi", "webm"],
+            help="Obsługiwane formaty: MP4, MOV, AVI, WebM. Maks. 100MB, 30 sekund.",
+            key="video_uploader",
+        )
+
+        if uploaded_file is not None:
+            # Walidacja rozmiaru
+            if uploaded_file.size > 100 * 1024 * 1024:
+                st.error("Plik za duży! Maksymalny rozmiar to 100MB.")
+                return
+
+            # Zapisz do pliku tymczasowego
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+                f.write(uploaded_file.read())
+                video_path = Path(f.name)
+                video_name = uploaded_file.name
+
+    else:  # URL
+        video_url = st.text_input(
+            "URL wideo",
+            placeholder="https://youtube.com/watch?v=... lub bezpośredni link do MP4",
+            key="video_url",
+        )
+
+        if video_url:
+            downloader = YouTubeDownloader(max_duration=30)
+
+            # Sprawdź info przed pobraniem
+            with st.spinner("Sprawdzanie wideo..."):
+                info = downloader.get_video_info(video_url)
+
+            if info and "error" not in info:
+                st.info(f"**{info.get('title', 'Unknown')}** | Czas: {info.get('duration', 0):.0f}s")
+
+                if info.get("duration", 0) > 30:
+                    st.error("Wideo za długie! Maksymalny czas to 30 sekund.")
+                    return
+
+                if st.button("📥 Pobierz wideo", key="download_video"):
+                    with st.spinner("Pobieranie wideo..."):
+                        result = downloader.download(video_url)
+
+                    if result.success and result.path:
+                        video_path = result.path
+                        video_name = result.title
+                        st.success(f"Pobrano: {result.title}")
+                    else:
+                        st.error(f"Błąd pobierania: {result.error}")
+                        return
+            elif info and "error" in info:
+                st.error(f"Błąd: {info['error']}")
+                return
+            else:
+                st.warning("Nie można pobrać informacji o wideo. Sprawdź URL.")
+                return
+
+    # Przetwarzanie wideo
+    if video_path and video_path.exists():
+        # Pokaż informacje o wideo
+        processor = VideoProcessor(fps_sample=fps)
+        try:
+            video_info = processor.get_video_info(video_path)
+
+            st.markdown(f"""
+            **Informacje o wideo:**
+            - Rozdzielczość: {video_info.width}x{video_info.height}
+            - FPS: {video_info.fps:.1f}
+            - Czas trwania: {video_info.duration:.1f}s
+            - Klatki do analizy: ~{processor.count_estimated_frames(video_path)}
+            """)
+
+            # Walidacja czasu trwania
+            if video_info.duration > 30:
+                st.error("Wideo za długie! Maksymalny czas to 30 sekund.")
+                return
+
+        except Exception as e:
+            st.error(f"Błąd odczytu wideo: {e}")
+            return
+
+        # Pokaż preview wideo
+        st.video(str(video_path))
+
+        # Przycisk analizy
+        if st.button("🔍 Analizuj wideo", type="primary", use_container_width=True, key="analyze_video"):
+            with st.spinner("Ładowanie pipeline..."):
+                pipeline = load_pipeline(confidence)
+
+            st.header("📊 Analiza w czasie rzeczywistym")
+
+            # Przetwarzanie
+            results, annotated_frames = process_video_realtime(
+                video_path,
+                pipeline,
+                fps,
+                show_bbox,
+                show_keypoints,
+                show_labels,
+            )
+
+            # Statystyki
+            st.divider()
+            st.header("📈 Statystyki wideo")
+            render_video_stats(results)
+
+            # Eksport
+            st.divider()
+            st.header("💾 Eksport")
+
+            col1, col2 = st.columns(2)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            with col1:
+                # Eksport COCO JSON
+                json_str = export_video_to_coco(results, video_name)
+
+                st.download_button(
+                    label="📥 Pobierz COCO JSON",
+                    data=json_str,
+                    file_name=f"{video_name}_annotations_{timestamp}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+
+            with col2:
+                # Eksport anotowanego wideo
+                if annotated_frames:
+                    with st.spinner("Tworzenie anotowanego wideo..."):
+                        output_video_path = Path(tempfile.gettempdir()) / f"{video_name}_annotated_{timestamp}.mp4"
+
+                        try:
+                            processor.create_annotated_video(
+                                video_path,
+                                annotated_frames,
+                                output_video_path,
+                                include_audio=True,
+                            )
+
+                            if output_video_path.exists():
+                                with open(output_video_path, "rb") as f:
+                                    video_bytes = f.read()
+
+                                st.download_button(
+                                    label="📥 Pobierz anotowane wideo",
+                                    data=video_bytes,
+                                    file_name=f"{video_name}_annotated_{timestamp}.mp4",
+                                    mime="video/mp4",
+                                    use_container_width=True,
+                                )
+
+                                # Pokaż preview anotowanego wideo
+                                st.subheader("Preview anotowanego wideo")
+                                st.video(str(output_video_path))
+
+                        except Exception as e:
+                            st.warning(f"Nie można utworzyć wideo: {e}")
+                            st.info("Możesz pobrać anotacje jako JSON.")
+
+    else:
+        st.info("👆 Wgraj wideo lub podaj URL, aby rozpocząć analizę.")
+
+
+def main():
+    """Główna funkcja aplikacji."""
+
+    # Header
+    st.title("🐕 Dog FACS - Analiza Emocji Psów")
+    st.markdown(
+        "Automatyczna anotacja psów: detekcja, klasyfikacja rasy, "
+        "punkty kluczowe i klasyfikacja emocji."
+    )
+
+    # Sidebar
+    with st.sidebar:
+        st.header("⚙️ Ustawienia")
+
+        confidence = st.slider(
+            "Próg pewności detekcji",
+            min_value=0.1,
+            max_value=0.9,
+            value=0.3,
+            step=0.05,
+            help="Minimalny próg pewności dla detekcji psów"
+        )
+
+        st.divider()
+
+        st.subheader("Wizualizacja")
+        show_bbox = st.checkbox("Bounding Boxes", value=True)
+        show_keypoints = st.checkbox("Keypoints", value=True)
+        show_labels = st.checkbox("Etykiety", value=True)
+
+        st.divider()
+
+        st.subheader("Ustawienia wideo")
+        fps = st.slider(
+            "Klatki do analizy (FPS)",
+            min_value=0.5,
+            max_value=5.0,
+            value=2.0,
+            step=0.5,
+            help="Liczba klatek na sekundę do analizy"
+        )
+
+        st.divider()
+
+        st.subheader("O aplikacji")
+        st.markdown(
+            """
+            **Dog FACS Dataset**
+
+            Projekt grupowy PG WETI
+
+            Pipeline AI:
+            - YOLOv8m (detekcja)
+            - EfficientNet-B4 (rasy)
+            - SimpleBaseline (keypoints)
+            - EfficientNet-B0 (emocje)
+            """
+        )
+
+    # Taby
+    tab_image, tab_video = st.tabs(["📸 Obraz", "🎬 Wideo"])
+
+    with tab_image:
+        render_image_tab(confidence, show_bbox, show_keypoints, show_labels)
+
+    with tab_video:
+        render_video_tab(confidence, fps, show_bbox, show_keypoints, show_labels)
 
 
 if __name__ == "__main__":

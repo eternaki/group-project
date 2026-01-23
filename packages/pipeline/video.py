@@ -3,8 +3,11 @@ Procesor wideo dla ekstrakcji klatek.
 
 Wyodrębnia klatki z filmów MP4 z konfigurowalną częstotliwością
 i zwraca je jako generator dla efektywnego wykorzystania pamięci.
+Obsługuje również tworzenie wideo z anotowanych klatek.
 """
 
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -252,3 +255,127 @@ class VideoProcessor:
 
         frame_interval = max(1, int(info.fps / self.fps_sample))
         return info.frame_count // frame_interval
+
+    def create_annotated_video(
+        self,
+        original_path: Path,
+        annotated_frames: list[tuple[int, np.ndarray]],
+        output_path: Path,
+        include_audio: bool = True,
+    ) -> Path:
+        """
+        Tworzy wideo z anotowanych klatek.
+
+        Zapisuje klatki jako wideo MP4 i opcjonalnie dodaje dźwięk
+        z oryginalnego pliku przy użyciu FFmpeg.
+
+        Args:
+            original_path: Ścieżka do oryginalnego wideo (dla audio)
+            annotated_frames: Lista krotek (indeks_klatki, klatka_rgb)
+            output_path: Ścieżka do pliku wyjściowego
+            include_audio: Czy dodać audio z oryginału
+
+        Returns:
+            Ścieżka do utworzonego pliku wideo
+
+        Raises:
+            ValueError: Gdy lista klatek jest pusta
+            RuntimeError: Gdy nie można utworzyć wideo
+        """
+        if not annotated_frames:
+            raise ValueError("Lista klatek nie może być pusta")
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Pobierz wymiary z pierwszej klatki
+        first_frame = annotated_frames[0][1]
+        height, width = first_frame.shape[:2]
+
+        # Utwórz plik tymczasowy dla wideo bez dźwięku
+        temp_video = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+        temp_video_path = Path(temp_video.name)
+        temp_video.close()
+
+        # Zapisz klatki do pliku tymczasowego
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(
+            str(temp_video_path),
+            fourcc,
+            self.fps_sample,
+            (width, height),
+        )
+
+        if not writer.isOpened():
+            temp_video_path.unlink(missing_ok=True)
+            raise RuntimeError("Nie można utworzyć VideoWriter")
+
+        try:
+            for _, frame_rgb in annotated_frames:
+                # Konwertuj RGB -> BGR dla OpenCV
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                writer.write(frame_bgr)
+        finally:
+            writer.release()
+
+        # Dodaj audio jeśli wymagane
+        if include_audio:
+            success = self._add_audio_to_video(
+                temp_video_path, original_path, output_path
+            )
+            temp_video_path.unlink(missing_ok=True)
+
+            if not success:
+                # Fallback: użyj wideo bez dźwięku
+                temp_video_path = Path(temp_video.name)
+                if temp_video_path.exists():
+                    temp_video_path.rename(output_path)
+        else:
+            temp_video_path.rename(output_path)
+
+        return output_path
+
+    def _add_audio_to_video(
+        self,
+        video_path: Path,
+        audio_source: Path,
+        output_path: Path,
+    ) -> bool:
+        """
+        Dodaje audio z pliku źródłowego do wideo.
+
+        Args:
+            video_path: Ścieżka do wideo bez dźwięku
+            audio_source: Ścieżka do pliku z audio
+            output_path: Ścieżka do pliku wyjściowego
+
+        Returns:
+            True jeśli sukces, False w przypadku błędu
+        """
+        cmd = [
+            "ffmpeg",
+            "-y",  # Nadpisz jeśli istnieje
+            "-i", str(video_path),
+            "-i", str(audio_source),
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-map", "0:v:0",
+            "-map", "1:a:0?",  # ? = opcjonalne (jeśli brak audio)
+            "-shortest",
+            str(output_path),
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            # FFmpeg nie jest zainstalowane
+            return False
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception:
+            return False
