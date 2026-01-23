@@ -208,9 +208,7 @@ def export_video_to_coco(
     Returns:
         JSON string
     """
-    dataset = COCODataset(
-        description=f"Dog FACS - anotacje wideo: {video_name}"
-    )
+    dataset = COCODataset()
 
     for i, result in enumerate(results):
         image_id = dataset.add_image(
@@ -561,6 +559,12 @@ def render_video_tab(
     """Renderuje zakładkę wideo."""
     st.header("🎬 Analiza Wideo")
 
+    # Inicjalizacja session_state dla wideo
+    if "video_path" not in st.session_state:
+        st.session_state.video_path = None
+    if "video_name" not in st.session_state:
+        st.session_state.video_name = "video"
+
     # Wybór źródła
     source = st.radio(
         "Źródło wideo",
@@ -568,9 +572,6 @@ def render_video_tab(
         horizontal=True,
         key="video_source",
     )
-
-    video_path: Optional[Path] = None
-    video_name: str = "video"
 
     if source == "Upload pliku":
         uploaded_file = st.file_uploader(
@@ -586,11 +587,14 @@ def render_video_tab(
                 st.error("Plik za duży! Maksymalny rozmiar to 100MB.")
                 return
 
-            # Zapisz do pliku tymczasowego
-            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-                f.write(uploaded_file.read())
-                video_path = Path(f.name)
-                video_name = uploaded_file.name
+            # Zapisz do pliku tymczasowego tylko jeśli to nowy plik
+            file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+            if st.session_state.get("video_file_id") != file_id:
+                with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+                    f.write(uploaded_file.read())
+                    st.session_state.video_path = Path(f.name)
+                    st.session_state.video_name = uploaded_file.name
+                    st.session_state.video_file_id = file_id
 
     else:  # URL
         video_url = st.text_input(
@@ -618,8 +622,8 @@ def render_video_tab(
                         result = downloader.download(video_url)
 
                     if result.success and result.path:
-                        video_path = result.path
-                        video_name = result.title
+                        st.session_state.video_path = result.path
+                        st.session_state.video_name = result.title
                         st.success(f"Pobrano: {result.title}")
                     else:
                         st.error(f"Błąd pobierania: {result.error}")
@@ -632,6 +636,9 @@ def render_video_tab(
                 return
 
     # Przetwarzanie wideo
+    video_path = st.session_state.video_path
+    video_name = st.session_state.video_name
+
     if video_path and video_path.exists():
         # Pokaż informacje o wideo
         processor = VideoProcessor(fps_sample=fps)
