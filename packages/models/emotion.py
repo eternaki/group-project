@@ -1,15 +1,16 @@
 """
-Model klasyfikacji emocji psów oparty na keypoints.
+Model klasyfikacji emocji psów oparty na keypoints i Action Units.
 
-Klasyfikuje emocje psów na podstawie 20 keypoints z modelu KeypointsModel.
-Zwraca 6 klas emocji: happy, sad, angry, fearful, relaxed, neutral.
-
-Architektura:
-    Keypoints (20 * 3 = 60 features) → MLP → 5 klas trenowanych
+Architektura zgodna z DogFACS:
+    Keypoints (20 * 3 = 60) → Action Units (12) → łącznie 72 features
+    72 features → MLP → 5 klas trenowanych
     Neutral jest wykrywany gdy żadna emocja nie ma wysokiej pewności.
 
-Jest to zgodne z podejściem DogFACS, gdzie emocje są pochodną
-ruchów mięśni twarzy (Action Units), a nie bezpośrednio pikseli.
+Action Units (AU) to obiektywne pomiary ruchów mięśni twarzy,
+zgodnie z Dog Facial Action Coding System (DogFACS).
+Emocje są interpretacjami kombinacji AU.
+
+Źródło: https://www.animalfacs.com/dogfacs
 """
 
 from dataclasses import dataclass, field
@@ -22,6 +23,12 @@ from torch import nn
 
 from .base import BaseModel, ModelConfig
 from packages.data.schemas import NUM_KEYPOINTS
+from .action_units import (
+    ActionUnitsExtractor,
+    NUM_ACTION_UNITS,
+    ACTION_UNIT_NAMES,
+    extract_action_units,
+)
 
 
 # Klasy emocji trenowane przez model (5 klas z dostępnych datasetów)
@@ -35,9 +42,13 @@ NUM_EMOTIONS = len(EMOTION_CLASSES)
 # Indeks klasy neutral
 NEUTRAL_ID = EMOTION_CLASSES.index('neutral')  # 5
 
-# Liczba cech wejściowych: x, y, visibility dla każdego keypointa
-# 20 keypoints zgodnie ze specyfikacją projektu
-INPUT_FEATURES = NUM_KEYPOINTS * 3  # 20 * 3 = 60
+# Liczba cech wejściowych
+KEYPOINTS_FEATURES = NUM_KEYPOINTS * 3  # 20 * 3 = 60
+AU_FEATURES = NUM_ACTION_UNITS           # 12
+INPUT_FEATURES = KEYPOINTS_FEATURES + AU_FEATURES  # 60 + 12 = 72
+
+# Dla kompatybilności wstecznej (tylko keypoints)
+INPUT_FEATURES_LEGACY = KEYPOINTS_FEATURES  # 60
 
 
 @dataclass
@@ -51,11 +62,13 @@ class EmotionConfig(ModelConfig):
         hidden_dims: Wymiary warstw ukrytych MLP
         dropout: Prawdopodobienstwo dropout
         neutral_threshold: Próg pewności poniżej którego emocja = neutral
+        use_action_units: Czy używać Action Units jako dodatkowych cech
     """
 
     hidden_dims: list[int] = field(default_factory=lambda: [256, 128, 64])
     dropout: float = 0.3
     neutral_threshold: float = 0.35  # Jeśli max_prob < 0.35 → neutral
+    use_action_units: bool = True    # Używaj AU (zgodne z DogFACS)
 
 
 @dataclass
@@ -68,21 +81,26 @@ class EmotionPrediction:
         emotion: Nazwa emocji
         confidence: Pewnosc predykcji
         probabilities: Prawdopodobienstwa wszystkich klas
+        action_units: Wartosci Action Units (opcjonalne)
     """
 
     emotion_id: int
     emotion: str
     confidence: float
     probabilities: dict[str, float] = field(default_factory=dict)
+    action_units: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Konwertuje predykcje do slownika."""
-        return {
+        result = {
             "emotion_id": self.emotion_id,
             "emotion": self.emotion,
             "emotion_confidence": self.confidence,
             "probabilities": self.probabilities,
         }
+        if self.action_units:
+            result["action_units"] = self.action_units
+        return result
 
     def to_coco(self) -> dict:
         """
@@ -99,20 +117,22 @@ class EmotionPrediction:
 
 class KeypointsEmotionMLP(nn.Module):
     """
-    MLP do klasyfikacji emocji na podstawie keypoints.
+    MLP do klasyfikacji emocji na podstawie keypoints + Action Units.
 
-    Architektura:
-        Input (60) → FC(256) → BN → ReLU → Dropout
+    Architektura (z AU):
+        Input (72) → FC(256) → BN → ReLU → Dropout
                    → FC(128) → BN → ReLU → Dropout
                    → FC(64) → BN → ReLU → Dropout
                    → FC → Output (5 klas trenowanych)
+
+    Gdzie Input = Keypoints (60) + Action Units (12) = 72 features
 
     Neutral jest wykrywany przez EmotionModel gdy max(prob) < threshold.
     """
 
     def __init__(
         self,
-        input_dim: int = INPUT_FEATURES,
+        input_dim: int = INPUT_FEATURES,  # 72 z AU, 60 bez
         hidden_dims: list[int] = None,
         num_classes: int = NUM_EMOTIONS_TRAINED,  # 5 klas trenowanych
         dropout: float = 0.3,
@@ -121,7 +141,7 @@ class KeypointsEmotionMLP(nn.Module):
         Inicjalizuje MLP.
 
         Args:
-            input_dim: Wymiar wejsciowy (domyslnie 138)
+            input_dim: Wymiar wejsciowy (72 z AU, 60 bez AU)
             hidden_dims: Wymiary warstw ukrytych
             num_classes: Liczba klas wyjsciowych
             dropout: Prawdopodobienstwo dropout
@@ -196,9 +216,18 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
         Raises:
             FileNotFoundError: Gdy plik z wagami nie istnieje
         """
+        # Inicjalizuj ekstraktor Action Units
+        self._au_extractor = ActionUnitsExtractor() if self.config.use_action_units else None
+
+        # Określ wymiar wejściowy
+        if self.config.use_action_units:
+            input_dim = INPUT_FEATURES  # 72 (keypoints + AU)
+        else:
+            input_dim = INPUT_FEATURES_LEGACY  # 60 (tylko keypoints)
+
         # Utworz model (5 klas trenowanych, neutral przez próg)
         self._model = KeypointsEmotionMLP(
-            input_dim=INPUT_FEATURES,
+            input_dim=input_dim,
             hidden_dims=self.config.hidden_dims,
             num_classes=NUM_EMOTIONS_TRAINED,  # 5 klas
             dropout=self.config.dropout,
@@ -212,14 +241,16 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
             state_dict = torch.load(self.config.weights_path, map_location=device)
             self._model.load_state_dict(state_dict)
             self._model = self._model.to(device)
-            print(f"Model emocji zaladowany: {self.config.weights_path}")
+            au_status = "z Action Units" if self.config.use_action_units else "bez Action Units"
+            print(f"Model emocji zaladowany ({au_status}): {self.config.weights_path}")
         else:
             # Model bez wag - uzyjemy losowych wag (do treningu)
             device = torch.device(
                 self.config.device if torch.cuda.is_available() else "cpu"
             )
             self._model = self._model.to(device)
-            print(f"Model emocji zainicjalizowany (bez wag)")
+            au_status = "z Action Units" if self.config.use_action_units else "bez Action Units"
+            print(f"Model emocji zainicjalizowany ({au_status}, bez wag)")
             print(f"  ! UWAGA: Model wymaga treningu przed uzyciem produkcyjnym")
 
         self._model.eval()
@@ -227,14 +258,14 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
 
     def preprocess(self, keypoints_flat: list[float] | np.ndarray) -> torch.Tensor:
         """
-        Przetwarza keypoints do tensora.
+        Przetwarza keypoints do tensora, opcjonalnie dodając Action Units.
 
         Args:
             keypoints_flat: Lista lub array [x0, y0, v0, x1, y1, v1, ...]
-                           Dlugosc: 138 (46 keypoints * 3)
+                           Dlugosc: 60 (20 keypoints * 3)
 
         Returns:
-            Tensor gotowy do inference
+            Tensor gotowy do inference (60 lub 72 features)
 
         Raises:
             ValueError: Gdy keypoints maja nieprawidlowy format
@@ -245,30 +276,34 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
         if isinstance(keypoints_flat, list):
             keypoints_flat = np.array(keypoints_flat, dtype=np.float32)
 
-        if len(keypoints_flat) != INPUT_FEATURES:
+        if len(keypoints_flat) != KEYPOINTS_FEATURES:
             raise ValueError(
-                f"Oczekiwano {INPUT_FEATURES} wartosci, otrzymano: {len(keypoints_flat)}"
+                f"Oczekiwano {KEYPOINTS_FEATURES} wartosci keypoints, "
+                f"otrzymano: {len(keypoints_flat)}"
             )
 
-        # Normalizacja (opcjonalna - mozna dostosowac)
-        # Zakladamy ze x, y sa w zakresie [0, crop_size]
-        # visibility jest w zakresie [0, 1]
-        tensor = torch.from_numpy(keypoints_flat).float()
+        # Dodaj Action Units jeśli włączone
+        if self.config.use_action_units and self._au_extractor is not None:
+            au_features = extract_action_units(keypoints_flat)
+            features = np.concatenate([keypoints_flat, au_features])
+        else:
+            features = keypoints_flat
 
+        tensor = torch.from_numpy(features).float()
         return tensor.unsqueeze(0)  # Dodaj batch dimension
 
     def predict(self, keypoints_flat: list[float] | np.ndarray) -> EmotionPrediction:
         """
-        Klasyfikuje emocje psa na podstawie keypoints.
+        Klasyfikuje emocje psa na podstawie keypoints i Action Units.
 
         Model zwraca 5 klas trenowanych. Neutral jest wykrywany gdy
         żadna emocja nie ma pewności powyżej neutral_threshold.
 
         Args:
-            keypoints_flat: Keypoints w formacie flat [x0, y0, v0, ...]
+            keypoints_flat: Keypoints w formacie flat [x0, y0, v0, ...] (60 wartości)
 
         Returns:
-            Obiekt EmotionPrediction z wynikami (jedna z 6 klas)
+            Obiekt EmotionPrediction z wynikami (jedna z 6 klas) + Action Units
 
         Raises:
             RuntimeError: Gdy model nie zostal zaladowany
@@ -278,7 +313,16 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
                 "Model nie zostal zaladowany. Wywolaj load() przed predict()."
             )
 
-        # Preprocess
+        if isinstance(keypoints_flat, list):
+            keypoints_flat = np.array(keypoints_flat, dtype=np.float32)
+
+        # Ekstrahuj Action Units (dla wyników, niezależnie od use_action_units)
+        au_values = {}
+        if self._au_extractor is not None:
+            au_prediction = self._au_extractor.extract(keypoints_flat)
+            au_values = au_prediction.values
+
+        # Preprocess (dodaje AU do features jeśli use_action_units=True)
         tensor = self.preprocess(keypoints_flat)
 
         # Przenies na device
@@ -316,6 +360,7 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
                 emotion='neutral',
                 confidence=neutral_confidence,
                 probabilities=probabilities,
+                action_units=au_values,
             )
 
         # Nie neutral - dodaj zerową wartość dla neutral
@@ -326,6 +371,7 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
             emotion=EMOTION_CLASSES_TRAINED[top_idx],
             confidence=top_prob,
             probabilities=probabilities,
+            action_units=au_values,
         )
 
     def predict_from_keypoints_prediction(
