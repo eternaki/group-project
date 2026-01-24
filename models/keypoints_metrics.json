@@ -1,0 +1,6 @@
+{
+  "best_val_pck": 0.746603264258458,
+  "test_pck": 0.754179819424947,
+  "num_keypoints": 46,
+  "epochs": 50
+}

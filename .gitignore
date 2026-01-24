@@ -55,12 +55,12 @@ data/annotations/*
 !data/frames/.gitkeep
 !data/annotations/.gitkeep
 
-# Model weights
-*.pt
-*.pth
+# Model weights (large files NOT tracked - keep in models/ directory)
+# *.pt  # Разрешаем .pt файлы для моделей
+# *.pth
 *.onnx
 *.weights
-/models/
+# /models/  # Разрешаем директорию models/
 
 # Logs
 *.log
