@@ -77,8 +77,8 @@ logs/
 /dvc.lock
 /.dvc/
 
-# AI Agents local settings
-.claude/
+# AI Agents local settings (shared config is allowed)
+.claude/settings.local.json
 .cursor/
 .gemini/
 .windsurf/
