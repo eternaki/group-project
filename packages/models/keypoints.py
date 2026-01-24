@@ -2,7 +2,8 @@
 Model detekcji keypoints na twarzy psa.
 
 Wykrywa 46 kluczowych punktów na twarzy psa używając architektury
-SimpleBaseline (ResNet50 + Deconv Head).
+SimpleBaseline (ResNet50 + Deconv Head), a następnie mapuje je
+do 20 keypoints zgodnie ze specyfikacją projektu.
 """
 
 from dataclasses import dataclass
@@ -16,8 +17,10 @@ from torchvision import transforms
 
 from packages.data.schemas import (
     NUM_KEYPOINTS,
+    NUM_KEYPOINTS_DOGFLW,
     KEYPOINT_NAMES,
     SKELETON_CONNECTIONS,
+    PROJECT_TO_DOGFLW_MAPPING,
     Keypoint,
     KeypointsAnnotation,
     get_keypoint_color,
@@ -37,7 +40,7 @@ class KeypointsConfig(ModelConfig):
 
 @dataclass
 class KeypointsPrediction:
-    """Wynik predykcji keypoints dla jednego obrazu."""
+    """Wynik predykcji keypoints dla jednego obrazu (20 keypoints)."""
 
     keypoints: list[Keypoint]
     confidence: float
@@ -58,10 +61,10 @@ class KeypointsPrediction:
 class SimpleBaselineModel(nn.Module):
     """
     Simple Baseline dla pose estimation.
-    Architektura zgodna z wytrenowanym modelem na Kaggle.
+    Architektura zgodna z wytrenowanym modelem na Kaggle (DogFLW - 46 keypoints).
     """
 
-    def __init__(self, num_keypoints: int = NUM_KEYPOINTS):
+    def __init__(self, num_keypoints: int = NUM_KEYPOINTS_DOGFLW):
         super().__init__()
         import timm
 
@@ -86,7 +89,7 @@ class SimpleBaselineModel(nn.Module):
             nn.ReLU(True),
         )
 
-        # Final conv
+        # Final conv - 46 keypoints z DogFLW
         self.out = nn.Conv2d(256, num_keypoints, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -100,6 +103,9 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
     """
     Model do detekcji keypoints na twarzy psa.
 
+    Wewnętrznie używa modelu DogFLW (46 keypoints),
+    ale zwraca 20 keypoints zgodnie ze specyfikacją projektu.
+
     Użycie:
         config = KeypointsConfig(weights_path="models/keypoints_best.pt")
         model = KeypointsModel(config)
@@ -107,6 +113,7 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
 
         prediction = model.predict(image)
         print(f"Wykryto {prediction.num_detected} keypoints")
+        print(f"Nazwy: {[KEYPOINT_NAMES[i] for i in range(20)]}")
     """
 
     def __init__(self, config: KeypointsConfig) -> None:
@@ -127,7 +134,8 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
 
     def load(self) -> None:
         """Ładuje model z wag."""
-        self.model = SimpleBaselineModel(num_keypoints=NUM_KEYPOINTS)
+        # Model DogFLW ma 46 keypoints
+        self.model = SimpleBaselineModel(num_keypoints=NUM_KEYPOINTS_DOGFLW)
 
         weights_path = Path(self.config.weights_path)
         if weights_path.exists():
@@ -152,7 +160,12 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
         return tensor.unsqueeze(0).to(self.device)
 
     def predict(self, image: np.ndarray) -> KeypointsPrediction:
-        """Wykrywa keypoints na obrazie."""
+        """
+        Wykrywa keypoints na obrazie.
+
+        Zwraca 20 keypoints zgodnie ze specyfikacją projektu
+        (zmapowane z 46 keypoints DogFLW).
+        """
         if not self._loaded:
             raise RuntimeError("Model nie załadowany. Wywołaj load() najpierw.")
 
@@ -163,29 +176,59 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
         with torch.no_grad():
             heatmaps = self.model(tensor)
 
-        keypoints = self._decode_heatmaps(
+        # Dekoduj wszystkie 46 keypoints z DogFLW
+        dogflw_keypoints = self._decode_heatmaps(
             heatmaps[0],
             original_w,
             original_h,
+            num_keypoints=NUM_KEYPOINTS_DOGFLW,
         )
+
+        # Mapuj 46 -> 20 keypoints projektu
+        project_keypoints = self._map_to_project_keypoints(dogflw_keypoints)
 
         visible_count = sum(
-            1 for kp in keypoints if kp.visibility > self.config.confidence_threshold
+            1 for kp in project_keypoints
+            if kp.visibility > self.config.confidence_threshold
         )
-        avg_confidence = np.mean([kp.visibility for kp in keypoints])
+        avg_confidence = np.mean([kp.visibility for kp in project_keypoints])
 
         return KeypointsPrediction(
-            keypoints=keypoints,
+            keypoints=project_keypoints,
             confidence=float(avg_confidence),
             num_detected=visible_count,
         )
+
+    def _map_to_project_keypoints(
+        self,
+        dogflw_keypoints: list[Keypoint],
+    ) -> list[Keypoint]:
+        """
+        Mapuje 46 keypoints DogFLW do 20 keypoints projektu.
+
+        Args:
+            dogflw_keypoints: Lista 46 keypoints z modelu DogFLW
+
+        Returns:
+            Lista 20 keypoints zgodnie ze specyfikacją projektu
+        """
+        project_keypoints = []
+        for project_idx in range(NUM_KEYPOINTS):
+            dogflw_idx = PROJECT_TO_DOGFLW_MAPPING[project_idx]
+            project_keypoints.append(dogflw_keypoints[dogflw_idx])
+        return project_keypoints
 
     def postprocess(self, output: KeypointsPrediction) -> dict:
         """Przetwarza wynik predykcji do formatu słownika."""
         return {
             "keypoints": [
-                {"x": kp.x, "y": kp.y, "visibility": kp.visibility}
-                for kp in output.keypoints
+                {
+                    "name": KEYPOINT_NAMES[i],
+                    "x": kp.x,
+                    "y": kp.y,
+                    "visibility": kp.visibility,
+                }
+                for i, kp in enumerate(output.keypoints)
             ],
             "confidence": output.confidence,
             "num_detected": output.num_detected,
@@ -196,6 +239,7 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
         heatmaps: torch.Tensor,
         target_width: int,
         target_height: int,
+        num_keypoints: int = NUM_KEYPOINTS_DOGFLW,
     ) -> list[Keypoint]:
         """Dekoduje heatmapy do keypoints."""
         hm_height, hm_width = heatmaps.shape[1], heatmaps.shape[2]
@@ -204,7 +248,7 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
 
         keypoints = []
 
-        for k in range(NUM_KEYPOINTS):
+        for k in range(num_keypoints):
             hm = heatmaps[k].cpu().numpy()
 
             max_val = hm.max()
@@ -227,6 +271,7 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
         prediction: KeypointsPrediction,
         draw_skeleton: bool = True,
         radius: int = 3,
+        show_names: bool = False,
     ) -> np.ndarray:
         """Rysuje keypoints na obrazie."""
         from PIL import Image, ImageDraw
@@ -263,5 +308,13 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
                     fill=color,
                     outline=(255, 255, 255),
                 )
+
+                # Opcjonalnie: rysuj nazwy
+                if show_names and k < len(KEYPOINT_NAMES):
+                    draw.text(
+                        (kp.x + radius + 2, kp.y - 5),
+                        KEYPOINT_NAMES[k],
+                        fill=color,
+                    )
 
         return np.array(pil_image)

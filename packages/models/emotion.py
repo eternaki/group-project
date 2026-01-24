@@ -28,7 +28,8 @@ EMOTION_CLASSES = ['happy', 'sad', 'angry', 'fearful', 'relaxed', 'neutral']
 NUM_EMOTIONS = len(EMOTION_CLASSES)
 
 # Liczba cech wejściowych: x, y, visibility dla każdego keypointa
-INPUT_FEATURES = NUM_KEYPOINTS * 3  # 46 * 3 = 138
+# 20 keypoints zgodnie ze specyfikacją projektu
+INPUT_FEATURES = NUM_KEYPOINTS * 3  # 20 * 3 = 60
 
 
 @dataclass
