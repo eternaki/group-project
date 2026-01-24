@@ -23,7 +23,7 @@ KEYPOINT_NAMES: list[str] = [
     "left_ear_base",      # 3 - Base of left ear
     "right_ear_base",     # 4 - Base of right ear
     "left_ear_tip",       # 5 - Tip of left ear
-    "left_ear_tip",       # 6 - Tip of right ear
+    "right_ear_tip",      # 6 - Tip of right ear
     "left_mouth_corner",  # 7 - Left corner of mouth
     "right_mouth_corner", # 8 - Right corner of mouth
     "upper_lip",          # 9 - Center of upper lip
@@ -93,20 +93,53 @@ PROJECT_TO_DOGFLW_MAPPING: dict[int, int] = {
 }
 
 
-# Skeleton connections dla wizualizacji (zgodnie ze specyfikacją)
+# Skeleton connections dla wizualizacji - pełna forma pyska psa
+# Struktura tworzy rozpoznawalny kształt twarzy
 SKELETON_CONNECTIONS: list[tuple[int, int]] = [
-    (0, 1),   # left_eye - right_eye
-    (0, 2),   # left_eye - nose
-    (1, 2),   # right_eye - nose
+    # === Oczy ===
+    (0, 1),   # left_eye - right_eye (linia oczu)
     (0, 15),  # left_eye - left_eyebrow
     (1, 16),  # right_eye - right_eyebrow
+
+    # === Brwi i czoło ===
+    (15, 14),  # left_eyebrow - forehead
+    (16, 14),  # right_eyebrow - forehead
+    (15, 16),  # left_eyebrow - right_eyebrow (linia brwi)
+
+    # === Uszy ===
     (3, 5),   # left_ear_base - left_ear_tip
     (4, 6),   # right_ear_base - right_ear_tip
+    (3, 15),  # left_ear_base - left_eyebrow
+    (4, 16),  # right_ear_base - right_eyebrow
+
+    # === Nos i pysk ===
+    (0, 2),   # left_eye - nose
+    (1, 2),   # right_eye - nose
+    (14, 17), # forehead - muzzle_top (linia środkowa)
+    (17, 2),  # muzzle_top - nose
+    (2, 18),  # nose - muzzle_left
+    (2, 19),  # nose - muzzle_right
+
+    # === Policzki i kontur ===
+    (0, 12),  # left_eye - left_cheek
+    (1, 13),  # right_eye - right_cheek
+    (12, 18), # left_cheek - muzzle_left
+    (13, 19), # right_cheek - muzzle_right
+    (12, 7),  # left_cheek - left_mouth_corner
+    (13, 8),  # right_cheek - right_mouth_corner
+
+    # === Usta ===
+    (7, 9),   # left_mouth_corner - upper_lip
+    (8, 9),   # right_mouth_corner - upper_lip
+    (7, 10),  # left_mouth_corner - lower_lip
+    (8, 10),  # right_mouth_corner - lower_lip
     (2, 9),   # nose - upper_lip
     (9, 10),  # upper_lip - lower_lip
+
+    # === Podbródek ===
     (10, 11), # lower_lip - chin
-    (7, 9),   # left_mouth - upper_lip
-    (8, 9),   # right_mouth - upper_lip
+    (7, 11),  # left_mouth_corner - chin
+    (8, 11),  # right_mouth_corner - chin
 ]
 
 
