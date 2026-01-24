@@ -54,9 +54,24 @@ Full documentation: [docs/plans/2025-01-16-tech-stack.md](docs/plans/2025-01-16-
 ### Quick Start
 
 ```bash
-# Clone repository
+# Install Git LFS (required for model weights)
+# macOS:
+brew install git-lfs
+
+# Ubuntu/Debian:
+sudo apt install git-lfs
+
+# Windows: download from https://git-lfs.github.com
+
+# Initialize Git LFS
+git lfs install
+
+# Clone repository (models will be downloaded automatically)
 git clone https://github.com/eternaki/group-project.git
 cd group-project
+
+# If you already cloned without LFS, pull the models:
+git lfs pull
 
 # Create virtual environment
 python -m venv .venv
