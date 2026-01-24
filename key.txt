@@ -1,0 +1,2 @@
+KAGGLE_USERNAME = "dreadhorse"  # ← Введи свой username
+KAGGLE_KEY = "KGAT_9b0180da358cafd8fdde273e4f84c7cc"  

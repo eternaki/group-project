@@ -41,8 +41,8 @@ sys.path.insert(0, str(project_root))
 
 from packages.models.emotion import (
     KeypointsEmotionMLP,
-    EMOTION_CLASSES,
-    NUM_EMOTIONS,
+    EMOTION_CLASSES_TRAINED,
+    NUM_EMOTIONS_TRAINED_TRAINED,
     INPUT_FEATURES,
 )
 
@@ -105,7 +105,7 @@ def create_synthetic_data(num_samples: int = 1000) -> tuple[np.ndarray, np.ndarr
     print(f"Tworzenie {num_samples} syntetycznych próbek...")
 
     keypoints = np.random.randn(num_samples, INPUT_FEATURES).astype(np.float32)
-    labels = np.random.randint(0, NUM_EMOTIONS, num_samples).astype(np.int64)
+    labels = np.random.randint(0, NUM_EMOTIONS_TRAINED, num_samples).astype(np.int64)
 
     return keypoints, labels
 
@@ -266,7 +266,7 @@ def main() -> None:
     model = KeypointsEmotionMLP(
         input_dim=INPUT_FEATURES,
         hidden_dims=args.hidden_dims,
-        num_classes=NUM_EMOTIONS,
+        num_classes=NUM_EMOTIONS_TRAINED,
         dropout=args.dropout,
     ).to(device)
 
@@ -333,7 +333,7 @@ def main() -> None:
         "dropout": args.dropout,
         "num_train_samples": len(train_dataset),
         "num_val_samples": len(val_dataset),
-        "emotion_classes": EMOTION_CLASSES,
+        "emotion_classes": EMOTION_CLASSES_TRAINED,
         "history": history,
     }
 

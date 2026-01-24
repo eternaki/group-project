@@ -1,11 +1,12 @@
 """
 Model klasyfikacji emocji psów oparty na keypoints.
 
-Klasyfikuje emocje psów na podstawie 46 keypoints z modelu KeypointsModel.
+Klasyfikuje emocje psów na podstawie 20 keypoints z modelu KeypointsModel.
 Zwraca 6 klas emocji: happy, sad, angry, fearful, relaxed, neutral.
 
 Architektura:
-    Keypoints (46 * 3 = 138 features) → MLP → 6 klas emocji
+    Keypoints (20 * 3 = 60 features) → MLP → 5 klas trenowanych
+    Neutral jest wykrywany gdy żadna emocja nie ma wysokiej pewności.
 
 Jest to zgodne z podejściem DogFACS, gdzie emocje są pochodną
 ruchów mięśni twarzy (Action Units), a nie bezpośrednio pikseli.
@@ -23,9 +24,16 @@ from .base import BaseModel, ModelConfig
 from packages.data.schemas import NUM_KEYPOINTS
 
 
-# Klasy emocji (6 klas zgodnie z dokumentacją DogFACS)
-EMOTION_CLASSES = ['happy', 'sad', 'angry', 'fearful', 'relaxed', 'neutral']
+# Klasy emocji trenowane przez model (5 klas z dostępnych datasetów)
+EMOTION_CLASSES_TRAINED = ['happy', 'sad', 'angry', 'fearful', 'relaxed']
+NUM_EMOTIONS_TRAINED = len(EMOTION_CLASSES_TRAINED)
+
+# Wszystkie klasy emocji (6 klas - neutral wykrywany przez próg)
+EMOTION_CLASSES = EMOTION_CLASSES_TRAINED + ['neutral']
 NUM_EMOTIONS = len(EMOTION_CLASSES)
+
+# Indeks klasy neutral
+NEUTRAL_ID = EMOTION_CLASSES.index('neutral')  # 5
 
 # Liczba cech wejściowych: x, y, visibility dla każdego keypointa
 # 20 keypoints zgodnie ze specyfikacją projektu
@@ -42,10 +50,12 @@ class EmotionConfig(ModelConfig):
         device: Urzadzenie ('cuda', 'cpu', etc.)
         hidden_dims: Wymiary warstw ukrytych MLP
         dropout: Prawdopodobienstwo dropout
+        neutral_threshold: Próg pewności poniżej którego emocja = neutral
     """
 
     hidden_dims: list[int] = field(default_factory=lambda: [256, 128, 64])
     dropout: float = 0.3
+    neutral_threshold: float = 0.35  # Jeśli max_prob < 0.35 → neutral
 
 
 @dataclass
@@ -92,14 +102,19 @@ class KeypointsEmotionMLP(nn.Module):
     MLP do klasyfikacji emocji na podstawie keypoints.
 
     Architektura:
-        Input (138) → FC → ReLU → Dropout → FC → ReLU → Dropout → FC → Output (6)
+        Input (60) → FC(256) → BN → ReLU → Dropout
+                   → FC(128) → BN → ReLU → Dropout
+                   → FC(64) → BN → ReLU → Dropout
+                   → FC → Output (5 klas trenowanych)
+
+    Neutral jest wykrywany przez EmotionModel gdy max(prob) < threshold.
     """
 
     def __init__(
         self,
         input_dim: int = INPUT_FEATURES,
         hidden_dims: list[int] = None,
-        num_classes: int = NUM_EMOTIONS,
+        num_classes: int = NUM_EMOTIONS_TRAINED,  # 5 klas trenowanych
         dropout: float = 0.3,
     ) -> None:
         """
@@ -181,11 +196,11 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
         Raises:
             FileNotFoundError: Gdy plik z wagami nie istnieje
         """
-        # Utworz model
+        # Utworz model (5 klas trenowanych, neutral przez próg)
         self._model = KeypointsEmotionMLP(
             input_dim=INPUT_FEATURES,
             hidden_dims=self.config.hidden_dims,
-            num_classes=NUM_EMOTIONS,
+            num_classes=NUM_EMOTIONS_TRAINED,  # 5 klas
             dropout=self.config.dropout,
         )
 
@@ -246,11 +261,14 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
         """
         Klasyfikuje emocje psa na podstawie keypoints.
 
+        Model zwraca 5 klas trenowanych. Neutral jest wykrywany gdy
+        żadna emocja nie ma pewności powyżej neutral_threshold.
+
         Args:
             keypoints_flat: Keypoints w formacie flat [x0, y0, v0, ...]
 
         Returns:
-            Obiekt EmotionPrediction z wynikami
+            Obiekt EmotionPrediction z wynikami (jedna z 6 klas)
 
         Raises:
             RuntimeError: Gdy model nie zostal zaladowany
@@ -270,22 +288,42 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
         # Inference
         with torch.no_grad():
             logits = self._model(tensor)
-            probs = torch.softmax(logits, dim=1)[0]
+            probs = torch.softmax(logits, dim=1)[0]  # 5 prawdopodobieństw
 
-        # Najlepsza predykcja
+        # Najlepsza predykcja z 5 trenowanych klas
         top_prob, top_idx = probs.max(0)
         top_idx = int(top_idx.cpu().numpy())
         top_prob = float(top_prob.cpu().numpy())
 
-        # Wszystkie prawdopodobienstwa
+        # Prawdopodobieństwa dla 5 trenowanych klas
         probabilities = {
-            EMOTION_CLASSES[i]: float(probs[i].cpu().numpy())
-            for i in range(NUM_EMOTIONS)
+            EMOTION_CLASSES_TRAINED[i]: float(probs[i].cpu().numpy())
+            for i in range(NUM_EMOTIONS_TRAINED)
         }
+
+        # Wykryj neutral: jeśli max(prob) < threshold → neutral
+        if top_prob < self.config.neutral_threshold:
+            # Neutral - oblicz "pewność" jako odwrotność max_prob
+            neutral_confidence = 1.0 - top_prob
+            probabilities['neutral'] = neutral_confidence
+            # Przeskaluj pozostałe prawdopodobieństwa
+            scale = (1.0 - neutral_confidence)
+            for emotion in EMOTION_CLASSES_TRAINED:
+                probabilities[emotion] *= scale
+
+            return EmotionPrediction(
+                emotion_id=NEUTRAL_ID,
+                emotion='neutral',
+                confidence=neutral_confidence,
+                probabilities=probabilities,
+            )
+
+        # Nie neutral - dodaj zerową wartość dla neutral
+        probabilities['neutral'] = 0.0
 
         return EmotionPrediction(
             emotion_id=top_idx,
-            emotion=EMOTION_CLASSES[top_idx],
+            emotion=EMOTION_CLASSES_TRAINED[top_idx],
             confidence=top_prob,
             probabilities=probabilities,
         )
