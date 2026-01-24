@@ -1,11 +1,16 @@
 """
-Model klasyfikacji emocji psów oparty na EfficientNet-B0.
+Model klasyfikacji emocji psów oparty na keypoints.
 
-Klasyfikuje emocje psów na podstawie wyciętego obrazu psa.
-Zwraca 4 klasy emocji: sad, angry, relaxed, happy.
+Klasyfikuje emocje psów na podstawie 46 keypoints z modelu KeypointsModel.
+Zwraca 6 klas emocji: happy, sad, angry, fearful, relaxed, neutral.
+
+Architektura:
+    Keypoints (46 * 3 = 138 features) → MLP → 6 klas emocji
+
+Jest to zgodne z podejściem DogFACS, gdzie emocje są pochodną
+ruchów mięśni twarzy (Action Units), a nie bezpośrednio pikseli.
 """
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -15,11 +20,15 @@ import torch
 from torch import nn
 
 from .base import BaseModel, ModelConfig
+from packages.data.schemas import NUM_KEYPOINTS
 
 
-# Klasy emocji
-EMOTION_CLASSES = ['sad', 'angry', 'relaxed', 'happy']
+# Klasy emocji (6 klas zgodnie z dokumentacją DogFACS)
+EMOTION_CLASSES = ['happy', 'sad', 'angry', 'fearful', 'relaxed', 'neutral']
 NUM_EMOTIONS = len(EMOTION_CLASSES)
+
+# Liczba cech wejściowych: x, y, visibility dla każdego keypointa
+INPUT_FEATURES = NUM_KEYPOINTS * 3  # 46 * 3 = 138
 
 
 @dataclass
@@ -28,14 +37,14 @@ class EmotionConfig(ModelConfig):
     Konfiguracja modelu klasyfikacji emocji.
 
     Attributes:
-        weights_path: Ścieżka do wag modelu (.pt)
-        device: Urządzenie ('cuda', 'cpu', etc.)
-        model_name: Nazwa architektury z timm
-        img_size: Rozmiar obrazu wejściowego
+        weights_path: Sciezka do wag modelu (.pt)
+        device: Urzadzenie ('cuda', 'cpu', etc.)
+        hidden_dims: Wymiary warstw ukrytych MLP
+        dropout: Prawdopodobienstwo dropout
     """
 
-    model_name: str = "efficientnet_b0"
-    img_size: int = 224
+    hidden_dims: list[int] = field(default_factory=lambda: [256, 128, 64])
+    dropout: float = 0.3
 
 
 @dataclass
@@ -46,8 +55,8 @@ class EmotionPrediction:
     Attributes:
         emotion_id: ID przewidywanej emocji
         emotion: Nazwa emocji
-        confidence: Pewność predykcji
-        probabilities: Prawdopodobieństwa wszystkich klas
+        confidence: Pewnosc predykcji
+        probabilities: Prawdopodobienstwa wszystkich klas
     """
 
     emotion_id: int
@@ -56,7 +65,7 @@ class EmotionPrediction:
     probabilities: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        """Konwertuje predykcję do słownika."""
+        """Konwertuje predykcje do slownika."""
         return {
             "emotion_id": self.emotion_id,
             "emotion": self.emotion,
@@ -69,7 +78,7 @@ class EmotionPrediction:
         Zwraca dane w formacie kompatybilnym z COCO.
 
         Returns:
-            Słownik z polami emotion i emotion_confidence
+            Slownik z polami emotion i emotion_confidence
         """
         return {
             "emotion": self.emotion,
@@ -77,18 +86,79 @@ class EmotionPrediction:
         }
 
 
+class KeypointsEmotionMLP(nn.Module):
+    """
+    MLP do klasyfikacji emocji na podstawie keypoints.
+
+    Architektura:
+        Input (138) → FC → ReLU → Dropout → FC → ReLU → Dropout → FC → Output (6)
+    """
+
+    def __init__(
+        self,
+        input_dim: int = INPUT_FEATURES,
+        hidden_dims: list[int] = None,
+        num_classes: int = NUM_EMOTIONS,
+        dropout: float = 0.3,
+    ) -> None:
+        """
+        Inicjalizuje MLP.
+
+        Args:
+            input_dim: Wymiar wejsciowy (domyslnie 138)
+            hidden_dims: Wymiary warstw ukrytych
+            num_classes: Liczba klas wyjsciowych
+            dropout: Prawdopodobienstwo dropout
+        """
+        super().__init__()
+
+        if hidden_dims is None:
+            hidden_dims = [256, 128, 64]
+
+        layers = []
+        prev_dim = input_dim
+
+        # Warstwy ukryte
+        for hidden_dim in hidden_dims:
+            layers.extend([
+                nn.Linear(prev_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+            ])
+            prev_dim = hidden_dim
+
+        # Warstwa wyjsciowa
+        layers.append(nn.Linear(prev_dim, num_classes))
+
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass.
+
+        Args:
+            x: Tensor o ksztalcie (batch, 138)
+
+        Returns:
+            Logity o ksztalcie (batch, 6)
+        """
+        return self.network(x)
+
+
 class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
     """
-    Model klasyfikacji emocji psów oparty na EfficientNet-B0.
+    Model klasyfikacji emocji psów oparty na keypoints.
 
-    Używa modelu fine-tunowanego na datasecie Dog Emotion.
+    Uzywa MLP do klasyfikacji emocji na podstawie 46 keypoints.
+    Jest to zgodne z podejsciem DogFACS.
 
     Example:
-        >>> config = EmotionConfig(weights_path="models/emotion.pt")
+        >>> config = EmotionConfig(weights_path="models/emotion_keypoints.pt")
         >>> model = EmotionModel(config)
         >>> model.load()
-        >>> cropped_dog = image[y:y+h, x:x+w]
-        >>> prediction = model.predict(cropped_dog)
+        >>> # keypoints_flat: [x0, y0, v0, x1, y1, v1, ..., x45, y45, v45]
+        >>> prediction = model.predict(keypoints_flat)
         >>> print(f"Emotion: {prediction.emotion} ({prediction.confidence:.2%})")
     """
 
@@ -102,117 +172,97 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
         super().__init__(config)
         self.config: EmotionConfig = config
         self._model: Optional[nn.Module] = None
-        self._transform: Optional[object] = None
 
     def load(self) -> None:
         """
-        Ładuje model EfficientNet.
+        Laduje model MLP.
 
         Raises:
             FileNotFoundError: Gdy plik z wagami nie istnieje
-            ImportError: Gdy timm nie jest zainstalowany
         """
-        if not self.config.weights_path.exists():
-            raise FileNotFoundError(
-                f"Nie znaleziono wag modelu: {self.config.weights_path}"
-            )
-
-        # Import timm
-        try:
-            import timm
-        except ImportError as e:
-            raise ImportError(
-                "Biblioteka timm nie jest zainstalowana. "
-                "Zainstaluj: pip install timm"
-            ) from e
-
-        # Import torchvision transforms
-        try:
-            from torchvision import transforms
-        except ImportError as e:
-            raise ImportError(
-                "Biblioteka torchvision nie jest zainstalowana. "
-                "Zainstaluj: pip install torchvision"
-            ) from e
-
-        # Utwórz model
-        self._model = timm.create_model(
-            self.config.model_name,
-            pretrained=False,
+        # Utworz model
+        self._model = KeypointsEmotionMLP(
+            input_dim=INPUT_FEATURES,
+            hidden_dims=self.config.hidden_dims,
             num_classes=NUM_EMOTIONS,
+            dropout=self.config.dropout,
         )
 
-        # Załaduj wagi
-        device = torch.device(
-            self.config.device if torch.cuda.is_available() else "cpu"
-        )
-        state_dict = torch.load(self.config.weights_path, map_location=device)
-        self._model.load_state_dict(state_dict)
-        self._model = self._model.to(device)
+        # Zaladuj wagi jesli istnieja
+        if self.config.weights_path.exists():
+            device = torch.device(
+                self.config.device if torch.cuda.is_available() else "cpu"
+            )
+            state_dict = torch.load(self.config.weights_path, map_location=device)
+            self._model.load_state_dict(state_dict)
+            self._model = self._model.to(device)
+            print(f"Model emocji zaladowany: {self.config.weights_path}")
+        else:
+            # Model bez wag - uzyjemy losowych wag (do treningu)
+            device = torch.device(
+                self.config.device if torch.cuda.is_available() else "cpu"
+            )
+            self._model = self._model.to(device)
+            print(f"Model emocji zainicjalizowany (bez wag)")
+            print(f"  ! UWAGA: Model wymaga treningu przed uzyciem produkcyjnym")
+
         self._model.eval()
-
-        # Przygotuj transformacje
-        self._transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((self.config.img_size, self.config.img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225],
-            ),
-        ])
-
         self._loaded = True
-        print(f"Model emocji załadowany: {self.config.weights_path}")
 
-    def preprocess(self, image: np.ndarray) -> torch.Tensor:
+    def preprocess(self, keypoints_flat: list[float] | np.ndarray) -> torch.Tensor:
         """
-        Przetwarza obraz do tensora.
+        Przetwarza keypoints do tensora.
 
         Args:
-            image: Obraz jako numpy array (BGR lub RGB)
+            keypoints_flat: Lista lub array [x0, y0, v0, x1, y1, v1, ...]
+                           Dlugosc: 138 (46 keypoints * 3)
 
         Returns:
             Tensor gotowy do inference
 
         Raises:
-            ValueError: Gdy obraz jest nieprawidłowy
+            ValueError: Gdy keypoints maja nieprawidlowy format
         """
-        if image is None or image.size == 0:
-            raise ValueError("Obraz nie może być pusty")
+        if keypoints_flat is None:
+            raise ValueError("Keypoints nie moga byc None")
 
-        if len(image.shape) != 3:
+        if isinstance(keypoints_flat, list):
+            keypoints_flat = np.array(keypoints_flat, dtype=np.float32)
+
+        if len(keypoints_flat) != INPUT_FEATURES:
             raise ValueError(
-                f"Obraz musi mieć 3 wymiary (H, W, C), otrzymano: {image.shape}"
+                f"Oczekiwano {INPUT_FEATURES} wartosci, otrzymano: {len(keypoints_flat)}"
             )
 
-        # Zastosuj transformacje
-        tensor = self._transform(image)
+        # Normalizacja (opcjonalna - mozna dostosowac)
+        # Zakladamy ze x, y sa w zakresie [0, crop_size]
+        # visibility jest w zakresie [0, 1]
+        tensor = torch.from_numpy(keypoints_flat).float()
 
         return tensor.unsqueeze(0)  # Dodaj batch dimension
 
-    def predict(self, image: np.ndarray) -> EmotionPrediction:
+    def predict(self, keypoints_flat: list[float] | np.ndarray) -> EmotionPrediction:
         """
-        Klasyfikuje emocję psa na obrazie.
+        Klasyfikuje emocje psa na podstawie keypoints.
 
         Args:
-            image: Wycięty obraz psa jako numpy array
+            keypoints_flat: Keypoints w formacie flat [x0, y0, v0, ...]
 
         Returns:
             Obiekt EmotionPrediction z wynikami
 
         Raises:
-            RuntimeError: Gdy model nie został załadowany
+            RuntimeError: Gdy model nie zostal zaladowany
         """
         if not self._loaded or self._model is None:
             raise RuntimeError(
-                "Model nie został załadowany. Wywołaj load() przed predict()."
+                "Model nie zostal zaladowany. Wywolaj load() przed predict()."
             )
 
         # Preprocess
-        tensor = self.preprocess(image)
+        tensor = self.preprocess(keypoints_flat)
 
-        # Przenieś na device
+        # Przenies na device
         device = next(self._model.parameters()).device
         tensor = tensor.to(device)
 
@@ -226,7 +276,7 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
         top_idx = int(top_idx.cpu().numpy())
         top_prob = float(top_prob.cpu().numpy())
 
-        # Wszystkie prawdopodobieństwa
+        # Wszystkie prawdopodobienstwa
         probabilities = {
             EMOTION_CLASSES[i]: float(probs[i].cpu().numpy())
             for i in range(NUM_EMOTIONS)
@@ -239,21 +289,38 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
             probabilities=probabilities,
         )
 
+    def predict_from_keypoints_prediction(
+        self,
+        keypoints_prediction: "KeypointsPrediction",
+    ) -> EmotionPrediction:
+        """
+        Klasyfikuje emocje na podstawie obiektu KeypointsPrediction.
+
+        Args:
+            keypoints_prediction: Obiekt KeypointsPrediction z modelu keypoints
+
+        Returns:
+            Obiekt EmotionPrediction z wynikami
+        """
+        # Konwertuj do formatu flat
+        keypoints_flat = keypoints_prediction.to_coco_format()
+        return self.predict(keypoints_flat)
+
     def postprocess(self, prediction: EmotionPrediction) -> dict:
         """
-        Konwertuje predykcję do słownika.
+        Konwertuje predykcje do slownika.
 
         Args:
             prediction: Obiekt EmotionPrediction
 
         Returns:
-            Słownik z wynikami
+            Slownik z wynikami
         """
         return prediction.to_dict()
 
     def get_emotion_name(self, emotion_id: int) -> str:
         """
-        Zwraca nazwę emocji dla danego ID.
+        Zwraca nazwe emocji dla danego ID.
 
         Args:
             emotion_id: ID emocji
@@ -264,3 +331,10 @@ class EmotionModel(BaseModel[np.ndarray, EmotionPrediction]):
         if 0 <= emotion_id < NUM_EMOTIONS:
             return EMOTION_CLASSES[emotion_id]
         return f"Unknown_{emotion_id}"
+
+
+# Import dla type hints
+try:
+    from .keypoints import KeypointsPrediction
+except ImportError:
+    pass

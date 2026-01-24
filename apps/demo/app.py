@@ -269,7 +269,9 @@ def render_dog_details(result: FrameResult):
                         "happy": "😊",
                         "sad": "😢",
                         "angry": "😠",
+                        "fearful": "😨",
                         "relaxed": "😌",
+                        "neutral": "😐",
                     }
                     emoji = emotion_emoji.get(ann.emotion.emotion, "🐕")
                     st.write(f"**{emoji} {ann.emotion.emotion.upper()}**")

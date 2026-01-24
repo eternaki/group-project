@@ -369,10 +369,13 @@ class InferencePipeline:
                 except Exception as e:
                     print(f"  ! Błąd detekcji keypoints: {e}")
 
-            # Klasyfikacja emocji
-            if self.emotion_model is not None:
+            # Klasyfikacja emocji (na podstawie keypoints)
+            if self.emotion_model is not None and annotation.keypoints is not None:
                 try:
-                    emotion_pred = self.emotion_model.predict(cropped)
+                    # Nowa architektura: emotion bazuje na keypoints
+                    emotion_pred = self.emotion_model.predict_from_keypoints_prediction(
+                        annotation.keypoints
+                    )
                     annotation.emotion = emotion_pred
                 except Exception as e:
                     print(f"  ! Błąd klasyfikacji emocji: {e}")
