@@ -423,3 +423,205 @@ try:
     from .keypoints import KeypointsPrediction
 except ImportError:
     pass
+
+
+# =============================================================================
+# RULE-BASED EMOTION CLASSIFICATION (DogFACS approach)
+# =============================================================================
+
+# Mapowanie naszych AU na AU z planu (QUICK_IMPLEMENTATION_PLAN.md)
+# Nasze AU → Plan AU:
+#   AU_brow_raise → AU101 (Inner Brow Raiser)
+#   AU_eye_opening → AU145 inverted (Blink = 1 - eye_opening)
+#   AU_mouth_open → AU25 (Lips Part)
+#   AU_jaw_drop → AU26 (Jaw Drop)
+#   AU_nose_wrinkle → AU301 (Nose Wrinkler)
+#   AU_lip_corner_pull → AU401 (Upper Lip Raiser)
+#   AU_ear_forward → EAD102 (Ears Forward)
+#   AU_ear_back → EAD103 (Ears Flattener/Back)
+#   AU_ear_asymmetry → EAD104 (Ears Rotator)
+#   AD137 (Nose Lick) - trudne do detekcji z keypoints, używamy proxy
+
+
+def classify_emotion_from_au(
+    au_values: dict[str, float],
+    neutral_threshold: float = 0.35,
+) -> EmotionPrediction:
+    """
+    Rule-based klasyfikacja emocji na podstawie Action Units.
+
+    Używa wzorów z QUICK_IMPLEMENTATION_PLAN.md opartych na badaniach
+    DogFACS (Mota-Rojas et al. 2021).
+
+    NIE wymaga treningu - oparta na regułach naukowych.
+
+    Args:
+        au_values: Słownik AU_name → wartość (0-1)
+        neutral_threshold: Próg poniżej którego emocja = neutral
+
+    Returns:
+        EmotionPrediction z przewidywaną emocją
+
+    Example:
+        >>> au_values = {
+        ...     'AU_brow_raise': 0.3,
+        ...     'AU_ear_forward': 0.8,
+        ...     'AU_mouth_open': 0.6,
+        ...     # ... pozostałe AU
+        ... }
+        >>> prediction = classify_emotion_from_au(au_values)
+        >>> print(f"Emotion: {prediction.emotion}")
+    """
+    # Pobierz wartości AU (z domyślnym 0.0 jeśli brak)
+    brow_raise = au_values.get('AU_brow_raise', 0.0)       # AU101
+    eye_opening = au_values.get('AU_eye_opening', 0.5)     # AU145 = 1 - eye_opening
+    mouth_open = au_values.get('AU_mouth_open', 0.0)       # AU25
+    jaw_drop = au_values.get('AU_jaw_drop', 0.0)           # AU26
+    nose_wrinkle = au_values.get('AU_nose_wrinkle', 0.0)   # AU301
+    lip_corner_pull = au_values.get('AU_lip_corner_pull', 0.0)  # AU401
+    ear_forward = au_values.get('AU_ear_forward', 0.0)     # EAD102
+    ear_back = au_values.get('AU_ear_back', 0.0)           # EAD103
+    ear_asymmetry = au_values.get('AU_ear_asymmetry', 0.0) # EAD104
+
+    # AU145 (Blink) = 1 - eye_opening
+    blink = 1.0 - eye_opening
+
+    # AD137 (Nose Lick) - proxy: używamy kombinacji mouth_open i jaw_drop
+    # Lizanie zwykle wiąże się z ruchem ust bez pełnego otwarcia szczęki
+    nose_lick = max(0.0, mouth_open * 0.5 - jaw_drop * 0.3)
+
+    # Oblicz średnią aktywację AU (dla relaxed i neutral)
+    all_au_values = [
+        brow_raise, blink, mouth_open, jaw_drop, nose_wrinkle,
+        lip_corner_pull, ear_forward, ear_back, ear_asymmetry, nose_lick
+    ]
+    mean_activation = sum(all_au_values) / len(all_au_values)
+
+    # ==========================================================================
+    # SCORING EMOCJI (wg QUICK_IMPLEMENTATION_PLAN.md)
+    # ==========================================================================
+
+    # HAPPY: Otwarty puch, uszy do przodu, brwi uniesione
+    happy_score = (
+        mouth_open * 0.35 +           # AU25 - Rót otwarty
+        ear_forward * 0.25 +          # EAD102 - Uszy do przodu
+        brow_raise * 0.15 +           # AU101 - Brwi uniesione
+        (1 - ear_back) * 0.15 +       # Uszy NIE są płaskie
+        (1 - nose_lick) * 0.10        # Brak stresu (lizania)
+    )
+
+    # SAD: Uszy płaskie, zamknięte oczy, zamknięty pysk
+    sad_score = (
+        ear_back * 0.40 +             # EAD103 - Uszy płaskie
+        blink * 0.15 +                # AU145 - Przymknięte oczy
+        (1 - brow_raise) * 0.15 +     # Brwi NIE uniesione
+        (1 - mouth_open) * 0.15 +     # Pysk zamknięty
+        nose_lick * 0.15              # Lizanie (stres)
+    )
+
+    # ANGRY: Otwarta paszcza, obnażone zęby, zmarszczony nos
+    angry_score = (
+        ((mouth_open + jaw_drop) / 2) * 0.30 +  # Otwarta paszcza
+        lip_corner_pull * 0.25 +       # AU401 - Obnażone zęby
+        nose_wrinkle * 0.15 +          # AU301 - Zmarszczony nos
+        ((ear_back + ear_asymmetry) / 2) * 0.15 +  # Uszy w pozycji agresji
+        blink * 0.15                   # Zmrużone oczy
+    )
+
+    # FEARFUL: Uszy płaskie, lizanie (główny wskaźnik stresu), mruganie
+    fearful_score = (
+        ear_back * 0.30 +              # EAD103 - Uszy płaskie
+        nose_lick * 0.25 +             # AD137 - Lizanie (GŁÓWNY wskaźnik stresu)
+        blink * 0.20 +                 # AU145 - Częste mruganie
+        brow_raise * 0.12 +            # AU101 - Brwi uniesione (zaskoczenie)
+        (1 - mouth_open) * 0.13        # Pysk zamknięty
+    )
+
+    # RELAXED: Minimalna aktywacja wszystkich AU
+    relaxed_score = (
+        (1 - mean_activation) * 0.50 +  # Minimalna aktywacja
+        (1 - ear_back) * 0.15 +         # Uszy NIE płaskie
+        (1 - ear_forward) * 0.15 +      # Uszy NIE do przodu (neutralne)
+        (1 - nose_lick) * 0.10 +        # Brak stresu
+        (1 - nose_wrinkle) * 0.10       # Nos NIE zmarszczony
+    )
+
+    # NEUTRAL: Baseline - bardzo niska aktywacja
+    neutral_score = (
+        (1 - mean_activation) * 0.70 +
+        (1 - (mouth_open + jaw_drop) / 2) * 0.15 +
+        (1 - (ear_back + ear_forward) / 2) * 0.15
+    )
+
+    # ==========================================================================
+    # NORMALIZACJA I WYBÓR EMOCJI
+    # ==========================================================================
+
+    scores = {
+        'happy': happy_score,
+        'sad': sad_score,
+        'angry': angry_score,
+        'fearful': fearful_score,
+        'relaxed': relaxed_score,
+        'neutral': neutral_score,
+    }
+
+    # Softmax-like normalizacja do prawdopodobieństw
+    # Używamy temperature=2.0 dla bardziej "pewnych" predykcji
+    temperature = 2.0
+    exp_scores = {k: np.exp(v * temperature) for k, v in scores.items()}
+    total_exp = sum(exp_scores.values())
+    probabilities = {k: v / total_exp for k, v in exp_scores.items()}
+
+    # Znajdź najlepszą emocję
+    best_emotion = max(probabilities, key=probabilities.get)
+    best_prob = probabilities[best_emotion]
+
+    # Jeśli pewność jest za niska → neutral
+    if best_prob < neutral_threshold and best_emotion != 'neutral':
+        best_emotion = 'neutral'
+        best_prob = probabilities['neutral']
+
+    # Znajdź emotion_id
+    emotion_id = EMOTION_CLASSES.index(best_emotion)
+
+    return EmotionPrediction(
+        emotion_id=emotion_id,
+        emotion=best_emotion,
+        confidence=best_prob,
+        probabilities=probabilities,
+        action_units=au_values,
+    )
+
+
+def classify_emotion_from_keypoints(
+    keypoints_flat: np.ndarray,
+    neutral_threshold: float = 0.35,
+) -> EmotionPrediction:
+    """
+    Rule-based klasyfikacja emocji bezpośrednio z keypoints.
+
+    Convenience function łącząca ekstrakcję AU i klasyfikację.
+
+    Args:
+        keypoints_flat: Array [x0, y0, v0, ...] (60 wartości)
+        neutral_threshold: Próg dla neutral
+
+    Returns:
+        EmotionPrediction
+
+    Example:
+        >>> keypoints = np.array([...])  # 60 wartości
+        >>> prediction = classify_emotion_from_keypoints(keypoints)
+    """
+    # Ekstrahuj AU z keypoints
+    au_prediction = extract_action_units(keypoints_flat)
+
+    # Konwertuj numpy array na dict
+    au_dict = {
+        ACTION_UNIT_NAMES[i]: float(au_prediction[i])
+        for i in range(len(ACTION_UNIT_NAMES))
+    }
+
+    # Klasyfikuj
+    return classify_emotion_from_au(au_dict, neutral_threshold)

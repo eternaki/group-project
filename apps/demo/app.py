@@ -61,12 +61,13 @@ def load_pipeline(confidence_threshold: float = 0.3) -> InferencePipeline:
     config = PipelineConfig(
         bbox_weights=project_root / "models" / "yolov8m.pt",
         breed_weights=project_root / "models" / "breed.pt",
-        keypoints_weights=project_root / "models" / "keypoints_best.pt",
+        keypoints_weights=project_root / "models" / "keypoints_dogflw.pt",
         emotion_weights=project_root / "models" / "emotion.pt",
         breeds_json=project_root / "packages" / "models" / "breeds.json",
         device="cpu",
         confidence_threshold=confidence_threshold,
         max_dogs=10,
+        use_rule_based_emotion=True,  # Rule-based emotion (DogFACS)
     )
 
     pipeline = InferencePipeline(config)

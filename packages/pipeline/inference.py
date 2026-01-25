@@ -27,6 +27,7 @@ from packages.models import (
     EmotionConfig,
     EmotionModel,
     EmotionPrediction,
+    classify_emotion_from_keypoints,
 )
 
 
@@ -49,7 +50,7 @@ class PipelineConfig:
     bbox_weights: Path = field(default_factory=lambda: Path("models/yolov8m.pt"))
     breed_weights: Path = field(default_factory=lambda: Path("models/breed.pt"))
     keypoints_weights: Path = field(
-        default_factory=lambda: Path("models/keypoints_best.pt")
+        default_factory=lambda: Path("models/keypoints_dogflw.pt")
     )
     emotion_weights: Path = field(default_factory=lambda: Path("models/emotion.pt"))
     breeds_json: Path = field(
@@ -58,6 +59,7 @@ class PipelineConfig:
     device: str = "cuda"
     confidence_threshold: float = 0.3
     max_dogs: int = 10
+    use_rule_based_emotion: bool = True  # Rule-based emotion (nie wymaga treningu)
 
     def __post_init__(self) -> None:
         """Konwertuje ścieżki do Path."""
@@ -281,8 +283,12 @@ class InferencePipeline:
             print(f"  ! Brak wag: {self.config.keypoints_weights}")
 
         # 4. Emotion model
-        print("\n[4/4] Ładowanie modelu emocji...")
-        if self.config.emotion_weights.exists():
+        print("\n[4/4] Konfiguracja klasyfikacji emocji...")
+        if self.config.use_rule_based_emotion:
+            print("  → Używam RULE-BASED classification (DogFACS)")
+            print("  → Nie wymaga wytrenowanego modelu!")
+            self.emotion_model = None  # Rule-based nie potrzebuje modelu
+        elif self.config.emotion_weights.exists():
             emotion_config = EmotionConfig(
                 weights_path=self.config.emotion_weights,
                 device=self.config.device,
@@ -370,13 +376,22 @@ class InferencePipeline:
                     print(f"  ! Błąd detekcji keypoints: {e}")
 
             # Klasyfikacja emocji (na podstawie keypoints)
-            if self.emotion_model is not None and annotation.keypoints is not None:
+            if annotation.keypoints is not None:
                 try:
-                    # Nowa architektura: emotion bazuje na keypoints
-                    emotion_pred = self.emotion_model.predict_from_keypoints_prediction(
-                        annotation.keypoints
-                    )
-                    annotation.emotion = emotion_pred
+                    if self.config.use_rule_based_emotion:
+                        # Rule-based: keypoints → AU → emotion (bez treningu!)
+                        keypoints_flat = annotation.keypoints.to_coco_format()
+                        import numpy as np
+                        emotion_pred = classify_emotion_from_keypoints(
+                            np.array(keypoints_flat, dtype=np.float32)
+                        )
+                        annotation.emotion = emotion_pred
+                    elif self.emotion_model is not None:
+                        # MLP-based: wymaga wytrenowanego modelu
+                        emotion_pred = self.emotion_model.predict_from_keypoints_prediction(
+                            annotation.keypoints
+                        )
+                        annotation.emotion = emotion_pred
                 except Exception as e:
                     print(f"  ! Błąd klasyfikacji emocji: {e}")
 

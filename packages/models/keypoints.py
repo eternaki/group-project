@@ -32,7 +32,7 @@ from packages.models.base import BaseModel, ModelConfig
 class KeypointsConfig(ModelConfig):
     """Konfiguracja modelu keypoints."""
 
-    model_name: str = "resnet50"
+    model_name: str = "resnet34"  # ResNet34 zgodny z Kaggle
     img_size: int = 256
     heatmap_size: int = 64
     confidence_threshold: float = 0.15  # Niższy próg dla lepszej wizualizacji
@@ -63,41 +63,47 @@ class SimpleBaselineModel(nn.Module):
     """
     Simple Baseline dla pose estimation.
     Architektura zgodna z wytrenowanym modelem na Kaggle (DogFLW - 46 keypoints).
+
+    Używa ResNet34 backbone + Deconv head.
     """
 
-    def __init__(self, num_keypoints: int = NUM_KEYPOINTS_DOGFLW):
+    def __init__(self, num_keypoints: int = NUM_KEYPOINTS_DOGFLW, backbone: str = "resnet34"):
         super().__init__()
         import timm
 
-        # Backbone - używamy nazwy 'bb' jak w treningu
-        self.bb = timm.create_model(
-            "resnet50",
+        # Backbone - ResNet34 (512 channels) zgodny z Kaggle
+        self.backbone = timm.create_model(
+            backbone,
             pretrained=False,
             features_only=True,
             out_indices=[-1],
         )
 
-        # Deconv head - nazwy zgodne z treningiem
-        self.head = nn.Sequential(
-            nn.ConvTranspose2d(2048, 256, 4, 2, 1),
+        # Określ liczbę kanałów wyjściowych backbone
+        # ResNet34: 512, ResNet50: 2048
+        in_channels = 512 if "34" in backbone or "18" in backbone else 2048
+
+        # Deconv head - nazwy zgodne z Kaggle
+        self.deconv = nn.Sequential(
+            nn.ConvTranspose2d(in_channels, 256, 4, 2, 1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
-            nn.ConvTranspose2d(256, 256, 4, 2, 1),
+            nn.ConvTranspose2d(256, 256, 4, 2, 1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
-            nn.ConvTranspose2d(256, 256, 4, 2, 1),
+            nn.ConvTranspose2d(256, 256, 4, 2, 1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
         )
 
         # Final conv - 46 keypoints z DogFLW
-        self.out = nn.Conv2d(256, num_keypoints, 1)
+        self.head = nn.Conv2d(256, num_keypoints, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass - zwraca heatmapy."""
-        x = self.bb(x)[-1]
-        x = self.head(x)
-        return self.out(x)
+        features = self.backbone(x)[-1]
+        x = self.deconv(features)
+        return self.head(x)
 
 
 class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
@@ -135,14 +141,17 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
 
     def load(self) -> None:
         """Ładuje model z wag."""
-        # Model DogFLW ma 46 keypoints
-        self.model = SimpleBaselineModel(num_keypoints=NUM_KEYPOINTS_DOGFLW)
+        # Model DogFLW ma 46 keypoints, używa ResNet34
+        self.model = SimpleBaselineModel(
+            num_keypoints=NUM_KEYPOINTS_DOGFLW,
+            backbone=self.config.model_name,
+        )
 
         weights_path = Path(self.config.weights_path)
         if weights_path.exists():
             state_dict = torch.load(weights_path, map_location=self.device)
             self.model.load_state_dict(state_dict)
-            print(f"Wagi załadowane: {weights_path}")
+            print(f"Wagi załadowane: {weights_path} (backbone: {self.config.model_name})")
         else:
             print(f"Wagi nie znalezione: {weights_path}")
 

@@ -42,7 +42,7 @@ sys.path.insert(0, str(project_root))
 from packages.models.emotion import (
     KeypointsEmotionMLP,
     EMOTION_CLASSES_TRAINED,
-    NUM_EMOTIONS_TRAINED_TRAINED,
+    NUM_EMOTIONS_TRAINED,
     INPUT_FEATURES,
 )
 
