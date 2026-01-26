@@ -1,506 +1,358 @@
-# Instrukcja Testowania - Dog FACS Dataset
+# Інструкція з тестування DogFACS Dataset Generator
 
-Ten dokument opisuje jak przetestować wszystkie komponenty projektu.
+Цей документ містить інструкції для тестування всіх компонентів проекту.
 
 ---
 
 ## Spis treści
 
-1. [Wymagania](#1-wymagania)
-2. [Instalacja](#2-instalacja)
-3. [Testy jednostkowe](#3-testy-jednostkowe)
-4. [Testy modułów](#4-testy-modułów)
-5. [Testy aplikacji](#5-testy-aplikacji)
-6. [Testy skryptów](#6-testy-skryptów)
-7. [Testy end-to-end](#7-testy-end-to-end)
-8. [Checklist testowania](#8-checklist-testowania)
-9. [Rozwiązywanie problemów](#9-rozwiązywanie-problemów)
+1. [Швидкий старт (bez pytest)](#1-швидкий-старт-без-pytest)
+2. [Повний набір тестів (pytest)](#2-повний-набір-тестів-pytest)
+3. [Тестування FastAPI Backend](#3-тестування-fastapi-backend)
+4. [Тестування React Frontend](#4-тестування-react-frontend)
+5. [Перевірка валідації COCO](#5-перевірка-валідації-coco)
+6. [Troubleshooting](#6-troubleshooting)
+7. [Статус тестового покриття](#7-статус-тестового-покриття)
 
 ---
 
-## 1. Wymagania
+## 1. Швидкий старт (без pytest)
 
-### 1.1 Wymagania systemowe
-
-| Komponent | Minimum | Zalecane |
-|-----------|---------|----------|
-| Python | 3.10+ | 3.11+ |
-| RAM | 8 GB | 16 GB |
-| GPU | - | NVIDIA RTX 3060+ |
-| Dysk | 10 GB | 50 GB |
-
-### 1.2 Wymagane pakiety
+Якщо у вас немає pytest або виникають проблеми з установкою, використовуйте простий test runner:
 
 ```bash
-# Podstawowe
-pip install -e .
-
-# Pełne (z dev dependencies)
-pip install -e ".[dev,download,notebooks]"
+python test_runner.py
 ```
 
----
+Цей скрипт виконує 6 основних тестів:
+1. ✅ Перевірка імпортів (всі модулі завантажуються)
+2. ✅ Валідація EMOTION_RULES (6 правил)
+3. ✅ Валідація ACTION_UNIT_NAMES (12 офіційних DogFACS кодів)
+4. ✅ Тест DogFACSRuleEngine (класифікація емоцій)
+5. ✅ Тест NeutralFrameDetector (автодетекція нейтрального фрейму)
+6. ✅ Тест DeltaActionUnitsExtractor (обчислення delta AU)
 
-## 2. Instalacja
-
-### 2.1 Klonowanie repozytorium
-
-```bash
-git clone https://github.com/eternaki/group-project.git
-cd group-project
-git checkout develop
+**Очікуваний результат:**
 ```
+=== Запуск базових тестів DogFACS ===
 
-### 2.2 Utworzenie środowiska wirtualnego
+[Test 1/6] Перевірка імпортів...
+✅ Всі імпорти успішні
 
-```bash
-python3 -m venv venv
-source venv/bin/activate  # Linux/macOS
-# lub
-.\venv\Scripts\activate  # Windows
-```
+[Test 2/6] Перевірка EMOTION_RULES...
+✅ EMOTION_RULES: 6 правил
 
-### 2.3 Instalacja zależności
+[Test 3/6] Перевірка ACTION_UNIT_NAMES...
+✅ ACTION_UNIT_NAMES: 12 AU
 
-```bash
-pip install --upgrade pip
-pip install -e ".[dev,download,notebooks]"
-```
+[Test 4/6] Тест DogFACSRuleEngine...
+✅ DogFACSRuleEngine працює коректно
 
-### 2.4 Weryfikacja instalacji
+[Test 5/6] Тест NeutralFrameDetector...
+✅ NeutralFrameDetector працює коректно
 
-```bash
-python3 -c "import packages; print('✅ Pakiet zainstalowany poprawnie')"
-```
+[Test 6/6] Тест DeltaActionUnitsExtractor...
+✅ DeltaActionUnitsExtractor працює коректно
 
-**Oczekiwany wynik:** `✅ Pakiet zainstalowany poprawnie`
-
----
-
-## 3. Testy jednostkowe
-
-### 3.1 Uruchomienie wszystkich testów
-
-```bash
-pytest tests/ -v
-```
-
-**Oczekiwany wynik:** Wszystkie testy przechodzą (zielone)
-
-### 3.2 Uruchomienie testów z pokryciem
-
-```bash
-pytest tests/ --cov=packages --cov-report=html
-```
-
-**Oczekiwany wynik:** Raport HTML w `htmlcov/index.html`
-
-### 3.3 Testy pojedynczych modułów
-
-```bash
-# Testy modelu bbox
-pytest tests/test_models/test_bbox.py -v
-
-# Testy modelu breed
-pytest tests/test_models/test_breed.py -v
+=== Результат ===
+✅ Всі тести пройдені: 6/6
 ```
 
 ---
 
-## 4. Testy modułów
+## 2. Повний набір тестів (pytest)
 
-### 4.1 Test importów
-
-Uruchom poniższy skrypt, aby sprawdzić czy wszystkie moduły importują się poprawnie:
+### Установка pytest
 
 ```bash
-python3 << 'EOF'
-print("Testowanie importów...")
-
-# Modele
-try:
-    from packages.models import BBoxModel, BreedModel, KeypointModel, EmotionModel
-    print("✅ packages.models - OK")
-except Exception as e:
-    print(f"❌ packages.models - BŁĄD: {e}")
-
-# Pipeline
-try:
-    from packages.pipeline import InferencePipeline, VideoProcessor
-    print("✅ packages.pipeline - OK")
-except Exception as e:
-    print(f"❌ packages.pipeline - BŁĄD: {e}")
-
-# Data
-try:
-    from packages.data import COCODataset, COCOWriter
-    print("✅ packages.data - OK")
-except Exception as e:
-    print(f"❌ packages.data - BŁĄD: {e}")
-
-print("\nWszystkie importy zakończone.")
-EOF
+pip install pytest pytest-cov
 ```
 
-**Oczekiwany wynik:**
-```
-Testowanie importów...
-✅ packages.models - OK
-✅ packages.pipeline - OK
-✅ packages.data - OK
-Wszystkie importy zakończone.
-```
-
-### 4.2 Test modelu BBox (stub mode)
+### Запуск всіх тестів
 
 ```bash
-python3 << 'EOF'
-from packages.models import BBoxModel
-import numpy as np
+# Всі тести
+pytest
 
-model = BBoxModel()
-print(f"Model załadowany: {model}")
-print(f"Device: {model.device}")
+# З детальним виводом
+pytest -v
 
-# Test z dummy obrazem
-dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
-results = model.predict(dummy_image)
-print(f"Wynik predykcji (stub): {len(results)} detekcji")
-print("✅ BBoxModel działa poprawnie")
-EOF
+# З покриттям коду
+pytest --cov=packages --cov-report=html
+
+# Тільки тести для models
+pytest tests/test_models/
+
+# Тільки тести для pipeline
+pytest tests/test_pipeline/
 ```
 
-### 4.3 Test modelu Breed (stub mode)
+### Очікувані результати
 
 ```bash
-python3 << 'EOF'
-from packages.models import BreedModel
-import numpy as np
+$ pytest -v
 
-model = BreedModel()
-print(f"Model załadowany: {model}")
-print(f"Liczba klas: {model.num_classes}")
+tests/test_models/test_emotion_rules.py::test_emotion_rules_exist PASSED
+tests/test_models/test_emotion_rules.py::test_happy_rule PASSED
+tests/test_models/test_emotion_rules.py::test_angry_rule PASSED
+tests/test_models/test_delta_action_units.py::test_delta_au_no_change PASSED
+tests/test_models/test_delta_action_units.py::test_delta_au_increase PASSED
+tests/test_pipeline/test_neutral_frame.py::test_auto_detect PASSED
+tests/test_pipeline/test_peak_selector.py::test_select_peaks PASSED
+tests/test_data/test_coco.py::test_dogfacs_extensions PASSED
 
-# Test z dummy obrazem
-dummy_crop = np.zeros((224, 224, 3), dtype=np.uint8)
-breed, confidence = model.predict(dummy_crop)
-print(f"Wynik: {breed} ({confidence:.2f})")
-print("✅ BreedModel działa poprawnie")
-EOF
-```
-
-### 4.4 Test Pipeline (stub mode)
-
-```bash
-python3 << 'EOF'
-from packages.pipeline import InferencePipeline
-import numpy as np
-
-pipeline = InferencePipeline()
-print(f"Pipeline załadowany")
-
-# Test z dummy obrazem
-dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
-results = pipeline.process_image(dummy_image)
-print(f"Wynik pipeline: {len(results)} detekcji")
-print("✅ InferencePipeline działa poprawnie")
-EOF
+======================== 12 passed in 0.45s ========================
 ```
 
 ---
 
-## 5. Testy aplikacji
+## 3. Тестування FastAPI Backend
 
-### 5.1 Aplikacja Demo (Streamlit)
+### 1. Health Check
 
 ```bash
-streamlit run apps/demo/app.py
+# Запустіть backend
+cd apps/webapp/backend
+python main.py
 ```
 
-**Oczekiwany wynik:**
-1. Otworzy się przeglądarka na `http://localhost:8501`
-2. Widoczny interfejs z:
-   - Opcją uploadu obrazu
-   - Opcją uploadu wideo
-   - Slidery dla parametrów
-3. Po uploadzie obrazu - wizualizacja wyników
-
-**Test manualny:**
-- [ ] Aplikacja uruchamia się bez błędów
-- [ ] Można uploadować obraz JPG/PNG
-- [ ] Wyniki są wyświetlane (bbox, keypoints, emocje)
-- [ ] Można pobrać COCO JSON
-
-### 5.2 Aplikacja Weryfikacji
+У іншому терміналі:
 
 ```bash
-streamlit run apps/verification/app.py
+# Перевірка здоров'я API
+curl http://localhost:8000/api/health
 ```
 
-**Oczekiwany wynik:**
-1. Interfejs do weryfikacji anotacji
-2. Przyciski Accept/Correct/Reject
-
----
-
-## 6. Testy skryptów
-
-### 6.1 Skrypty do pobierania danych
-
-```bash
-# Sprawdzenie pomocy (bez pobierania)
-python3 scripts/download/download_videos.py --help
-python3 scripts/download/preprocess_videos.py --help
-python3 scripts/download/collection_tracker.py --help
-```
-
-**Oczekiwany wynik:** Wyświetla się pomoc dla każdego skryptu
-
-### 6.2 Skrypty anotacji
-
-```bash
-python3 scripts/annotation/batch_annotate.py --help
-python3 scripts/annotation/quality_monitor.py --help
-python3 scripts/annotation/merge_annotations.py --help
-python3 scripts/annotation/validate_coco.py --help
-python3 scripts/annotation/export_dataset.py --help
-```
-
-### 6.3 Skrypty weryfikacji
-
-```bash
-python3 scripts/verification/sample_selector.py --help
-python3 scripts/verification/agreement_calculator.py --help
-```
-
-### 6.4 Skrypty treningu
-
-```bash
-python3 scripts/training/prepare_bbox_data.py --help
-python3 scripts/training/train_bbox.py --help
-python3 scripts/training/evaluate_bbox.py --help
-python3 scripts/training/prepare_breed_data.py --help
-python3 scripts/training/train_breed.py --help
-python3 scripts/training/evaluate_breed.py --help
-```
-
----
-
-## 7. Testy end-to-end
-
-### 7.1 Test pełnego pipeline'u z obrazem
-
-```bash
-# Pobierz testowy obraz
-curl -o test_dog.jpg "https://images.unsplash.com/photo-1587300003388-59208cc962cb?w=640"
-
-# Uruchom test pipeline'u
-python3 scripts/demo/test_pipeline.py --image test_dog.jpg --output test_output.json
-
-# Sprawdź wynik
-cat test_output.json | python3 -m json.tool | head -50
-```
-
-**Oczekiwany wynik:** Plik JSON z strukturą COCO
-
-### 7.2 Test walidacji COCO
-
-```bash
-# Stwórz przykładowy plik COCO
-python3 << 'EOF'
-import json
-
-coco = {
-    "images": [
-        {"id": 1, "file_name": "test.jpg", "width": 640, "height": 480}
-    ],
-    "annotations": [
-        {
-            "id": 1,
-            "image_id": 1,
-            "category_id": 1,
-            "bbox": [100, 100, 200, 150],
-            "area": 30000,
-            "iscrowd": 0
-        }
-    ],
-    "categories": [
-        {"id": 1, "name": "dog", "supercategory": "animal"}
-    ]
+**Очікувана відповідь:**
+```json
+{
+  "status": "ok",
+  "pipeline_loaded": true
 }
-
-with open("test_coco.json", "w") as f:
-    json.dump(coco, f, indent=2)
-
-print("Utworzono test_coco.json")
-EOF
-
-# Waliduj
-python3 scripts/annotation/validate_coco.py --input test_coco.json --report
 ```
 
-**Oczekiwany wynik:** Raport walidacji bez błędów
-
-### 7.3 Test COCO Reader/Writer
+### 2. Тест обробки відео
 
 ```bash
-python3 << 'EOF'
-from packages.data import COCODataset, COCOWriter
-import tempfile
-import os
+curl -X POST http://localhost:8000/api/process_video \
+  -F "file=@test_video.mp4" \
+  -F "num_peaks=10" \
+  -F "min_separation_frames=30"
+```
 
-# Test writer
-writer = COCOWriter()
-writer.add_image(1, "test.jpg", 640, 480)
-writer.add_annotation(
-    annotation_id=1,
-    image_id=1,
-    category_id=1,
-    bbox=[100, 100, 200, 150]
-)
-writer.add_category(1, "dog", "animal")
+**Очікувана відповідь:**
+```json
+{
+  "session_id": "abc123",
+  "video_filename": "test_video.mp4",
+  "neutral_frame_idx": 42,
+  "neutral_frame_url": "/static/abc123/frame_0042.jpg",
+  "peak_frames": [
+    {
+      "frame_idx": 100,
+      "image_url": "/static/abc123/frame_0100.jpg",
+      "aus": {
+        "AU101": {
+          "ratio": 1.15,
+          "delta": 0.15,
+          "is_active": true,
+          "confidence": 0.9
+        }
+      },
+      "emotion": "happy",
+      "emotion_confidence": 0.85,
+      "tfm_score": 2.345
+    }
+  ],
+  "total_frames": 600
+}
+```
 
-# Zapisz
-with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-    temp_path = f.name
-    writer.save(temp_path)
-    print(f"Zapisano do: {temp_path}")
+### 3. Тест експорту COCO
 
-# Odczytaj
-dataset = COCODataset(temp_path)
-print(f"Obrazów: {len(dataset.images)}")
-print(f"Anotacji: {len(dataset.annotations)}")
-print(f"Kategorii: {len(dataset.categories)}")
-
-# Cleanup
-os.unlink(temp_path)
-print("✅ COCO Reader/Writer działa poprawnie")
-EOF
+```bash
+curl -X POST http://localhost:8000/api/export_coco \
+  -H "Content-Type: application/json" \
+  -d @export_request.json \
+  --output dataset.json
 ```
 
 ---
 
-## 8. Checklist testowania
+## 4. Тестування React Frontend
 
-### 8.1 Podstawowe testy
+### 1. Запуск dev сервера
 
-- [ ] `pip install -e .` - instalacja bez błędów
-- [ ] `pytest tests/ -v` - wszystkie testy przechodzą
-- [ ] Import wszystkich modułów działa
-- [ ] Aplikacja demo uruchamia się
+```bash
+cd apps/webapp/frontend
+npm install
+npm run dev
+```
 
-### 8.2 Testy modeli (stub mode)
+Відкрийте браузер: `http://localhost:5173`
 
-- [ ] BBoxModel - predict() zwraca listę
-- [ ] BreedModel - predict() zwraca (breed, confidence)
-- [ ] KeypointModel - predict() zwraca keypoints
-- [ ] EmotionModel - predict() zwraca emotion
+### 2. E2E тестування (ручне)
 
-### 8.3 Testy aplikacji
+#### Крок 1: Upload Video
+- ✅ Натисніть "Choose Video" або перетягніть MP4 файл
+- ✅ Перевірте, що з'явилася назва файлу
+- ✅ Кнопка "Process Video" активна
 
-- [ ] `streamlit run apps/demo/app.py` - działa
-- [ ] `streamlit run apps/verification/app.py` - działa
-- [ ] Upload obrazu w demo - wizualizacja wyników
-- [ ] Eksport COCO JSON - poprawna struktura
+#### Крок 2: Process Video
+- ✅ Натисніть "Process Video"
+- ✅ З'явився loader "Processing..."
+- ✅ Після обробки (30-60 сек) з'являються:
+  - Neutral frame (зелений маркер)
+  - 10 peak frames (червоні маркери)
+  - Grid з картками фреймів
 
-### 8.4 Testy skryptów CLI
+#### Крок 3: Review Peak Frames
+Для кожної картки перевірте:
+- ✅ Зображення фрейму відображається
+- ✅ 12 чекбоксів AU (AU101, AU12, EAD102, ...)
+- ✅ Активні AU позначені галочкою
+- ✅ Показані значення ratio (наприклад, 1.15)
+- ✅ Емоція відображається з emoji
+- ✅ Confidence та TFM score показані
 
-- [ ] Wszystkie skrypty w `scripts/` mają działający `--help`
-- [ ] `validate_coco.py` waliduje poprawne pliki
+#### Крок 4: Toggle AU
+- ✅ Натисніть чекбокс AU12 (Lip Corner Puller)
+- ✅ Емоція змінилася в реальному часі
+- ✅ Confidence оновилося
 
-### 8.5 Testy dokumentacji
+#### Крок 5: Export Dataset
+- ✅ Натисніть "Export COCO Dataset"
+- ✅ Файл JSON завантажився
 
-- [ ] README.md jest aktualny
-- [ ] CLAUDE.md zawiera instrukcje dla AI
-- [ ] `docs/` zawiera dokumentację techniczną
+#### Крок 6: Reset
+- ✅ Натисніть "Reset"
+- ✅ Всі дані очистилися
+- ✅ Можна завантажити нове відео
 
 ---
 
-## 9. Rozwiązywanie problemów
+## 5. Перевірка валідації COCO
 
-### 9.1 ModuleNotFoundError
-
-**Problem:** `ModuleNotFoundError: No module named 'packages'`
-
-**Rozwiązanie:**
 ```bash
+# Валідація експортованого датасету
+python scripts/annotation/validate_coco.py exported_dataset.json
+
+# Strict mode (всі попередження = помилки)
+python scripts/annotation/validate_coco.py exported_dataset.json --strict
+```
+
+**Очікуваний результат:**
+```
+=== COCO Annotation Validation ===
+File: exported_dataset.json
+
+✅ Schema validation passed
+✅ Image IDs are unique
+✅ Annotation IDs are unique
+✅ All annotations reference valid images
+✅ Bounding boxes are valid
+✅ Keypoints are valid
+✅ DogFACS extensions present: 10 annotations
+
+Statistics:
+  Total images: 10
+  Total annotations: 10
+  Annotations with AU analysis: 10
+  Unique emotion rules: 4
+
+Emotion distribution:
+  happy: 4
+  angry: 2
+  fearful: 2
+  relaxed: 2
+
+✅ Validation completed successfully
+```
+
+---
+
+## 6. Troubleshooting
+
+### Backend не стартує
+
+**Помилка:** `ModuleNotFoundError: No module named 'packages'`
+
+**Рішення:**
+```bash
+# Встановіть пакет в editable mode
 pip install -e .
 ```
 
-### 9.2 CUDA not available
+### Frontend не підключається до backend
 
-**Problem:** PyTorch nie wykrywa GPU
+**Помилка:** `Network Error` або `ERR_CONNECTION_REFUSED`
 
-**Rozwiązanie:**
+**Рішення:**
 ```bash
-# Sprawdź wersję CUDA
-nvidia-smi
+# Перевірте, що backend запущений
+curl http://localhost:8000/api/health
 
-# Zainstaluj PyTorch z CUDA
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# Перевірте Vite proxy в vite.config.ts
 ```
 
-### 9.3 Streamlit nie uruchamia się
+### CORS errors
 
-**Problem:** Port 8501 zajęty
+**Помилка:** `Access-Control-Allow-Origin` error
 
-**Rozwiązanie:**
-```bash
-streamlit run apps/demo/app.py --server.port 8502
+**Рішення:** Перевірте CORS налаштування в `backend/main.py`:
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 ```
 
-### 9.4 yt-dlp nie działa
+### Модель не завантажується
 
-**Problem:** Błędy przy pobieraniu wideo
+**Помилка:** `FileNotFoundError: models/yolov8m.pt`
 
-**Rozwiązanie:**
+**Рішення:**
 ```bash
-pip install --upgrade yt-dlp
+python scripts/download/download_models.py
 ```
 
-### 9.5 Testy nie przechodzą
+### Тести падають з ImportError
 
-**Problem:** pytest zwraca błędy
+**Помилка:** `ImportError: cannot import name 'EmotionConfig'`
 
-**Rozwiązanie:**
+**Рішення:** Переконайтесь, що ви на актуальній версії коду:
 ```bash
-# Sprawdź wersje pakietów
-pip list | grep -E "torch|pytest|numpy"
-
-# Reinstaluj dev dependencies
-pip install -e ".[dev]" --force-reinstall
+git pull origin sprint-7
 ```
 
 ---
 
-## 10. Struktura testów
+## 7. Статус тестового покриття
 
-```
-tests/
-├── test_models/
-│   ├── __init__.py
-│   ├── test_bbox.py      # Testy detekcji
-│   └── test_breed.py     # Testy klasyfikacji ras
-├── test_pipeline/
-│   └── test_inference.py # Testy pipeline'u
-└── test_data/
-    └── test_coco.py      # Testy formatu COCO
-```
+| Модуль | Тести | Статус |
+|--------|-------|--------|
+| models/emotion.py | ✅ | Rule-based імплементація |
+| models/delta_action_units.py | ✅ | Delta AU calculation |
+| pipeline/neutral_frame.py | ✅ | Auto-detection |
+| pipeline/peak_selector.py | ✅ | Peak selection |
+| data/coco.py | ✅ | DogFACS extensions |
+| webapp/backend/main.py | ⚠️ | Потрібні API тести |
+| webapp/frontend/* | ❌ | Потрібні unit тести |
 
----
-
-## 11. Raportowanie błędów
-
-Jeśli znajdziesz błąd:
-
-1. Sprawdź czy błąd nie jest już zgłoszony w Issues
-2. Utwórz nowe Issue z:
-   - Opisem błędu
-   - Krokami do reprodukcji
-   - Oczekiwanym vs faktycznym zachowaniem
-   - Wersją Python i systemu operacyjnego
-   - Pełnym traceback'iem błędu
+**Легенда:**
+- ✅ = Добре покриття
+- ⚠️ = Часткове покриття
+- ❌ = Немає тестів
 
 ---
 
-*Dokument wygenerowany automatycznie. Ostatnia aktualizacja: Styczeń 2026*
+## Контакти
+
+- Linear: https://linear.app/team/DOG
+- GitHub: https://github.com/pg-weti/dog-facs
+
+---
+
+*Документ оновлено: Січень 2026 (Sprint 7 - DogFACS Dataset Generator)*
