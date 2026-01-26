@@ -268,10 +268,53 @@ class COCOValidator:
                 if abs(area - expected_area) > 1:
                     result.add_warning(f"Anotacja {ann_id}: area nie zgadza się z bbox")
 
+            # Walidacja DogFACS extensions (opcjonalne)
+            if "au_analysis" in ann:
+                au_analysis = ann.get("au_analysis")
+                if not isinstance(au_analysis, dict):
+                    result.add_error(f"Anotacja {ann_id}: au_analysis powinno być dict")
+                elif self.strict:
+                    # Sprawdź czy wszystkie wartości są float
+                    for au_name, au_value in au_analysis.items():
+                        if not isinstance(au_value, (int, float)):
+                            result.add_warning(f"Anotacja {ann_id}: {au_name} powinno być numeryczne")
+
+            if "neutral_frame_id" in ann:
+                neutral_frame_id = ann.get("neutral_frame_id")
+                if self.strict and neutral_frame_id not in valid_image_ids:
+                    result.add_warning(
+                        f"Anotacja {ann_id}: neutral_frame_id {neutral_frame_id} "
+                        "nie odnosi się do istniejącego obrazu"
+                    )
+
+            if "emotion_rule_applied" in ann:
+                emotion_rule = ann.get("emotion_rule_applied")
+                if not isinstance(emotion_rule, str):
+                    result.add_warning(f"Anotacja {ann_id}: emotion_rule_applied powinno być string")
+
         result.info["total_annotations"] = len(annotations)
         result.info["unique_annotation_ids"] = len(annotation_ids)
         result.info["orphan_annotations"] = orphan_count
         result.info["invalid_category_refs"] = invalid_category_count
+
+        # DogFACS dataset extensions statistics
+        dogfacs_count = 0
+        emotion_rules_count = {}
+        au_count = 0
+
+        for ann in annotations:
+            if "au_analysis" in ann:
+                au_count += 1
+                dogfacs_count += 1
+
+            if "emotion_rule_applied" in ann:
+                rule = ann["emotion_rule_applied"]
+                emotion_rules_count[rule] = emotion_rules_count.get(rule, 0) + 1
+
+        if dogfacs_count > 0:
+            result.info["dogfacs_annotations"] = dogfacs_count
+            result.info["annotations_with_au_analysis"] = au_count
+            result.info["unique_emotion_rules"] = len(emotion_rules_count)
 
         if orphan_count > 0:
             result.add_warning(f"Znaleziono {orphan_count} anotacji bez odpowiadających obrazów")
