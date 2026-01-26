@@ -273,6 +273,18 @@ Emotion distribution:
 
 ## 6. Troubleshooting
 
+### NumPy compatibility error
+
+**Помилка:** `AttributeError: _ARRAY_API not found` або `numpy.core.multiarray failed to import`
+
+**Причина:** OpenCV скомпільований з NumPy 1.x, потрібен downgrade
+
+**Рішення:**
+```bash
+pip install "numpy<2" --force-reinstall
+pip install opencv-python --force-reinstall
+```
+
 ### Backend не стартує
 
 **Помилка:** `ModuleNotFoundError: No module named 'packages'`

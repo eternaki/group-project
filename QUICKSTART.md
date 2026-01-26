@@ -58,6 +58,17 @@ Frontend буде на: `http://localhost:5173`
 
 ## Troubleshooting
 
+### NumPy compatibility error with OpenCV
+**Error:** `AttributeError: _ARRAY_API not found` або `numpy.core.multiarray failed to import`
+
+**Причина:** OpenCV скомпільований з NumPy 1.x, а встановлена NumPy 2.x
+
+**Рішення:**
+```bash
+pip install "numpy<2" --force-reinstall
+pip install opencv-python --force-reinstall
+```
+
 ### ModuleNotFoundError: No module named 'fastapi'
 ```bash
 pip install -r apps/webapp/backend/requirements.txt
