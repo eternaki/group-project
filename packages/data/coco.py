@@ -185,6 +185,9 @@ class COCODataset:
         emotion_name: Optional[str] = None,
         confidence: Optional[dict[str, float]] = None,
         iscrowd: int = 0,
+        au_analysis: Optional[dict[str, float]] = None,
+        neutral_frame_id: Optional[int] = None,
+        emotion_rule_applied: Optional[str] = None,
         **extra_fields,
     ) -> int:
         """
@@ -201,6 +204,9 @@ class COCODataset:
             emotion_name: Nazwa emocji
             confidence: Słownik z pewnością {"bbox": 0.95, ...}
             iscrowd: Czy to tłum (domyślnie 0)
+            au_analysis: Analiza Action Units {"AU101": 0.15, "AU12": 0.25, ...}
+            neutral_frame_id: ID neutral frame (reference do image_id)
+            emotion_rule_applied: Nazwa zastosowanej reguły emocji
             **extra_fields: Dodatkowe pola
 
         Returns:
@@ -250,6 +256,14 @@ class COCODataset:
         if confidence:
             ann_dict["confidence"] = confidence
 
+        # DogFACS Dataset Generator extensions
+        if au_analysis:
+            ann_dict["au_analysis"] = au_analysis
+        if neutral_frame_id is not None:
+            ann_dict["neutral_frame_id"] = neutral_frame_id
+        if emotion_rule_applied:
+            ann_dict["emotion_rule_applied"] = emotion_rule_applied
+
         ann_dict.update(extra_fields)
         self._annotations.append(ann_dict)
 
@@ -287,9 +301,17 @@ class COCODataset:
         # Emotion
         emotion_id = None
         emotion_name = None
+        emotion_rule_applied = None
+        au_analysis = None
         if dog_annotation.emotion:
             emotion_id = dog_annotation.emotion.emotion_id
             emotion_name = dog_annotation.emotion.emotion
+            # DogFACS extensions
+            if dog_annotation.emotion.rule_applied:
+                emotion_rule_applied = dog_annotation.emotion.rule_applied
+            if dog_annotation.emotion.action_units:
+                # Extract delta values for AU analysis
+                au_analysis = dog_annotation.emotion.action_units.copy()
 
         # Confidence
         confidence = {"bbox": dog_annotation.bbox_confidence}
@@ -310,6 +332,8 @@ class COCODataset:
             emotion_id=emotion_id,
             emotion_name=emotion_name,
             confidence=confidence,
+            au_analysis=au_analysis,
+            emotion_rule_applied=emotion_rule_applied,
         )
 
     def to_dict(self) -> dict:
@@ -460,6 +484,8 @@ class COCODataset:
             "annotations_per_image": {},
             "breeds": {},
             "emotions": {},
+            "emotion_rules": {},
+            "action_units": {},
         }
 
         # Anotacje per obraz
@@ -484,5 +510,30 @@ class COCODataset:
         for ann in self._annotations:
             emotion = ann.get("emotion", "unknown")
             stats["emotions"][emotion] = stats["emotions"].get(emotion, 0) + 1
+
+        # Emotion rules (DogFACS extension)
+        for ann in self._annotations:
+            rule = ann.get("emotion_rule_applied")
+            if rule:
+                stats["emotion_rules"][rule] = stats["emotion_rules"].get(rule, 0) + 1
+
+        # Action Units (DogFACS extension)
+        for ann in self._annotations:
+            au_analysis = ann.get("au_analysis", {})
+            for au_name, au_value in au_analysis.items():
+                if au_name not in stats["action_units"]:
+                    stats["action_units"][au_name] = {
+                        "count": 0,
+                        "total_delta": 0.0,
+                        "avg_delta": 0.0,
+                    }
+                stats["action_units"][au_name]["count"] += 1
+                stats["action_units"][au_name]["total_delta"] += au_value
+
+        # Oblicz średnie dla AU
+        for au_name in stats["action_units"]:
+            count = stats["action_units"][au_name]["count"]
+            total = stats["action_units"][au_name]["total_delta"]
+            stats["action_units"][au_name]["avg_delta"] = total / count if count > 0 else 0.0
 
         return stats
