@@ -24,8 +24,6 @@ from packages.models import (
     KeypointsConfig,
     KeypointsModel,
     KeypointsPrediction,
-    EmotionConfig,
-    EmotionModel,
     EmotionPrediction,
     classify_emotion_from_keypoints,
 )
@@ -228,7 +226,7 @@ class InferencePipeline:
         self.bbox_model: Optional[BBoxModel] = None
         self.breed_model: Optional[BreedModel] = None
         self.keypoints_model: Optional[KeypointsModel] = None
-        self.emotion_model: Optional[EmotionModel] = None
+        # Emotion: rule-based only (no ML model needed)
 
     @property
     def is_loaded(self) -> bool:
@@ -282,21 +280,10 @@ class InferencePipeline:
         else:
             print(f"  ! Brak wag: {self.config.keypoints_weights}")
 
-        # 4. Emotion model
+        # 4. Emotion classification (Rule-based only, NO ML)
         print("\n[4/4] Konfiguracja klasyfikacji emocji...")
-        if self.config.use_rule_based_emotion:
-            print("  → Używam RULE-BASED classification (DogFACS)")
-            print("  → Nie wymaga wytrenowanego modelu!")
-            self.emotion_model = None  # Rule-based nie potrzebuje modelu
-        elif self.config.emotion_weights.exists():
-            emotion_config = EmotionConfig(
-                weights_path=self.config.emotion_weights,
-                device=self.config.device,
-            )
-            self.emotion_model = EmotionModel(emotion_config)
-            self.emotion_model.load()
-        else:
-            print(f"  ! Brak wag: {self.config.emotion_weights}")
+        print("  → Używam RULE-BASED classification (DogFACS)")
+        print("  → Nie wymaga wytrenowanego modelu!")
 
         self._models_loaded = True
         print("\n" + "=" * 60)
@@ -375,23 +362,15 @@ class InferencePipeline:
                 except Exception as e:
                     print(f"  ! Błąd detekcji keypoints: {e}")
 
-            # Klasyfikacja emocji (na podstawie keypoints)
+            # Klasyfikacja emocji (rule-based: keypoints → AU → emotion)
             if annotation.keypoints is not None:
                 try:
-                    if self.config.use_rule_based_emotion:
-                        # Rule-based: keypoints → AU → emotion (bez treningu!)
-                        keypoints_flat = annotation.keypoints.to_coco_format()
-                        import numpy as np
-                        emotion_pred = classify_emotion_from_keypoints(
-                            np.array(keypoints_flat, dtype=np.float32)
-                        )
-                        annotation.emotion = emotion_pred
-                    elif self.emotion_model is not None:
-                        # MLP-based: wymaga wytrenowanego modelu
-                        emotion_pred = self.emotion_model.predict_from_keypoints_prediction(
-                            annotation.keypoints
-                        )
-                        annotation.emotion = emotion_pred
+                    keypoints_flat = annotation.keypoints.to_coco_format()
+                    import numpy as np
+                    emotion_pred = classify_emotion_from_keypoints(
+                        np.array(keypoints_flat, dtype=np.float32)
+                    )
+                    annotation.emotion = emotion_pred
                 except Exception as e:
                     print(f"  ! Błąd klasyfikacji emocji: {e}")
 

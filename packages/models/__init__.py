@@ -5,7 +5,7 @@ Zawiera:
 - BBoxModel: Detekcja psów (YOLOv8)
 - BreedModel: Klasyfikacja ras (EfficientNet-B4)
 - KeypointsModel: Detekcja punktów kluczowych (SimpleBaseline)
-- EmotionModel: Klasyfikacja emocji (MLP lub Rule-based)
+- DogFACSRuleEngine: Rule-based emotion classification (NO ML)
 - HeadPose: Estymacja pozycji głowy (filtrowanie nie-frontalnych)
 - ActionUnits: Ekstrakcja Action Units z keypoints
 """
@@ -15,13 +15,15 @@ from .bbox import BBoxConfig, BBoxModel, Detection
 from .breed import BreedConfig, BreedModel, BreedPrediction
 from .keypoints import KeypointsConfig, KeypointsModel, KeypointsPrediction
 from .emotion import (
-    EmotionConfig,
-    EmotionModel,
     EmotionPrediction,
+    EmotionRule,
+    DogFACSRuleEngine,
     EMOTION_CLASSES,
     NUM_EMOTIONS,
+    EMOTION_RULES,
     classify_emotion_from_au,
     classify_emotion_from_keypoints,
+    classify_emotion_from_delta_aus,
 )
 from .head_pose import (
     HeadPose,
@@ -53,14 +55,16 @@ __all__ = [
     "KeypointsConfig",
     "KeypointsModel",
     "KeypointsPrediction",
-    # Emotion
-    "EmotionConfig",
-    "EmotionModel",
+    # Emotion (Rule-based only, NO ML)
     "EmotionPrediction",
+    "EmotionRule",
+    "DogFACSRuleEngine",
     "EMOTION_CLASSES",
     "NUM_EMOTIONS",
+    "EMOTION_RULES",
     "classify_emotion_from_au",
     "classify_emotion_from_keypoints",
+    "classify_emotion_from_delta_aus",
     # Head Pose
     "HeadPose",
     "HeadPoseEstimator",
