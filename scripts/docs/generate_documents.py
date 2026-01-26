@@ -454,16 +454,17 @@ pipeline.export_coco(results, "output.json")"""
         self.add_title("3.1 Architektura systemu", level=3)
         self.add_paragraph(
             "System składa się z trzech warstw:\n\n"
-            "1. Warstwa prezentacji (Streamlit App)\n"
-            "   - Interfejs użytkownika do uploadu i wizualizacji\n\n"
+            "1. Warstwa prezentacji (React + FastAPI)\n"
+            "   - React frontend: upload wideo, wizualizacja peak frames\n"
+            "   - FastAPI backend: przetwarzanie wideo, eksport COCO\n\n"
             "2. Warstwa logiki (Pipeline Layer)\n"
             "   - BBoxModel: detekcja psów (YOLOv8)\n"
             "   - BreedModel: klasyfikacja ras (EfficientNet-B4)\n"
             "   - KeypointModel: punkty kluczowe (SimpleBaseline)\n"
-            "   - EmotionModel: klasyfikacja emocji (EfficientNet-B0)\n\n"
+            "   - DogFACSRuleEngine: rule-based klasyfikacja emocji (NO ML)\n\n"
             "3. Warstwa danych (Data Layer)\n"
-            "   - COCOReader: odczyt datasetu\n"
-            "   - COCOWriter: zapis anotacji"
+            "   - COCODataset: eksport datasetu z DogFACS extensions\n"
+            "   - Validator: walidacja COCO JSON"
         )
 
         self.add_title("3.2 Struktura katalogów", level=3)
