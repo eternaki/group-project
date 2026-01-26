@@ -82,19 +82,27 @@ async def startup_event():
     print("ŁADOWANIE DOGFACS DATASET GENERATOR")
     print("=" * 60)
 
-    config = PipelineConfig(
-        bbox_weights=Path("models/yolov8m.pt"),
-        breed_weights=Path("models/breed.pt"),
-        keypoints_weights=Path("models/keypoints_dogflw.pt"),
-        device="cpu",  # Użyj CPU dla stabilności
-        use_rule_based_emotion=True,  # Rule-based emotion
-    )
+    try:
+        config = PipelineConfig(
+            bbox_weights=Path("models/yolov8m.pt"),
+            breed_weights=Path("models/breed.pt"),
+            keypoints_weights=Path("models/keypoints_dogflw.pt"),
+            device="cpu",  # Użyj CPU dla stabilności
+            use_rule_based_emotion=True,  # Rule-based emotion
+        )
 
-    pipeline = InferencePipeline(config)
-    pipeline.load()
+        pipeline = InferencePipeline(config)
+        pipeline.load()
 
-    print("\n✅ Pipeline załadowany - API gotowe!")
-    print("=" * 60 + "\n")
+        print("\n✅ Pipeline załadowany - API gotowe!")
+        print("=" * 60 + "\n")
+    except FileNotFoundError as e:
+        print(f"\n⚠️  BRAK MODELI: {e}")
+        print("\nAby pobrać modele, uruchom:")
+        print("  python scripts/download/download_models.py")
+        print("\nBackend działa w STUB MODE - API dostępne, ale bez modeli.")
+        print("=" * 60 + "\n")
+        pipeline = None
 
 
 @app.get("/api/health")
@@ -190,7 +198,10 @@ async def process_video(
         JSON z neutral_frame_idx, peak_frames, total_frames
     """
     if pipeline is None or not pipeline.is_loaded:
-        raise HTTPException(status_code=503, detail="Pipeline nie załadowany")
+        raise HTTPException(
+            status_code=503,
+            detail="Pipeline nie załadowany. Uruchom: python scripts/download/download_models.py"
+        )
 
     # Zapisz uploaded file do temp
     suffix = Path(file.filename).suffix
