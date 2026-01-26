@@ -399,6 +399,242 @@ class InferencePipeline:
 
         return result
 
+    def process_video_for_dataset(
+        self,
+        frames_list: list[np.ndarray],
+        num_peaks: int = 10,
+        neutral_idx: Optional[int] = None,
+        min_separation_frames: int = 30,
+    ) -> dict:
+        """
+        Przetwarza sekwencję wideo do generowania datasetu.
+
+        Pipeline dla dataset generation:
+        1. Wykryj keypoints dla wszystkich klatek
+        2. Auto-detekcja neutral frame (lub użyj podanego)
+        3. Oblicz delta AU dla wszystkich klatek
+        4. Wybierz peak frames (wysoka TFM + separacja czasowa)
+        5. Klasyfikuj emocje dla peak frames
+
+        Args:
+            frames_list: Lista klatek wideo jako numpy arrays
+            num_peaks: Liczba peak frames do wybrania
+            neutral_idx: Opcjonalny indeks neutral frame (auto-detect jeśli None)
+            min_separation_frames: Minimalna separacja czasowa między peaks
+
+        Returns:
+            Słownik z wynikami:
+            {
+                "neutral_frame_idx": int,
+                "neutral_keypoints": np.ndarray,
+                "peak_frames": [
+                    {
+                        "frame_idx": int,
+                        "frame": np.ndarray,
+                        "keypoints": np.ndarray,
+                        "delta_aus": dict[str, DeltaActionUnit],
+                        "emotion": EmotionPrediction,
+                        "tfm_score": float,
+                    },
+                    ...
+                ],
+                "all_frames_data": [
+                    {
+                        "frame_idx": int,
+                        "keypoints": Optional[np.ndarray],
+                        "head_pose": Optional[HeadPose],
+                        "delta_aus": Optional[dict],
+                    },
+                    ...
+                ],
+            }
+
+        Raises:
+            RuntimeError: Gdy modele nie zostały załadowane
+            ValueError: Gdy brak keypoints do przetworzenia
+        """
+        if not self._models_loaded:
+            raise RuntimeError("Pipeline nie załadowany. Wywołaj load() najpierw.")
+
+        from packages.pipeline.neutral_frame import (
+            NeutralFrameDetector,
+            estimate_head_pose,
+        )
+        from packages.models.delta_action_units import DeltaActionUnitsExtractor
+        from packages.pipeline.peak_selector import PeakFrameSelector, compute_tfm
+        from packages.models.emotion import classify_emotion_from_delta_aus
+
+        print("\n" + "=" * 60)
+        print("DATASET GENERATION PIPELINE")
+        print("=" * 60)
+
+        # Step 1: Wykryj keypoints dla wszystkich klatek
+        print(f"\n[1/5] Wykrywanie keypoints dla {len(frames_list)} klatek...")
+        keypoints_list = []
+        valid_frame_indices = []
+
+        for i, frame in enumerate(frames_list):
+            # Wykryj psa
+            detections = self.bbox_model.filter_dogs_only(frame)
+
+            if not detections:
+                keypoints_list.append(None)
+                continue
+
+            # Weź pierwszego psa (największy bbox)
+            detection = detections[0]
+            x, y, w, h = detection.bbox
+
+            # Crop
+            height, width = frame.shape[:2]
+            x = max(0, x)
+            y = max(0, y)
+            w = min(w, width - x)
+            h = min(h, height - y)
+            cropped = frame[y : y + h, x : x + w]
+
+            if cropped.size == 0:
+                keypoints_list.append(None)
+                continue
+
+            # Wykryj keypoints
+            try:
+                kp_pred = self.keypoints_model.predict(cropped)
+                keypoints_flat = np.array(kp_pred.to_coco_format(), dtype=np.float32)
+                keypoints_list.append(keypoints_flat)
+                valid_frame_indices.append(i)
+            except Exception as e:
+                print(f"  ! Błąd keypoints dla klatki {i}: {e}")
+                keypoints_list.append(None)
+
+        # Filtruj tylko klatki z keypoints
+        valid_keypoints = [kp for kp in keypoints_list if kp is not None]
+
+        if len(valid_keypoints) < 2:
+            raise ValueError(
+                f"Za mało klatek z keypoints: {len(valid_keypoints)}. Potrzeba min 2."
+            )
+
+        print(f"  → Wykryto keypoints w {len(valid_keypoints)}/{len(frames_list)} klatkach")
+
+        # Step 2: Estymacja head pose dla wszystkich klatek
+        print("\n[2/5] Estymacja head pose...")
+        head_poses = []
+        for kp in keypoints_list:
+            if kp is not None:
+                head_pose = estimate_head_pose(kp)
+                head_poses.append(head_pose)
+            else:
+                head_poses.append(None)
+
+        valid_head_poses = [hp for hp in head_poses if hp is not None]
+        frontal_count = sum(1 for hp in valid_head_poses if hp.is_frontal)
+        print(f"  → Frontal poses: {frontal_count}/{len(valid_head_poses)}")
+
+        # Step 3: Auto-detekcja neutral frame (jeśli nie podano)
+        print("\n[3/5] Detekcja neutral frame...")
+        if neutral_idx is None:
+            detector = NeutralFrameDetector()
+            neutral_idx = detector.detect_auto(
+                frames=[frames_list[i] for i in valid_frame_indices],
+                keypoints_list=valid_keypoints,
+                head_poses=valid_head_poses,
+            )
+            # Zmapuj z powrotem na oryginalne indeksy
+            neutral_idx = valid_frame_indices[neutral_idx]
+            print(f"  → Auto-detected neutral frame: {neutral_idx}")
+        else:
+            print(f"  → Using manual neutral frame: {neutral_idx}")
+
+        neutral_keypoints = keypoints_list[neutral_idx]
+
+        if neutral_keypoints is None:
+            raise ValueError(f"Neutral frame {neutral_idx} nie ma keypoints!")
+
+        # Step 4: Oblicz delta AU dla wszystkich klatek
+        print("\n[4/5] Obliczanie delta Action Units...")
+        delta_extractor = DeltaActionUnitsExtractor(neutral_keypoints)
+
+        delta_aus_list = []
+        for kp in keypoints_list:
+            if kp is not None:
+                delta_aus = delta_extractor.extract(kp)
+                delta_aus_list.append(delta_aus)
+            else:
+                delta_aus_list.append(None)
+
+        valid_delta_aus = [d for d in delta_aus_list if d is not None]
+        print(f"  → Obliczono delta AU dla {len(valid_delta_aus)} klatek")
+
+        # Step 5: Wybierz peak frames
+        print(f"\n[5/5] Wybór {num_peaks} peak frames (TFM-based)...")
+        selector = PeakFrameSelector(
+            min_separation_frames=min_separation_frames,
+            frontal_only=True,
+            min_keypoint_conf=0.7,
+        )
+
+        peak_indices = selector.select(
+            frames=frames_list,
+            keypoints_list=keypoints_list,
+            neutral_idx=neutral_idx,
+            delta_aus_list=delta_aus_list,
+            head_poses=head_poses,
+            num_peaks=num_peaks,
+        )
+
+        print(f"  → Wybrano {len(peak_indices)} peak frames")
+
+        # Step 6: Klasyfikuj emocje dla peak frames
+        print("\n[6/6] Klasyfikacja emocji dla peak frames...")
+        peak_frames_data = []
+
+        for peak_idx in peak_indices:
+            delta_aus = delta_aus_list[peak_idx]
+            tfm_score = compute_tfm(delta_aus)
+
+            # Klasyfikuj emocję
+            emotion_pred = classify_emotion_from_delta_aus(delta_aus)
+
+            peak_frames_data.append(
+                {
+                    "frame_idx": peak_idx,
+                    "frame": frames_list[peak_idx],
+                    "keypoints": keypoints_list[peak_idx],
+                    "delta_aus": delta_aus,
+                    "emotion": emotion_pred,
+                    "tfm_score": tfm_score,
+                }
+            )
+
+            print(
+                f"  Peak {peak_idx}: {emotion_pred.emotion.upper()} "
+                f"(conf={emotion_pred.confidence:.2f}, TFM={tfm_score:.3f})"
+            )
+
+        # Zbierz dane wszystkich klatek
+        all_frames_data = []
+        for i in range(len(frames_list)):
+            all_frames_data.append(
+                {
+                    "frame_idx": i,
+                    "keypoints": keypoints_list[i],
+                    "head_pose": head_poses[i],
+                    "delta_aus": delta_aus_list[i],
+                }
+            )
+
+        print("\n" + "=" * 60)
+        print("DATASET GENERATION COMPLETE")
+        print("=" * 60)
+
+        return {
+            "neutral_frame_idx": neutral_idx,
+            "neutral_keypoints": neutral_keypoints,
+            "peak_frames": peak_frames_data,
+            "all_frames_data": all_frames_data,
+        }
+
     def visualize(
         self,
         image: np.ndarray,
