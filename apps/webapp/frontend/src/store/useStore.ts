@@ -7,16 +7,22 @@
  * - Neutral frame selection
  * - Peak frames data
  * - AU toggles
+ * - Processing settings (fps, mode, peaks)
  */
 
 import { create } from 'zustand';
-import type { PeakFrame, ProcessVideoResponse } from '../types';
+import type { ProcessVideoResponse, ProcessingSettings } from '../types';
 import { processVideo, exportCOCO } from '../utils/api';
 
 interface AppState {
   // Video data
   video: File | null;
+  videoUrl: string | null;
+  videoDuration: number;
   videoData: ProcessVideoResponse | null;
+
+  // Processing settings
+  settings: ProcessingSettings;
 
   // UI state
   processing: boolean;
@@ -24,6 +30,8 @@ interface AppState {
 
   // Actions
   uploadVideo: (file: File) => void;
+  setVideoMetadata: (duration: number) => void;
+  updateSettings: (settings: Partial<ProcessingSettings>) => void;
   processVideo: () => Promise<void>;
   setNeutralFrame: (idx: number) => void;
   toggleAU: (peakIdx: number, auName: string) => void;
@@ -31,21 +39,49 @@ interface AppState {
   reset: () => void;
 }
 
+const defaultSettings: ProcessingSettings = {
+  fps_sample: 1,
+  num_peaks: 10,
+  min_separation_frames: 30,
+  neutral_mode: 'auto',
+  manual_neutral_idx: null,
+};
+
 const useStore = create<AppState>((set, get) => ({
   // Initial state
   video: null,
+  videoUrl: null,
+  videoDuration: 0,
   videoData: null,
+  settings: { ...defaultSettings },
   processing: false,
   error: null,
 
   // Upload video
   uploadVideo: (file: File) => {
-    set({ video: file, error: null });
+    // Revoke previous URL if exists
+    const prevUrl = get().videoUrl;
+    if (prevUrl) {
+      URL.revokeObjectURL(prevUrl);
+    }
+    const url = URL.createObjectURL(file);
+    set({ video: file, videoUrl: url, error: null, videoData: null });
+  },
+
+  // Set video metadata after loading
+  setVideoMetadata: (duration: number) => {
+    set({ videoDuration: duration });
+  },
+
+  // Update processing settings
+  updateSettings: (newSettings: Partial<ProcessingSettings>) => {
+    const { settings } = get();
+    set({ settings: { ...settings, ...newSettings } });
   },
 
   // Process video through backend
   processVideo: async () => {
-    const { video } = get();
+    const { video, settings } = get();
     if (!video) {
       set({ error: 'No video selected' });
       return;
@@ -54,7 +90,13 @@ const useStore = create<AppState>((set, get) => ({
     set({ processing: true, error: null });
 
     try {
-      const data = await processVideo(video);
+      const options = {
+        fps_sample: settings.fps_sample,
+        num_peaks: settings.num_peaks,
+        min_separation_frames: settings.min_separation_frames,
+        neutral_idx: settings.neutral_mode === 'manual' ? settings.manual_neutral_idx : null,
+      };
+      const data = await processVideo(video, options);
       set({ videoData: data, processing: false });
     } catch (error) {
       set({
@@ -66,14 +108,19 @@ const useStore = create<AppState>((set, get) => ({
 
   // Set neutral frame (manual override)
   setNeutralFrame: async (idx: number) => {
-    const { video } = get();
+    const { video, settings } = get();
     if (!video) return;
 
     set({ processing: true, error: null });
 
     try {
       // Re-process with manual neutral frame
-      const data = await processVideo(video, { neutral_idx: idx });
+      const options = {
+        fps_sample: settings.fps_sample,
+        num_peaks: settings.num_peaks,
+        neutral_idx: idx,
+      };
+      const data = await processVideo(video, options);
       set({ videoData: data, processing: false });
     } catch (error) {
       set({
@@ -134,9 +181,16 @@ const useStore = create<AppState>((set, get) => ({
 
   // Reset state
   reset: () => {
+    const prevUrl = get().videoUrl;
+    if (prevUrl) {
+      URL.revokeObjectURL(prevUrl);
+    }
     set({
       video: null,
+      videoUrl: null,
+      videoDuration: 0,
       videoData: null,
+      settings: { ...defaultSettings },
       processing: false,
       error: null,
     });

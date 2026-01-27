@@ -480,6 +480,13 @@ class InferencePipeline:
             try:
                 kp_pred = self.keypoints_model.predict(cropped)
                 keypoints_flat = np.array(kp_pred.to_coco_format(), dtype=np.float32)
+
+                # Transformuj współrzędne z cropa na pełny obraz
+                # Format: [x0, y0, v0, x1, y1, v1, ...]
+                # Dodaj offset bbox do wszystkich x i y
+                keypoints_flat[0::3] += x  # Wszystkie x-y: indeksy 0, 3, 6, ...
+                keypoints_flat[1::3] += y  # Wszystkie y-ki: indeksy 1, 4, 7, ...
+
                 keypoints_list.append(keypoints_flat)
                 valid_frame_indices.append(i)
             except Exception as e:
@@ -518,6 +525,7 @@ class InferencePipeline:
                 frames=[frames_list[i] for i in valid_frame_indices],
                 keypoints_list=valid_keypoints,
                 head_poses=valid_head_poses,
+                debug=False,  # Ustaw True dla szczegółowych logów
             )
             # Zmapuj z powrotem na oryginalne indeksy
             neutral_idx = valid_frame_indices[neutral_idx]
@@ -549,8 +557,9 @@ class InferencePipeline:
         print(f"\n[5/5] Wybór {num_peaks} peak frames (TFM-based)...")
         selector = PeakFrameSelector(
             min_separation_frames=min_separation_frames,
-            frontal_only=True,
-            min_keypoint_conf=0.7,
+            frontal_only=False,  # Nie wymagamy ścisłego frontal (zbyt restrykcyjne)
+            min_keypoint_conf=0.5,  # Zmniejszony próg
+            max_head_angle=40.0,  # Maksymalny kąt yaw/pitch
         )
 
         peak_indices = selector.select(

@@ -81,8 +81,9 @@ class PeakFrameSelector:
         self,
         min_separation_frames: int = 30,  # 1 second @ 30fps
         min_tfm_threshold: float = 0.15,   # Minimum movement
-        frontal_only: bool = True,
-        min_keypoint_conf: float = 0.7,
+        frontal_only: bool = False,  # Zmieniono na False - zbyt restrykcyjne
+        min_keypoint_conf: float = 0.5,  # Zmniejszono z 0.7 na 0.5
+        max_head_angle: float = 40.0,  # Maksymalny kąt yaw/pitch (nowy parametr)
     ):
         """
         Initialize peak frame selector.
@@ -90,13 +91,15 @@ class PeakFrameSelector:
         Args:
             min_separation_frames: Minimum frames between selected peaks
             min_tfm_threshold: Minimum TFM score to consider
-            frontal_only: Only select frontal poses
+            frontal_only: Only select strictly frontal poses (<20°)
             min_keypoint_conf: Minimum keypoint confidence
+            max_head_angle: Maximum yaw/pitch angle in degrees (used when frontal_only=False)
         """
         self.min_separation = min_separation_frames
         self.min_tfm = min_tfm_threshold
         self.frontal_only = frontal_only
         self.min_kp_conf = min_keypoint_conf
+        self.max_head_angle = max_head_angle
 
     def select(
         self,
@@ -131,6 +134,10 @@ class PeakFrameSelector:
         for i, delta_aus in enumerate(delta_aus_list):
             # Skip neutral frame itself
             if i == neutral_idx:
+                continue
+
+            # Skip frames without delta AUs (None)
+            if delta_aus is None:
                 continue
 
             # Check if valid peak candidate
@@ -198,6 +205,10 @@ class PeakFrameSelector:
             if i == neutral_idx:
                 continue
 
+            # Skip frames without delta AUs
+            if delta_aus is None:
+                continue
+
             if not self._is_valid_peak(keypoints_list[i], head_poses[i]):
                 continue
 
@@ -247,29 +258,41 @@ class PeakFrameSelector:
 
     def _is_valid_peak(
         self,
-        keypoints: np.ndarray,
-        head_pose: HeadPose,
+        keypoints: Optional[np.ndarray],
+        head_pose: Optional[HeadPose],
     ) -> bool:
         """
         Check if frame is valid for peak selection.
 
         Args:
-            keypoints: Keypoints array (60 values)
-            head_pose: Head pose estimation
+            keypoints: Keypoints array (60 values) or None
+            head_pose: Head pose estimation or None
 
         Returns:
             True if valid peak candidate
         """
+        # None check - skip frames without keypoints
+        if keypoints is None or head_pose is None:
+            return False
+
         kp = keypoints.reshape(NUM_KEYPOINTS, 3)
 
-        # 1. High keypoint confidence
+        # 1. Minimum keypoint confidence
         mean_visibility = np.mean(kp[:, 2])
         if mean_visibility < self.min_kp_conf:
             return False
 
-        # 2. Frontal pose (if required)
-        if self.frontal_only and not head_pose.is_frontal:
-            return False
+        # 2. Head pose check
+        if self.frontal_only:
+            # Strict frontal: all angles < 20°
+            if not head_pose.is_frontal:
+                return False
+        else:
+            # Relaxed: just check max angle threshold
+            if abs(head_pose.yaw) > self.max_head_angle:
+                return False
+            if abs(head_pose.pitch) > self.max_head_angle:
+                return False
 
         return True
 

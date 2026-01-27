@@ -3,6 +3,7 @@
  */
 
 import VideoUpload from './components/VideoUpload';
+import Timeline from './components/Timeline';
 import PeakFramesGrid from './components/PeakFramesGrid';
 import ExportPanel from './components/ExportPanel';
 import useStore from './store/useStore';
@@ -37,9 +38,10 @@ export default function App() {
         {/* Video Upload */}
         <VideoUpload />
 
-        {/* Peak Frames Grid */}
+        {/* Results */}
         {videoData && (
           <>
+            <Timeline />
             <PeakFramesGrid />
             <ExportPanel />
           </>

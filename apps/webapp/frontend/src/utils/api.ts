@@ -4,7 +4,7 @@
 
 import axios from 'axios';
 import { saveAs } from 'file-saver';
-import type { ProcessVideoResponse, ExportCOCORequest } from '../types';
+import type { ProcessVideoResponse, ExportCOCORequest, ProcessVideoOptions } from '../types';
 
 const API_BASE_URL = '/api';
 
@@ -13,22 +13,29 @@ const API_BASE_URL = '/api';
  */
 export async function processVideo(
   file: File,
-  options?: {
-    num_peaks?: number;
-    neutral_idx?: number | null;
-    min_separation_frames?: number;
-  }
+  options?: ProcessVideoOptions
 ): Promise<ProcessVideoResponse> {
   const formData = new FormData();
   formData.append('file', file);
 
   const params = new URLSearchParams();
+
+  // FPS sample rate (1-30)
+  if (options?.fps_sample) {
+    params.append('fps_sample', options.fps_sample.toString());
+  }
+
+  // Number of peak frames to extract
   if (options?.num_peaks) {
     params.append('num_peaks', options.num_peaks.toString());
   }
+
+  // Manual neutral frame index
   if (options?.neutral_idx !== undefined && options.neutral_idx !== null) {
     params.append('neutral_idx', options.neutral_idx.toString());
   }
+
+  // Minimum frame separation between peaks
   if (options?.min_separation_frames) {
     params.append('min_separation_frames', options.min_separation_frames.toString());
   }

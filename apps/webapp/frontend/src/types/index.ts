@@ -34,6 +34,27 @@ export interface ExportCOCORequest {
   video_filename: string;
 }
 
+/**
+ * Налаштування обробки відео.
+ */
+export interface ProcessingSettings {
+  fps_sample: number;          // 1-30 fps
+  num_peaks: number;           // 5-20 peak frames
+  min_separation_frames: number;
+  neutral_mode: 'auto' | 'manual';
+  manual_neutral_idx: number | null;
+}
+
+/**
+ * Параметри API для обробки відео.
+ */
+export interface ProcessVideoOptions {
+  fps_sample?: number;
+  num_peaks?: number;
+  neutral_idx?: number | null;
+  min_separation_frames?: number;
+}
+
 export const EMOTION_EMOJI: Record<string, string> = {
   happy: '😊',
   sad: '😢',

@@ -82,11 +82,20 @@ async def startup_event():
     print("ŁADOWANIE DOGFACS DATASET GENERATOR")
     print("=" * 60)
 
+    # Ścieżka do project root (4 poziomy w górę od apps/webapp/backend/main.py)
+    # apps/webapp/backend/main.py -> apps/webapp/backend -> apps/webapp -> apps -> project_root
+    project_root = Path(__file__).resolve().parent.parent.parent.parent
+    models_dir = project_root / "models"
+
+    print(f"\nProject root: {project_root}")
+    print(f"Models directory: {models_dir}")
+
     try:
         config = PipelineConfig(
-            bbox_weights=Path("models/yolov8m.pt"),
-            breed_weights=Path("models/breed.pt"),
-            keypoints_weights=Path("models/keypoints_dogflw.pt"),
+            bbox_weights=models_dir / "yolov8m.pt",
+            breed_weights=models_dir / "breed.pt",
+            keypoints_weights=models_dir / "keypoints_dogflw.pt",
+            breeds_json=project_root / "packages" / "models" / "breeds.json",
             device="cpu",  # Użyj CPU dla stabilności
             use_rule_based_emotion=True,  # Rule-based emotion
         )
@@ -118,13 +127,18 @@ async def health_check():
 # Video Processing
 # =============================================================================
 
-def extract_frames_from_video(video_path: Path, max_frames: int = 600) -> list[np.ndarray]:
+def extract_frames_from_video(
+    video_path: Path,
+    fps_sample: float = 30.0,
+    max_duration: int = 60
+) -> list[np.ndarray]:
     """
-    Ekstrahuj klatki z wideo.
+    Ekstrahuj klatki z wideo z kontrolą FPS.
 
     Args:
         video_path: Ścieżka do pliku wideo
-        max_frames: Maksymalna liczba klatek (30s @ 30fps = 900 frames)
+        fps_sample: FPS dla ekstrakcji (1-30 fps)
+        max_duration: Maksymalna długość wideo (sekundy)
 
     Returns:
         Lista klatek jako numpy arrays (BGR)
@@ -134,39 +148,123 @@ def extract_frames_from_video(video_path: Path, max_frames: int = 600) -> list[n
     if not cap.isOpened():
         raise ValueError(f"Nie można otworzyć wideo: {video_path}")
 
+    # Pobierz FPS wideo
+    video_fps = cap.get(cv2.CAP_PROP_FPS)
+    if video_fps <= 0:
+        video_fps = 30.0  # Default
+
+    # Oblicz co którą klatkę brać
+    frame_skip = max(1, int(video_fps / fps_sample))
+
     frames = []
     frame_count = 0
+    max_frames = int(max_duration * fps_sample)
 
-    while True:
+    while len(frames) < max_frames:
         ret, frame = cap.read()
         if not ret:
             break
 
-        frames.append(frame)
-        frame_count += 1
+        # Bierz tylko co N-tą klatkę
+        if frame_count % frame_skip == 0:
+            frames.append(frame)
 
-        if frame_count >= max_frames:
-            break
+        frame_count += 1
 
     cap.release()
 
     return frames
 
 
-def save_frame_to_disk(frame: np.ndarray, frame_idx: int, session_id: str) -> Path:
+def draw_keypoints_on_frame(
+    frame: np.ndarray,
+    keypoints: Optional[np.ndarray],
+    draw_skeleton: bool = True,
+) -> np.ndarray:
     """
-    Zapisz klatkę do dysku.
+    Rysuj keypoints na klatce.
+
+    Args:
+        frame: Klatka jako numpy array (BGR)
+        keypoints: Keypoints jako flat array [x0,y0,v0,...] lub None
+        draw_skeleton: Czy rysować połączenia między punktami
+
+    Returns:
+        Klatka z narysowanymi keypoints
+    """
+    if keypoints is None:
+        return frame
+
+    from packages.data.schemas import (
+        NUM_KEYPOINTS,
+        SKELETON_CONNECTIONS,
+        get_keypoint_color,
+    )
+
+    frame = frame.copy()
+    kp = keypoints.reshape(NUM_KEYPOINTS, 3)
+
+    # Rysuj skeleton (połączenia) najpierw
+    if draw_skeleton:
+        for start_idx, end_idx in SKELETON_CONNECTIONS:
+            x1, y1, v1 = kp[start_idx]
+            x2, y2, v2 = kp[end_idx]
+
+            # Rysuj tylko jeśli oba punkty są widoczne
+            if v1 > 0.3 and v2 > 0.3:
+                cv2.line(
+                    frame,
+                    (int(x1), int(y1)),
+                    (int(x2), int(y2)),
+                    (200, 200, 200),  # Szara linia
+                    1,
+                    cv2.LINE_AA,
+                )
+
+    # Rysuj punkty
+    for i in range(NUM_KEYPOINTS):
+        x, y, visibility = kp[i]
+
+        if visibility > 0.3:  # Rysuj tylko widoczne punkty
+            color = get_keypoint_color(i)
+            # BGR dla OpenCV
+            color_bgr = (color[2], color[1], color[0])
+
+            # Większy punkt dla ważnych części (oczy, nos, usta)
+            radius = 4 if i in [0, 1, 2, 7, 8] else 3
+
+            cv2.circle(frame, (int(x), int(y)), radius, color_bgr, -1)
+            cv2.circle(frame, (int(x), int(y)), radius, (255, 255, 255), 1)
+
+    return frame
+
+
+def save_frame_to_disk(
+    frame: np.ndarray,
+    frame_idx: int,
+    session_id: str,
+    keypoints: Optional[np.ndarray] = None,
+    draw_keypoints: bool = True,
+) -> Path:
+    """
+    Zapisz klatkę do dysku z opcjonalnymi keypoints.
 
     Args:
         frame: Klatka jako numpy array (BGR)
         frame_idx: Indeks klatki
         session_id: ID sesji
+        keypoints: Opcjonalne keypoints do narysowania
+        draw_keypoints: Czy rysować keypoints na klatce
 
     Returns:
         Ścieżka do zapisanej klatki
     """
     session_dir = STATIC_DIR / session_id
     session_dir.mkdir(exist_ok=True)
+
+    # Rysuj keypoints jeśli podane
+    if draw_keypoints and keypoints is not None:
+        frame = draw_keypoints_on_frame(frame, keypoints)
 
     filename = f"frame_{frame_idx:04d}.jpg"
     filepath = session_dir / filename
@@ -182,6 +280,7 @@ async def process_video(
     num_peaks: int = 10,
     neutral_idx: Optional[int] = None,
     min_separation_frames: int = 30,
+    fps_sample: float = 1.0,
 ):
     """
     Przetwarza uploaded wideo i zwraca peak frames.
@@ -213,7 +312,8 @@ async def process_video(
     try:
         # Ekstrahuj klatki
         print(f"\n📹 Przetwarzanie wideo: {file.filename}")
-        frames_list = extract_frames_from_video(video_path, max_frames=600)
+        print(f"  → FPS sampling: {fps_sample} fps")
+        frames_list = extract_frames_from_video(video_path, fps_sample=fps_sample, max_duration=60)
         print(f"  → Wyekstrahowano {len(frames_list)} klatek")
 
         # Przetwórz wideo przez pipeline
@@ -236,18 +336,19 @@ async def process_video(
             emotion = peak_data["emotion"]
             tfm_score = peak_data["tfm_score"]
 
-            # Zapisz klatkę
-            frame_path = save_frame_to_disk(frame, frame_idx, session_id)
+            # Zapisz klatkę z keypoints
+            keypoints = peak_data["keypoints"]
+            frame_path = save_frame_to_disk(frame, frame_idx, session_id, keypoints=keypoints)
 
             # URL dla frontend
             image_url = f"/static/{session_id}/frame_{frame_idx:04d}.jpg"
 
-            # Przekonwertuj delta AUs do dict
+            # Przekonwertuj delta AUs do dict (konwertuj numpy types na Python)
             aus_dict = {
                 au.name: {
                     "ratio": float(au.ratio),
                     "delta": float(au.delta),
-                    "is_active": au.is_active,
+                    "is_active": bool(au.is_active),  # numpy.bool_ -> Python bool
                     "confidence": float(au.confidence),
                 }
                 for au in delta_aus.values()
@@ -263,10 +364,13 @@ async def process_video(
                 "tfm_score": float(tfm_score),
             })
 
-        # Zapisz neutral frame
+        # Zapisz neutral frame z keypoints
         neutral_idx = result["neutral_frame_idx"]
         neutral_frame = frames_list[neutral_idx]
-        neutral_path = save_frame_to_disk(neutral_frame, neutral_idx, session_id)
+        neutral_keypoints = result["neutral_keypoints"]
+        neutral_path = save_frame_to_disk(
+            neutral_frame, neutral_idx, session_id, keypoints=neutral_keypoints
+        )
         neutral_url = f"/static/{session_id}/frame_{neutral_idx:04d}.jpg"
 
         return JSONResponse({
