@@ -70,6 +70,12 @@ logs/
 .env
 .env.local
 
+# Credentials / API keys (NEVER commit these!)
+key.txt
+*.key
+kaggle.json
+secrets.json
+
 # Streamlit
 .streamlit/
 
