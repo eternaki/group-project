@@ -5,7 +5,7 @@
 import useStore from '../store/useStore';
 
 export default function ExportPanel() {
-  const { videoData, exportDataset } = useStore();
+  const { videoData, sessionData, exportDataset, exportSession } = useStore();
 
   if (!videoData) {
     return null;
@@ -13,6 +13,10 @@ export default function ExportPanel() {
 
   const handleExport = async () => {
     await exportDataset();
+  };
+
+  const handleExportSession = async () => {
+    await exportSession();
   };
 
   return (
@@ -46,14 +50,23 @@ export default function ExportPanel() {
           />
         </div>
 
-        {/* Export Button */}
-        <div className="border-t pt-4">
+        {/* Export Buttons */}
+        <div className="border-t pt-4 space-y-2">
+          {sessionData && (
+            <button
+              onClick={handleExportSession}
+              className="w-full bg-green-600 text-white px-6 py-3 rounded-md
+                font-semibold hover:bg-green-700 transition-colors"
+            >
+              Export COCO JSON (z keypoints + AU)
+            </button>
+          )}
           <button
             onClick={handleExport}
-            className="w-full bg-green-600 text-white px-6 py-3 rounded-md
-              font-semibold hover:bg-green-700 transition-colors"
+            className="w-full bg-gray-500 text-white px-6 py-3 rounded-md
+              font-semibold hover:bg-gray-600 transition-colors text-sm"
           >
-            Export COCO JSON
+            Export uproszczony (bez keypoints)
           </button>
         </div>
       </div>

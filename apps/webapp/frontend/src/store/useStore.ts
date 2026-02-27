@@ -4,15 +4,30 @@
  * Zarządza stanem aplikacji:
  * - Uploaded video file
  * - Processing status
- * - Neutral frame selection
- * - Peak frames data
- * - AU toggles
- * - Processing settings (fps, mode, peaks)
+ * - SessionData (frames z anotacjami, keypoints, AU, emocje)
+ * - Wybrany frame do edycji
  */
 
 import { create } from 'zustand';
-import type { ProcessVideoResponse, ProcessingSettings } from '../types';
-import { processVideo, exportCOCO } from '../utils/api';
+import type {
+  DeltaActionUnit,
+  FrameAnnotation,
+  ProcessingSettings,
+  ProcessVideoResponse,
+  SessionData,
+} from '../types';
+import {
+  exportCOCO,
+  exportSessionCOCO,
+  getSession,
+  patchAUs,
+  patchBreed,
+  patchEmotion,
+  patchKeypoints,
+  processVideo,
+  recomputeAUs,
+  recomputeEmotion,
+} from '../utils/api';
 
 interface AppState {
   // Video data
@@ -21,22 +36,40 @@ interface AppState {
   videoDuration: number;
   videoData: ProcessVideoResponse | null;
 
+  // Session data (anotacje edytowalne)
+  sessionData: SessionData | null;
+  selectedFrameIdx: number | null;
+
   // Processing settings
   settings: ProcessingSettings;
 
   // UI state
   processing: boolean;
+  saving: boolean;
   error: string | null;
 
-  // Actions
+  // Actions — video
   uploadVideo: (file: File) => void;
   setVideoMetadata: (duration: number) => void;
   updateSettings: (settings: Partial<ProcessingSettings>) => void;
   processVideo: () => Promise<void>;
   setNeutralFrame: (idx: number) => void;
-  toggleAU: (peakIdx: number, auName: string) => void;
   exportDataset: () => Promise<void>;
   reset: () => void;
+
+  // Actions — session
+  loadSession: (sessionId: string) => Promise<void>;
+  selectFrame: (frameIdx: number) => void;
+  updateFrameKeypoints: (frameIdx: number, keypoints: number[]) => Promise<void>;
+  updateFrameAUs: (frameIdx: number, aus: Record<string, DeltaActionUnit>) => Promise<void>;
+  updateFrameEmotion: (frameIdx: number, emotion: string) => Promise<void>;
+  updateFrameBreed: (frameIdx: number, breed: string) => Promise<void>;
+  recomputeFrameAUs: (frameIdx: number) => Promise<void>;
+  recomputeFrameEmotion: (frameIdx: number) => Promise<void>;
+  exportSession: () => Promise<void>;
+
+  // Helpers
+  getSelectedFrame: () => FrameAnnotation | null;
 }
 
 const defaultSettings: ProcessingSettings = {
@@ -47,153 +80,289 @@ const defaultSettings: ProcessingSettings = {
   manual_neutral_idx: null,
 };
 
+/** Aktualizuje klatkę w lokalnej kopii sessionData. */
+function updateFrameInSession(
+  sessionData: SessionData,
+  frameIdx: number,
+  updates: Partial<FrameAnnotation>
+): SessionData {
+  const frames = sessionData.frames.map((f) =>
+    f.frame_idx === frameIdx ? { ...f, ...updates } : f
+  );
+  return { ...sessionData, frames };
+}
+
 const useStore = create<AppState>((set, get) => ({
   // Initial state
   video: null,
   videoUrl: null,
   videoDuration: 0,
   videoData: null,
+  sessionData: null,
+  selectedFrameIdx: null,
   settings: { ...defaultSettings },
   processing: false,
+  saving: false,
   error: null,
 
-  // Upload video
+  // ---------------------------------------------------------------------------
+  // Video actions
+  // ---------------------------------------------------------------------------
+
   uploadVideo: (file: File) => {
-    // Revoke previous URL if exists
     const prevUrl = get().videoUrl;
-    if (prevUrl) {
-      URL.revokeObjectURL(prevUrl);
-    }
+    if (prevUrl) URL.revokeObjectURL(prevUrl);
     const url = URL.createObjectURL(file);
-    set({ video: file, videoUrl: url, error: null, videoData: null });
+    set({ video: file, videoUrl: url, error: null, videoData: null, sessionData: null });
   },
 
-  // Set video metadata after loading
-  setVideoMetadata: (duration: number) => {
-    set({ videoDuration: duration });
-  },
+  setVideoMetadata: (duration: number) => set({ videoDuration: duration }),
 
-  // Update processing settings
   updateSettings: (newSettings: Partial<ProcessingSettings>) => {
-    const { settings } = get();
-    set({ settings: { ...settings, ...newSettings } });
+    set((state) => ({ settings: { ...state.settings, ...newSettings } }));
   },
 
-  // Process video through backend
   processVideo: async () => {
     const { video, settings } = get();
-    if (!video) {
-      set({ error: 'No video selected' });
-      return;
-    }
+    if (!video) { set({ error: 'Nie wybrano wideo' }); return; }
 
     set({ processing: true, error: null });
-
     try {
-      const options = {
+      const data = await processVideo(video, {
         fps_sample: settings.fps_sample,
         num_peaks: settings.num_peaks,
         min_separation_frames: settings.min_separation_frames,
         neutral_idx: settings.neutral_mode === 'manual' ? settings.manual_neutral_idx : null,
-      };
-      const data = await processVideo(video, options);
+      });
       set({ videoData: data, processing: false });
-    } catch (error) {
+
+      // Po przetworzeniu — załaduj dane sesji z pełnymi anotacjami
+      await get().loadSession(data.session_id);
+    } catch (err) {
       set({
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: err instanceof Error ? err.message : 'Błąd przetwarzania wideo',
         processing: false,
       });
     }
   },
 
-  // Set neutral frame (manual override)
   setNeutralFrame: async (idx: number) => {
     const { video, settings } = get();
     if (!video) return;
-
     set({ processing: true, error: null });
-
     try {
-      // Re-process with manual neutral frame
-      const options = {
+      const data = await processVideo(video, {
         fps_sample: settings.fps_sample,
         num_peaks: settings.num_peaks,
         neutral_idx: idx,
-      };
-      const data = await processVideo(video, options);
+      });
       set({ videoData: data, processing: false });
-    } catch (error) {
+      await get().loadSession(data.session_id);
+    } catch (err) {
       set({
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: err instanceof Error ? err.message : 'Błąd przetwarzania',
         processing: false,
       });
     }
   },
 
-  // Toggle AU activation (manual override)
-  toggleAU: (peakIdx: number, auName: string) => {
-    const { videoData } = get();
-    if (!videoData) return;
-
-    // Clone videoData
-    const newVideoData = { ...videoData };
-    const updatedPeakFrames = [...newVideoData.peak_frames];
-
-    // Toggle AU
-    const peakFrame = { ...updatedPeakFrames[peakIdx] };
-    const aus = { ...peakFrame.aus };
-    const au = { ...aus[auName] };
-
-    au.is_active = !au.is_active;
-    aus[auName] = au;
-    peakFrame.aus = aus;
-
-    // Recompute emotion based on new AU state
-    // TODO: Call backend API to recompute emotion
-    // For now, just update the AU
-
-    updatedPeakFrames[peakIdx] = peakFrame;
-    newVideoData.peak_frames = updatedPeakFrames;
-
-    set({ videoData: newVideoData });
-  },
-
-  // Export dataset to COCO format
   exportDataset: async () => {
     const { videoData } = get();
-    if (!videoData) {
-      set({ error: 'No data to export' });
-      return;
-    }
-
+    if (!videoData) { set({ error: 'Brak danych do eksportu' }); return; }
     try {
       await exportCOCO({
         peak_frames: videoData.peak_frames,
         neutral_frame_idx: videoData.neutral_frame_idx,
         video_filename: videoData.video_filename,
       });
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : 'Export failed',
-      });
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : 'Błąd eksportu' });
     }
   },
 
-  // Reset state
   reset: () => {
     const prevUrl = get().videoUrl;
-    if (prevUrl) {
-      URL.revokeObjectURL(prevUrl);
-    }
+    if (prevUrl) URL.revokeObjectURL(prevUrl);
     set({
       video: null,
       videoUrl: null,
       videoDuration: 0,
       videoData: null,
+      sessionData: null,
+      selectedFrameIdx: null,
       settings: { ...defaultSettings },
       processing: false,
+      saving: false,
       error: null,
     });
+  },
+
+  // ---------------------------------------------------------------------------
+  // Session actions
+  // ---------------------------------------------------------------------------
+
+  loadSession: async (sessionId: string) => {
+    try {
+      const data = await getSession(sessionId);
+      set({ sessionData: data });
+      // Domyślnie wybierz pierwszy frame
+      if (data.frames.length > 0) {
+        set({ selectedFrameIdx: data.frames[0].frame_idx });
+      }
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : 'Błąd ładowania sesji' });
+    }
+  },
+
+  selectFrame: (frameIdx: number) => set({ selectedFrameIdx: frameIdx }),
+
+  updateFrameKeypoints: async (frameIdx: number, keypoints: number[]) => {
+    const { sessionData } = get();
+    if (!sessionData) return;
+
+    set({ saving: true });
+    try {
+      await patchKeypoints(sessionData.session_id, frameIdx, keypoints);
+      set({
+        saving: false,
+        sessionData: updateFrameInSession(sessionData, frameIdx, {
+          keypoints,
+          annotation_status: 'reviewed',
+        }),
+      });
+    } catch (err) {
+      set({
+        saving: false,
+        error: err instanceof Error ? err.message : 'Błąd zapisu keypoints',
+      });
+    }
+  },
+
+  updateFrameAUs: async (frameIdx: number, aus: Record<string, DeltaActionUnit>) => {
+    const { sessionData } = get();
+    if (!sessionData) return;
+
+    set({ saving: true });
+    try {
+      await patchAUs(sessionData.session_id, frameIdx, aus);
+      set({
+        saving: false,
+        sessionData: updateFrameInSession(sessionData, frameIdx, {
+          aus,
+          annotation_status: 'reviewed',
+        }),
+      });
+    } catch (err) {
+      set({
+        saving: false,
+        error: err instanceof Error ? err.message : 'Błąd zapisu AU',
+      });
+    }
+  },
+
+  updateFrameEmotion: async (frameIdx: number, emotion: string) => {
+    const { sessionData } = get();
+    if (!sessionData) return;
+
+    set({ saving: true });
+    try {
+      await patchEmotion(sessionData.session_id, frameIdx, emotion);
+      set({
+        saving: false,
+        sessionData: updateFrameInSession(sessionData, frameIdx, {
+          emotion,
+          emotion_confidence: 1.0,
+          emotion_rule_applied: 'manual',
+          annotation_status: 'reviewed',
+        }),
+      });
+    } catch (err) {
+      set({
+        saving: false,
+        error: err instanceof Error ? err.message : 'Błąd zapisu emocji',
+      });
+    }
+  },
+
+  updateFrameBreed: async (frameIdx: number, breed: string) => {
+    const { sessionData } = get();
+    if (!sessionData) return;
+
+    set({ saving: true });
+    try {
+      await patchBreed(sessionData.session_id, frameIdx, breed);
+      set({
+        saving: false,
+        sessionData: updateFrameInSession(sessionData, frameIdx, {
+          breed,
+          breed_confidence: 1.0,
+          annotation_status: 'reviewed',
+        }),
+      });
+    } catch (err) {
+      set({
+        saving: false,
+        error: err instanceof Error ? err.message : 'Błąd zapisu rasy',
+      });
+    }
+  },
+
+  recomputeFrameAUs: async (frameIdx: number) => {
+    const { sessionData } = get();
+    if (!sessionData) return;
+
+    set({ saving: true });
+    try {
+      const aus = await recomputeAUs(sessionData.session_id, frameIdx);
+      set({
+        saving: false,
+        sessionData: updateFrameInSession(sessionData, frameIdx, { aus }),
+      });
+    } catch (err) {
+      set({
+        saving: false,
+        error: err instanceof Error ? err.message : 'Błąd przeliczania AU',
+      });
+    }
+  },
+
+  recomputeFrameEmotion: async (frameIdx: number) => {
+    const { sessionData } = get();
+    if (!sessionData) return;
+
+    set({ saving: true });
+    try {
+      const result = await recomputeEmotion(sessionData.session_id, frameIdx);
+      set({
+        saving: false,
+        sessionData: updateFrameInSession(sessionData, frameIdx, {
+          emotion: result.emotion,
+          emotion_confidence: result.emotion_confidence,
+          emotion_rule_applied: result.emotion_rule_applied,
+        }),
+      });
+    } catch (err) {
+      set({
+        saving: false,
+        error: err instanceof Error ? err.message : 'Błąd przeliczania emocji',
+      });
+    }
+  },
+
+  exportSession: async () => {
+    const { sessionData } = get();
+    if (!sessionData) { set({ error: 'Brak danych sesji do eksportu' }); return; }
+    try {
+      await exportSessionCOCO(sessionData.session_id, sessionData.video_filename);
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : 'Błąd eksportu sesji' });
+    }
+  },
+
+  getSelectedFrame: () => {
+    const { sessionData, selectedFrameIdx } = get();
+    if (!sessionData || selectedFrameIdx === null) return null;
+    return sessionData.frames.find((f) => f.frame_idx === selectedFrameIdx) ?? null;
   },
 }));
 
