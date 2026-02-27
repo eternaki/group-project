@@ -1,147 +1,145 @@
 """
-Temporal Processing для стабильных предсказаний эмоций.
+Temporalna agregacja Delta AU dla stabilnych predykcji emocji.
 
-Агрегирует Action Units по времени (30 кадров = 1 секунда @ 30 FPS)
-для получения стабильных предсказаний вместо шумных покадровых.
+Aggruje delta Action Units (AU) w czasie (okno N klatek) dla uzyskania
+stabilnych predykcji emocji zamiast szumnych predykcji klatka-po-klatce.
 
-Процесс:
-1. Получить keypoints для кадра
-2. Проверить head_pose (отфильтровать не-фронтальные)
-3. Вычислить AU
-4. Добавить в буфер
-5. Вернуть усреднённые AU когда буфер стабилен
+Proces:
+1. Wymagana neutralna klatka bazowa (neutral keypoints)
+2. Dla każdej klatki: oblicz delta AU względem neutralnej
+3. Filtruj klatki z nieodpowiednią pozą głowy lub niską widocznością
+4. Agreguj delta AU w oknie czasowym
+5. Zwróć uśrednione delta AU gdy bufor jest gotowy
 """
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
+
 import numpy as np
 
-from packages.models.head_pose import HeadPose, estimate_head_pose, validate_head_pose
-from packages.models.action_units import (
-    ActionUnitsExtractor,
-    ActionUnitsPrediction,
+from packages.models.delta_action_units import (
     ACTION_UNIT_NAMES,
-    NUM_ACTION_UNITS,
+    DeltaActionUnit,
+    DeltaActionUnitsExtractor,
 )
+from packages.models.head_pose import estimate_head_pose, validate_head_pose
 
 
 @dataclass
 class TemporalAUResult:
     """
-    Результат временной агрегации AU.
+    Wynik czasowej agregacji delta AU.
 
     Attributes:
-        values: Усреднённые значения AU
-        variance: Дисперсия каждого AU
-        num_frames: Количество кадров в буфере
-        is_stable: True если дисперсия ниже порога
+        values: Uśrednione wartości ratio dla każdego AU
+        variance: Wariancja każdego AU w oknie czasowym
+        num_frames: Liczba klatek w buforze
+        is_stable: True jeśli wariancja poniżej progu stabilności
     """
+
     values: dict[str, float]
     variance: dict[str, float]
     num_frames: int
     is_stable: bool
 
     def to_feature_vector(self) -> np.ndarray:
-        """Конвертирует в feature vector для модели."""
+        """Konwertuje do wektora cech (ratio dla każdego AU)."""
         return np.array(
             [self.values[name] for name in ACTION_UNIT_NAMES],
-            dtype=np.float32
+            dtype=np.float32,
         )
 
 
 class TemporalAUBuffer:
     """
-    Буфер для временной агрегации Action Units.
+    Bufor do czasowej agregacji delta Action Units.
 
-    Хранит историю AU за последние N кадров и вычисляет
-    усреднённые значения и дисперсию.
+    Przechowuje historię ratio AU z ostatnich N klatek i oblicza
+    uśrednione wartości oraz wariancję.
 
-    Example:
+    Przykład:
         buffer = TemporalAUBuffer(window_size=30)
-        buffer.add_frame(au_values, confidence=0.8)
+        buffer.add_frame(au_ratios, confidence=0.8)
         if buffer.is_ready():
             result = buffer.get_aggregated()
             if result.is_stable:
-                # Использовать result.values для эмоций
+                # Użyj result.values do klasyfikacji emocji
     """
 
     def __init__(
         self,
         window_size: int = 30,
-        stability_threshold: float = 0.15,
+        stability_threshold: float = 0.05,
         min_frames: int = 10,
     ) -> None:
         """
-        Инициализирует буфер.
+        Inicjalizuje bufor.
 
         Args:
-            window_size: Размер окна (количество кадров)
-            stability_threshold: Порог дисперсии для стабильности
-            min_frames: Минимум кадров для начала агрегации
+            window_size: Rozmiar okna (liczba klatek)
+            stability_threshold: Próg wariancji dla stabilności ratio
+            min_frames: Minimalna liczba klatek do rozpoczęcia agregacji
         """
         self.window_size = window_size
         self.stability_threshold = stability_threshold
         self.min_frames = min_frames
 
-        # История: list of (au_dict, confidence)
+        # Historia: list of (au_ratios_dict, confidence)
         self._history: deque = deque(maxlen=window_size)
 
     def add_frame(
         self,
-        au_values: dict[str, float],
+        au_ratios: dict[str, float],
         confidence: float = 1.0,
     ) -> None:
         """
-        Добавляет кадр в буфер.
+        Dodaje klatkę do bufora.
 
         Args:
-            au_values: Словарь AU_name -> value
-            confidence: Уверенность детекции (для взвешивания)
+            au_ratios: Słownik AU_name -> ratio (np. {"AU12": 1.25, ...})
+            confidence: Pewność detekcji (do ważenia)
         """
-        self._history.append((au_values.copy(), confidence))
+        self._history.append((au_ratios.copy(), confidence))
 
     def clear(self) -> None:
-        """Очищает буфер."""
+        """Czyści bufor."""
         self._history.clear()
 
     def is_ready(self) -> bool:
-        """Проверяет есть ли достаточно кадров."""
+        """Sprawdza czy bufor ma wystarczająco klatek."""
         return len(self._history) >= self.min_frames
 
     def get_aggregated(self) -> Optional[TemporalAUResult]:
         """
-        Возвращает усреднённые AU.
+        Zwraca uśrednione delta AU.
 
         Returns:
-            TemporalAUResult или None если недостаточно кадров
+            TemporalAUResult lub None jeśli za mało klatek
         """
         if not self.is_ready():
             return None
 
-        # Собрать все значения AU
-        au_arrays = {name: [] for name in ACTION_UNIT_NAMES}
-        weights = []
+        au_arrays: dict[str, list[float]] = {name: [] for name in ACTION_UNIT_NAMES}
+        weights: list[float] = []
 
-        for au_values, confidence in self._history:
+        for au_ratios, confidence in self._history:
             weights.append(confidence)
             for name in ACTION_UNIT_NAMES:
-                au_arrays[name].append(au_values.get(name, 0.0))
+                au_arrays[name].append(au_ratios.get(name, 1.0))  # 1.0 = brak zmiany
 
-        # Вычислить взвешенное среднее и дисперсию
-        weights = np.array(weights)
-        weights = weights / weights.sum()  # Нормализовать
+        weights_arr = np.array(weights)
+        weights_arr = weights_arr / weights_arr.sum()
 
-        mean_values = {}
-        variance_values = {}
+        mean_values: dict[str, float] = {}
+        variance_values: dict[str, float] = {}
 
         for name in ACTION_UNIT_NAMES:
             values = np.array(au_arrays[name])
-            mean_values[name] = float(np.average(values, weights=weights))
+            mean_values[name] = float(np.average(values, weights=weights_arr))
             variance_values[name] = float(np.var(values))
 
-        # Проверить стабильность
-        max_variance = max(variance_values.values())
+        max_variance = max(variance_values.values()) if variance_values else 0.0
         is_stable = max_variance < self.stability_threshold
 
         return TemporalAUResult(
@@ -154,55 +152,58 @@ class TemporalAUBuffer:
 
 class TemporalProcessor:
     """
-    Процессор для временной обработки видео.
+    Procesor do czasowej obróbki wideo z delta AU.
 
-    Объединяет:
-    - Head pose estimation (фильтрация не-фронтальных)
-    - Action Units extraction
-    - Temporal aggregation
+    Łączy:
+    - Estymację pozy głowy (filtrowanie nie-frontalnych klatek)
+    - Ekstrakcję delta Action Units względem klatki neutralnej
+    - Temporalną agregację w oknie czasowym
 
-    Example:
-        processor = TemporalProcessor()
+    Przykład:
+        neutral_kp = keypoints_list[neutral_idx]
+        processor = TemporalProcessor(neutral_keypoints=neutral_kp)
 
         for frame_keypoints in video_keypoints:
             result = processor.process_frame(frame_keypoints)
             if result is not None and result.is_stable:
-                # Классифицировать эмоцию из result.values
+                # Klasyfikuj emocję z result.values
     """
 
     def __init__(
         self,
+        neutral_keypoints: np.ndarray,
         window_size: int = 30,
         head_pose_threshold: float = 30.0,
         min_visibility: float = 0.5,
-        stability_threshold: float = 0.15,
+        stability_threshold: float = 0.05,
     ) -> None:
         """
-        Инициализирует процессор.
+        Inicjalizuje procesor.
 
         Args:
-            window_size: Размер окна агрегации (кадры)
-            head_pose_threshold: Максимальный угол для фронтальной позы
-            min_visibility: Минимальная средняя visibility keypoints
-            stability_threshold: Порог дисперсии AU для стабильности
+            neutral_keypoints: Keypoints neutralnej klatki (138 wartości)
+            window_size: Rozmiar okna agregacji (klatki)
+            head_pose_threshold: Maksymalny kąt dla frontalnej pozy
+            min_visibility: Minimalna średnia widoczność keypoints
+            stability_threshold: Próg wariancji ratio AU dla stabilności
         """
+        self.neutral_keypoints = neutral_keypoints
         self.head_pose_threshold = head_pose_threshold
         self.min_visibility = min_visibility
 
-        self._au_extractor = ActionUnitsExtractor()
         self._buffer = TemporalAUBuffer(
             window_size=window_size,
             stability_threshold=stability_threshold,
         )
 
-        # Статистика
-        self._total_frames = 0
-        self._accepted_frames = 0
-        self._rejected_head_pose = 0
-        self._rejected_visibility = 0
+        # Statystyki
+        self._total_frames: int = 0
+        self._accepted_frames: int = 0
+        self._rejected_head_pose: int = 0
+        self._rejected_visibility: int = 0
 
     def reset(self) -> None:
-        """Сбрасывает состояние процессора."""
+        """Resetuje stan procesora."""
         self._buffer.clear()
         self._total_frames = 0
         self._accepted_frames = 0
@@ -214,17 +215,17 @@ class TemporalProcessor:
         keypoints_flat: np.ndarray,
     ) -> Optional[TemporalAUResult]:
         """
-        Обрабатывает один кадр.
+        Przetwarza jedną klatkę.
 
         Args:
-            keypoints_flat: Keypoints [x0, y0, v0, ...] (60 values)
+            keypoints_flat: Keypoints klatki [x0, y0, v0, ...] (138 wartości)
 
         Returns:
-            TemporalAUResult если буфер готов, иначе None
+            TemporalAUResult jeśli bufor gotowy, inaczej None
         """
         self._total_frames += 1
 
-        # 1. Проверить visibility
+        # 1. Sprawdź widoczność
         kp = keypoints_flat.reshape(-1, 3)
         mean_visibility = float(np.mean(kp[:, 2]))
 
@@ -232,21 +233,22 @@ class TemporalProcessor:
             self._rejected_visibility += 1
             return self._buffer.get_aggregated() if self._buffer.is_ready() else None
 
-        # 2. Проверить head pose
-        head_pose = estimate_head_pose(keypoints_flat, self.head_pose_threshold)
-
+        # 2. Sprawdź pozę głowy
+        head_pose = estimate_head_pose(keypoints_flat)
         if not validate_head_pose(head_pose, self.head_pose_threshold, self.min_visibility):
             self._rejected_head_pose += 1
             return self._buffer.get_aggregated() if self._buffer.is_ready() else None
 
-        # 3. Извлечь AU
-        au_prediction = self._au_extractor.extract(keypoints_flat)
+        # 3. Oblicz delta AU względem klatki neutralnej
+        extractor = DeltaActionUnitsExtractor(keypoints_flat, self.neutral_keypoints)
+        delta_aus: dict[str, DeltaActionUnit] = extractor.extract()
 
-        # 4. Добавить в буфер
-        self._buffer.add_frame(au_prediction.values, head_pose.confidence)
+        # 4. Konwertuj do dict[str, float] (ratio) i dodaj do bufora
+        au_ratios = {name: au.ratio for name, au in delta_aus.items()}
+        self._buffer.add_frame(au_ratios, confidence=head_pose.confidence)
         self._accepted_frames += 1
 
-        # 5. Вернуть агрегированный результат
+        # 5. Zwróć zagregowany wynik
         return self._buffer.get_aggregated()
 
     def process_video_sequence(
@@ -254,13 +256,13 @@ class TemporalProcessor:
         keypoints_sequence: list[np.ndarray],
     ) -> Optional[TemporalAUResult]:
         """
-        Обрабатывает последовательность keypoints из видео.
+        Przetwarza sekwencję keypoints z wideo.
 
         Args:
-            keypoints_sequence: Список keypoints для каждого кадра
+            keypoints_sequence: Lista keypoints dla każdej klatki
 
         Returns:
-            Финальный TemporalAUResult или None
+            Finalny TemporalAUResult lub None
         """
         self.reset()
         result = None
@@ -271,7 +273,7 @@ class TemporalProcessor:
         return result
 
     def get_statistics(self) -> dict:
-        """Возвращает статистику обработки."""
+        """Zwraca statystyki przetwarzania."""
         return {
             "total_frames": self._total_frames,
             "accepted_frames": self._accepted_frames,
@@ -279,6 +281,7 @@ class TemporalProcessor:
             "rejected_visibility": self._rejected_visibility,
             "acceptance_rate": (
                 self._accepted_frames / self._total_frames
-                if self._total_frames > 0 else 0.0
+                if self._total_frames > 0
+                else 0.0
             ),
         }

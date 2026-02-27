@@ -1,43 +1,47 @@
 """
-Strictly rule-based emotion classification for Dog FACS.
+Klasyfikator emocji psów oparty wyłącznie na regułach DogFACS.
 
-NO MACHINE LEARNING - Uses only scientific rules from DogFACS research.
+BRAK UCZENIA MASZYNOWEGO — używa wyłącznie reguł naukowych z badań DogFACS.
 
-Architecture:
-    Keypoints (20 × 3 = 60) → Delta Action Units (12) → Rule Matching → Emotion (6 classes)
+Architektura:
+    Keypoints (46×3=138) → Delta Action Units (21) → Dopasowanie reguł → Emocja (9 klas)
 
-Action Units (AU) are objective measurements of facial muscle movements,
-according to Dog Facial Action Coding System (DogFACS).
-Emotions are interpretations of AU combinations (poselets).
+Action Units (AU) to obiektywne pomiary ruchów mięśni twarzy według
+Dog Facial Action Coding System (DogFACS). Emocje są interpretacją
+kombinacji AU (tzw. poselets).
 
-Scientific basis: Mota-Rojas et al. 2021, https://www.animalfacs.com/dogfacs
+9 klas emocji według Mota-Rojas et al. 2021:
+    happy, sad, angry, fearful, relaxed, neutral, surprise, pain, submission
+
+Źródło naukowe: Mota-Rojas et al. 2021, https://www.animalfacs.com/dogfacs
 """
 
 from dataclasses import dataclass, field
 from typing import Optional
+
 import numpy as np
 
-from packages.models.delta_action_units import DeltaActionUnit, ACTION_UNIT_NAMES
+from packages.data.schemas import EMOTION_CLASSES
+from packages.models.delta_action_units import DeltaActionUnit
 
-
-# Emotion classes (6 total)
-EMOTION_CLASSES = ['happy', 'sad', 'angry', 'fearful', 'relaxed', 'neutral']
-NUM_EMOTIONS = len(EMOTION_CLASSES)
+NUM_EMOTIONS: int = len(EMOTION_CLASSES)
 
 
 @dataclass
 class EmotionPrediction:
     """
-    Result of emotion prediction.
+    Wynik klasyfikacji emocji.
 
     Attributes:
-        emotion_id: Emotion class ID (0-5)
-        emotion: Emotion name (happy, sad, angry, fearful, relaxed, neutral)
-        confidence: Prediction confidence (0.0-1.0)
-        probabilities: Probabilities for all 6 classes
-        action_units: Action Unit values (DeltaActionUnit ratios or absolute values)
-        rule_applied: Name of rule that matched (for transparency)
+        emotion_id: ID klasy emocji (0-8)
+        emotion: Nazwa emocji (happy, sad, angry, fearful, relaxed,
+                 neutral, surprise, pain, submission)
+        confidence: Pewność predykcji (0.0-1.0)
+        probabilities: Prawdopodobieństwa dla wszystkich 9 klas
+        action_units: Wartości Action Units (ratio)
+        rule_applied: Nazwa reguły która dopasowała (dla przejrzystości)
     """
+
     emotion_id: int
     emotion: str
     confidence: float
@@ -46,7 +50,7 @@ class EmotionPrediction:
     rule_applied: Optional[str] = None
 
     def to_dict(self) -> dict:
-        """Convert prediction to dictionary."""
+        """Konwertuje predykcję do słownika."""
         result = {
             "emotion_id": self.emotion_id,
             "emotion": self.emotion,
@@ -61,10 +65,10 @@ class EmotionPrediction:
 
     def to_coco(self) -> dict:
         """
-        Return data in COCO-compatible format.
+        Zwraca dane w formacie kompatybilnym z COCO.
 
         Returns:
-            Dictionary with emotion and emotion_confidence
+            Słownik z emotion i emotion_confidence
         """
         result = {
             "emotion": self.emotion,
@@ -78,18 +82,19 @@ class EmotionPrediction:
 @dataclass
 class EmotionRule:
     """
-    Single emotion classification rule (poselet matcher).
+    Pojedyncza reguła klasyfikacji emocji (poselet matcher).
 
-    Based on DogFACS scientific research - matches specific AU combinations.
+    Oparta na badaniach naukowych DogFACS — dopasowuje konkretne kombinacje AU.
 
     Attributes:
-        emotion: Emotion label (e.g., "happy", "angry")
-        priority: Rule priority (higher = checked first)
-        required_aus: AU_name → min_ratio (must exceed for match)
-        inhibitory_aus: AU_name → max_ratio (must stay below for match)
-        optional_aus: AU_name → min_ratio (bonus if present)
-        min_confidence: Minimum confidence threshold for rule activation
+        emotion: Etykieta emocji (np. "happy", "angry")
+        priority: Priorytet reguły (wyższy = sprawdzany wcześniej)
+        required_aus: AU_name → min_ratio (musi być przekroczony)
+        inhibitory_aus: AU_name → max_ratio (musi pozostać poniżej)
+        optional_aus: AU_name → min_ratio (bonus jeśli obecny)
+        min_confidence: Minimalny próg pewności dla aktywacji reguły
     """
+
     emotion: str
     priority: int
     required_aus: dict[str, float] = field(default_factory=dict)
@@ -97,228 +102,298 @@ class EmotionRule:
     optional_aus: dict[str, float] = field(default_factory=dict)
     min_confidence: float = 0.7
 
-    def matches(self, delta_aus: dict[str, DeltaActionUnit]) -> tuple[bool, float]:
+    def matches(
+        self,
+        delta_aus: dict[str, DeltaActionUnit],
+    ) -> tuple[bool, float]:
         """
-        Check if rule matches current AU state.
+        Sprawdza czy reguła pasuje do aktualnego stanu AU.
 
         Args:
-            delta_aus: Dictionary of AU_name → DeltaActionUnit
+            delta_aus: Słownik AU_name → DeltaActionUnit
 
         Returns:
-            (matches, confidence_score)
+            (dopasowanie, wynik_pewności)
         """
-        # Check required AUs
-        for au_name, min_ratio in self.required_aus.items():
-            if au_name not in delta_aus:
-                return False, 0.0
-            if delta_aus[au_name].ratio < min_ratio:
-                return False, 0.0
+        if not self._required_aus_met(delta_aus):
+            return False, 0.0
+        if not self._inhibitory_aus_clear(delta_aus):
+            return False, 0.0
 
-        # Check inhibitory AUs (must stay LOW)
-        for au_name, max_ratio in self.inhibitory_aus.items():
-            if au_name in delta_aus:
-                if delta_aus[au_name].ratio > max_ratio:
-                    return False, 0.0
-
-        # Compute confidence
-        confidence = self._compute_match_confidence(delta_aus)
-
+        confidence = self._compute_confidence(delta_aus)
         return confidence >= self.min_confidence, confidence
 
-    def _compute_match_confidence(self, delta_aus: dict[str, DeltaActionUnit]) -> float:
-        """Compute match confidence based on AU confidences."""
-        # Base confidence from required AUs
+    def _required_aus_met(self, delta_aus: dict[str, DeltaActionUnit]) -> bool:
+        """
+        Sprawdza czy wszystkie wymagane AU są aktywowane.
+
+        Konwencja progu:
+        - threshold >= 1.0: AU aktywowany przez wzrost (ratio >= threshold)
+        - threshold < 1.0: AU aktywowany przez spadek (ratio <= threshold),
+          np. AU143 (zmrużenie) wymaga ratio <= 0.75
+        """
+        for au_name, threshold in self.required_aus.items():
+            if au_name not in delta_aus:
+                return False
+            ratio = delta_aus[au_name].ratio
+            if threshold < 1.0:
+                if ratio > threshold:
+                    return False
+            else:
+                if ratio < threshold:
+                    return False
+        return True
+
+    def _inhibitory_aus_clear(self, delta_aus: dict[str, DeltaActionUnit]) -> bool:
+        """Sprawdza czy żaden hamujący AU nie jest aktywowany."""
+        return all(
+            au_name not in delta_aus or delta_aus[au_name].ratio <= max_ratio
+            for au_name, max_ratio in self.inhibitory_aus.items()
+        )
+
+    def _compute_confidence(
+        self,
+        delta_aus: dict[str, DeltaActionUnit],
+    ) -> float:
+        """Oblicza pewność dopasowania na podstawie widoczności AU."""
         if self.required_aus:
-            required_confidences = [
+            confidences = [
                 delta_aus[au_name].confidence
-                for au_name in self.required_aus.keys()
+                for au_name in self.required_aus
                 if au_name in delta_aus
             ]
-            base_confidence = np.mean(required_confidences) if required_confidences else 0.5
+            base = float(np.mean(confidences)) if confidences else 0.5
         else:
-            # Fallback rules (neutral, relaxed) - use overall AU confidence
-            all_confidences = [au.confidence for au in delta_aus.values()]
-            base_confidence = np.mean(all_confidences) if all_confidences else 0.5
+            all_conf = [au.confidence for au in delta_aus.values()]
+            base = float(np.mean(all_conf)) if all_conf else 0.5
 
-        # Bonus from optional AUs
-        bonus = 0.0
-        for au_name, min_ratio in self.optional_aus.items():
-            if au_name in delta_aus and delta_aus[au_name].ratio >= min_ratio:
-                bonus += 0.05  # +5% per optional AU match
-
-        return min(1.0, base_confidence + bonus)
+        bonus = sum(
+            0.05
+            for au_name, threshold in self.optional_aus.items()
+            if au_name in delta_aus and (
+                (threshold < 1.0 and delta_aus[au_name].ratio <= threshold)
+                or (threshold >= 1.0 and delta_aus[au_name].ratio >= threshold)
+            )
+        )
+        return min(1.0, base + bonus)
 
 
 # =============================================================================
-# EMOTION RULES DATABASE (Based on official DogFACS codes)
+# BAZA REGUŁ EMOCJI (na podstawie oficjalnych kodów DogFACS)
+# Źródło: Mota-Rojas et al. 2021, Waller et al. 2013
 # =============================================================================
 
-EMOTION_RULES = [
-    # HAPPY - Priority 100
+EMOTION_RULES: list[EmotionRule] = [
+
+    # HAPPY — priorytet 100
+    # Kąciki ust uniesione (AU12), uszy do przodu (EAD101), pysk otwarty (AU25)
     EmotionRule(
         emotion="happy",
         priority=100,
         required_aus={
-            "AU12": 1.20,      # Lip Corner Puller (smile) 20%+
-            "EAD102": 1.10,    # Ears Forward 10%+
+            "AU12":   1.20,  # Lip Corner Puller: uśmiech 20%+
+            "EAD101": 1.10,  # Ears Forward: uszy do przodu 10%+
         },
         inhibitory_aus={
-            "EAD103": 1.10,    # Ears NOT flattened
-            "AU26": 1.25,      # Jaw NOT excessively open (not panting)
+            "EAD103": 1.10,  # NIE: uszy przyciśnięte
+            "AU26":   1.30,  # NIE: ekstremalny opad żuchwy
         },
         optional_aus={
-            "AU101": 1.10,     # Bonus: Inner brow raised (playful)
+            "AU25":  1.10,  # Bonus: wargi rozchylone
+            "AU101": 1.10,  # Bonus: uniesiona brew (zabawa)
+            "AD19":  1.15,  # Bonus: widoczny język
         },
     ),
 
-    # ANGRY - Priority 95
+    # ANGRY — priorytet 95
+    # Otwarty pysk (AU26/AU27), zmarszczony nos (AU109/AU110), uszy do tyłu
     EmotionRule(
         emotion="angry",
         priority=95,
         required_aus={
-            "AU26": 1.25,      # Jaw drop 25%+ (open mouth)
-            "AU12": 1.15,      # Lip corners (snarl)
+            "AU26":  1.25,  # Jaw Drop: opad żuchwy 25%+
+            "AU109": 1.15,  # Nose Wrinkler Left: zmarszczenie nosa
         },
         inhibitory_aus={
-            "EAD102": 1.10,    # Ears NOT forward
+            "EAD101": 1.10,  # NIE: uszy do przodu (to byłoby happy)
         },
         optional_aus={
-            "AU101": 1.15,     # Tense brows
-            "EAD103": 1.10,    # Ears back/flattened
+            "AU110":  1.15,  # Bonus: zmarszczenie nosa prawa
+            "AU101":  1.15,  # Bonus: napięcie brwi
+            "EAD103": 1.10,  # Bonus: uszy przyciśnięte
+            "AU27":   1.20,  # Bonus: szerokie otwarcie pyska
         },
     ),
 
-    # FEARFUL - Priority 90
+    # SURPRISE — priorytet 92
+    # Szeroko otwarte oczy (AU143 mała wartość = NIE zmrużone), usta otwarte (AU25), uszy do przodu
+    EmotionRule(
+        emotion="surprise",
+        priority=92,
+        required_aus={
+            "AU25":   1.20,  # Lips Part: rozchylone wargi 20%+
+            "EAD101": 1.15,  # Ears Forward: uszy do przodu 15%+
+            "AU101":  1.10,  # Inner Brow Raiser: uniesione brwi
+        },
+        inhibitory_aus={
+            "EAD103": 1.10,  # NIE: uszy płaskie
+            "AU109":  1.15,  # NIE: zmarszczony nos (byłoby angry)
+        },
+        optional_aus={
+            "AU26":  1.15,  # Bonus: opad żuchwy
+        },
+    ),
+
+    # FEARFUL — priorytet 90
+    # Uszy przyciśnięte (EAD103), napięte brwi (AU101), pysk zamknięty
     EmotionRule(
         emotion="fearful",
         priority=90,
         required_aus={
-            "EAD103": 1.15,    # Ears flattened 15%+
-            "AU101": 1.10,     # Brows raised (tension)
+            "EAD103": 1.15,  # Ears Flattener: uszy płaskie 15%+
+            "AU101":  1.10,  # Inner Brow Raiser: napięcie brwi
         },
         inhibitory_aus={
-            "AU26": 1.20,      # Mouth NOT wide open
+            "AU26":   1.20,  # NIE: szeroko otwarty pysk
+            "EAD101": 1.10,  # NIE: uszy do przodu
         },
         optional_aus={
-            "AD37": 1.10,      # Nose lick (stress indicator)
-            "AU117": 1.15,     # Eye closure (blinking)
+            "AD137":  1.10,  # Bonus: lizanie nosa (stres)
+            "AU145":  0.85,  # Bonus: mrugnięcie (obniżona widoczność)
+            "AU118":  1.10,  # Bonus: rozciągnięte wargi
         },
     ),
 
-    # SAD - Priority 85
+    # PAIN — priorytet 88
+    # Zmrużone oczy (AU143), napięte brwi (AU101), opuszczona dolna warga (AU116)
     EmotionRule(
-        emotion="sad",
-        priority=85,
+        emotion="pain",
+        priority=88,
         required_aus={
-            "EAD103": 1.10,    # Ears slightly back
+            "AU143": 0.75,  # Lid Tightener: zmrużenie (ratio < 1 = mniejsze otwarcie)
+            "AU101": 1.15,  # Inner Brow Raiser: napięcie/uniesienie brwi
+            "AU116": 1.15,  # Lower Lip Depressor: opuszczona dolna warga
         },
         inhibitory_aus={
-            "AU26": 1.15,      # Mouth NOT open
-            "AU12": 1.10,      # No smile
+            "EAD101": 1.10,  # NIE: uszy do przodu
+            "AU12":   1.15,  # NIE: uśmiech
         },
-        optional_aus={},
+        optional_aus={
+            "EAD103": 1.10,  # Bonus: uszy płaskie
+            "AD137":  1.10,  # Bonus: lizanie nosa
+        },
     ),
 
-    # RELAXED - Priority 70
+    # SUBMISSION — priorytet 85
+    # Uszy płaskie (EAD103), oczy zmrużone (AU145), ciało zniżone (proxy: uszy bardzo nisko)
+    EmotionRule(
+        emotion="submission",
+        priority=85,
+        required_aus={
+            "EAD103": 1.20,  # Ears Flattener: uszy mocno przyciśnięte 20%+
+            "EAD102": 1.10,  # Ears Adductor: uszy zbliżone do siebie
+        },
+        inhibitory_aus={
+            "AU26":   1.15,  # NIE: otwarty pysk
+            "AU12":   1.15,  # NIE: uśmiech
+            "AU109":  1.15,  # NIE: zmarszczony nos
+        },
+        optional_aus={
+            "AU145":  0.85,  # Bonus: mrugnięcie / przymknięte oczy
+            "AD37":   1.10,  # Bonus: oblizywanie warg
+        },
+    ),
+
+    # SAD — priorytet 80
+    # Uszy lekko do tyłu (EAD103 słabo), brak aktywności reszty twarzy
+    EmotionRule(
+        emotion="sad",
+        priority=80,
+        required_aus={
+            "EAD103": 1.10,  # Ears Flattener: uszy lekko przyciśnięte
+        },
+        inhibitory_aus={
+            "AU26":   1.15,  # NIE: otwarty pysk
+            "AU12":   1.10,  # NIE: uśmiech
+            "EAD101": 1.10,  # NIE: uszy do przodu
+        },
+        optional_aus={
+            "AU116": 1.10,  # Bonus: opuszczona dolna warga
+        },
+    ),
+
+    # RELAXED — priorytet 70
+    # Brak silnych aktywacji, uszy w normalnej pozycji
     EmotionRule(
         emotion="relaxed",
         priority=70,
-        required_aus={},  # No strong activations required
+        required_aus={},
         inhibitory_aus={
-            "AU26": 1.15,      # Mouth not open
-            "EAD103": 1.10,    # Ears not flattened
-            "EAD102": 1.10,    # Ears not forward
-            "AU101": 1.10,     # Brows not raised
+            "AU26":   1.15,  # NIE: otwarty pysk
+            "EAD103": 1.10,  # NIE: uszy płaskie
+            "EAD101": 1.10,  # NIE: uszy napięte do przodu
+            "AU101":  1.10,  # NIE: napięte brwi
+            "AU109":  1.15,  # NIE: zmarszczony nos
         },
         optional_aus={},
     ),
 
-    # NEUTRAL - Priority 50 (lowest, fallback)
+    # NEUTRAL — priorytet 50 (fallback, zawsze dopasowuje)
     EmotionRule(
         emotion="neutral",
         priority=50,
         required_aus={},
         inhibitory_aus={},
         optional_aus={},
-        min_confidence=0.0,  # Always matches as fallback
+        min_confidence=0.0,
     ),
 ]
 
 
 class DogFACSRuleEngine:
     """
-    Rule-based emotion classifier using strict poselet matching.
+    Silnik reguł do klasyfikacji emocji psów metodą poselet matching.
 
-    NO MACHINE LEARNING - Uses only DogFACS scientific rules.
+    BRAK UCZENIA MASZYNOWEGO — używa wyłącznie reguł naukowych DogFACS.
+    Reguły sprawdzane są w kolejności priorytetu (najwyższy pierwszy).
+    Pierwsza pasująca reguła wygrywa.
 
-    Example:
+    Przykład:
         >>> engine = DogFACSRuleEngine()
-        >>> delta_aus = {...}  # DeltaActionUnit dictionary
+        >>> delta_aus = {...}  # słownik DeltaActionUnit
         >>> prediction = engine.classify(delta_aus)
-        >>> print(f"Emotion: {prediction.emotion} (rule: {prediction.rule_applied})")
+        >>> print(f"Emocja: {prediction.emotion} (reguła: {prediction.rule_applied})")
     """
 
-    def __init__(self, rules: list[EmotionRule] = None):
+    def __init__(self, rules: Optional[list[EmotionRule]] = None) -> None:
         """
-        Initialize rule engine.
+        Inicjalizuje silnik reguł.
 
         Args:
-            rules: List of EmotionRule objects (uses EMOTION_RULES if None)
+            rules: Lista obiektów EmotionRule (używa EMOTION_RULES jeśli None)
         """
-        self.rules = rules if rules is not None else EMOTION_RULES
-        # Sort by priority (highest first)
-        self.rules = sorted(self.rules, key=lambda r: r.priority, reverse=True)
+        source_rules = rules if rules is not None else EMOTION_RULES
+        self.rules = sorted(source_rules, key=lambda r: r.priority, reverse=True)
 
     def classify(
         self,
-        delta_aus: dict[str, DeltaActionUnit]
+        delta_aus: dict[str, DeltaActionUnit],
     ) -> EmotionPrediction:
         """
-        Classify emotion using priority-based rule matching.
-
-        First matching rule wins (highest priority).
+        Klasyfikuje emocję używając dopasowania reguł według priorytetu.
 
         Args:
-            delta_aus: Dictionary of AU_name → DeltaActionUnit
+            delta_aus: Słownik AU_name → DeltaActionUnit
 
         Returns:
-            EmotionPrediction with classified emotion
+            EmotionPrediction z klasyfikowaną emocją
         """
-        # Try each rule in priority order
         for rule in self.rules:
             matches, confidence = rule.matches(delta_aus)
-
             if matches:
-                # Build probabilities dict
-                probabilities = {r.emotion: 0.0 for r in self.rules}
-                probabilities[rule.emotion] = confidence
+                return self._build_prediction(rule, confidence, delta_aus)
 
-                # Add partial matches with lower confidence
-                for other_rule in self.rules:
-                    if other_rule.emotion != rule.emotion:
-                        partial_match, partial_conf = other_rule.matches(delta_aus)
-                        if partial_match:
-                            probabilities[other_rule.emotion] = partial_conf * 0.5
-
-                # Normalize probabilities
-                total = sum(probabilities.values())
-                if total > 0:
-                    probabilities = {k: v / total for k, v in probabilities.items()}
-
-                # Build rule name for transparency
-                rule_name = f"{rule.emotion}_priority_{rule.priority}"
-
-                return EmotionPrediction(
-                    emotion_id=EMOTION_CLASSES.index(rule.emotion),
-                    emotion=rule.emotion,
-                    confidence=confidence,
-                    probabilities=probabilities,
-                    action_units={au.name: au.ratio for au in delta_aus.values()},
-                    rule_applied=rule_name,
-                )
-
-        # Should never reach here (neutral always matches)
-        # Fallback: neutral with low confidence
+        # Fallback — neutral z niską pewnością (nie powinno wystąpić)
         return EmotionPrediction(
             emotion_id=EMOTION_CLASSES.index("neutral"),
             emotion="neutral",
@@ -328,202 +403,71 @@ class DogFACSRuleEngine:
             rule_applied="fallback_neutral",
         )
 
+    def _build_prediction(
+        self,
+        matched_rule: EmotionRule,
+        confidence: float,
+        delta_aus: dict[str, DeltaActionUnit],
+    ) -> EmotionPrediction:
+        """
+        Buduje obiekt EmotionPrediction dla dopasowanej reguły.
+
+        Args:
+            matched_rule: Reguła która dopasowała
+            confidence: Pewność dopasowania
+            delta_aus: Słownik AU do obliczenia prawdopodobieństw
+
+        Returns:
+            EmotionPrediction
+        """
+        probabilities = {r.emotion: 0.0 for r in self.rules}
+        probabilities[matched_rule.emotion] = confidence
+
+        # Częściowe dopasowania innych reguł z obniżoną pewnością
+        for other_rule in self.rules:
+            if other_rule.emotion == matched_rule.emotion:
+                continue
+            partial_match, partial_conf = other_rule.matches(delta_aus)
+            if partial_match:
+                probabilities[other_rule.emotion] = partial_conf * 0.5
+
+        # Normalizacja prawdopodobieństw
+        total = sum(probabilities.values())
+        if total > 0:
+            probabilities = {k: v / total for k, v in probabilities.items()}
+
+        return EmotionPrediction(
+            emotion_id=EMOTION_CLASSES.index(matched_rule.emotion),
+            emotion=matched_rule.emotion,
+            confidence=confidence,
+            probabilities=probabilities,
+            action_units={au.name: au.ratio for au in delta_aus.values()},
+            rule_applied=f"{matched_rule.emotion}_priority_{matched_rule.priority}",
+        )
+
 
 def classify_emotion_from_delta_aus(
     delta_aus: dict[str, DeltaActionUnit],
     rule_engine: Optional[DogFACSRuleEngine] = None,
 ) -> EmotionPrediction:
     """
-    Classify emotion from delta Action Units.
+    Klasyfikuje emocję na podstawie delta Action Units.
 
-    Convenience function using DogFACSRuleEngine.
+    Funkcja pomocnicza używająca DogFACSRuleEngine.
 
     Args:
-        delta_aus: Dictionary of AU_name → DeltaActionUnit
-        rule_engine: Optional custom rule engine (creates default if None)
+        delta_aus: Słownik AU_name → DeltaActionUnit
+        rule_engine: Opcjonalny niestandardowy silnik reguł (tworzy domyślny jeśli None)
 
     Returns:
         EmotionPrediction
 
-    Example:
+    Przykład:
         >>> from packages.models.delta_action_units import extract_delta_action_units
-        >>> neutral_kp = np.array([...])  # Neutral frame keypoints
-        >>> target_kp = np.array([...])   # Target frame keypoints
+        >>> neutral_kp = np.zeros(138)
+        >>> target_kp = np.zeros(138)
         >>> delta_aus = extract_delta_action_units(neutral_kp, target_kp)
         >>> prediction = classify_emotion_from_delta_aus(delta_aus)
     """
-    if rule_engine is None:
-        rule_engine = DogFACSRuleEngine()
-
-    return rule_engine.classify(delta_aus)
-
-
-# =============================================================================
-# BACKWARD COMPATIBILITY: Old rule-based classifier
-# =============================================================================
-# Keep for existing code that uses absolute AU values (not delta)
-
-def classify_emotion_from_au(
-    au_values: dict[str, float],
-    neutral_threshold: float = 0.35,
-) -> EmotionPrediction:
-    """
-    LEGACY: Rule-based classification from absolute AU values.
-
-    This function uses old AU names (AU_brow_raise, AU_ear_forward, etc.)
-    and weighted scoring instead of strict poselet matching.
-
-    Kept for backward compatibility. New code should use:
-    classify_emotion_from_delta_aus() with DeltaActionUnits.
-
-    Args:
-        au_values: Dictionary of AU_name → value (0.0-1.0) - OLD AU names
-        neutral_threshold: Threshold below which emotion = neutral
-
-    Returns:
-        EmotionPrediction
-    """
-    # Map old AU names to new DogFACS codes for compatibility
-    au_mapping = {
-        'AU_brow_raise': 'AU101',
-        'AU_eye_opening': 'AU115',
-        'AU_mouth_open': 'AU12',      # Approximation
-        'AU_jaw_drop': 'AU26',
-        'AU_nose_wrinkle': 'AU301',   # Not in new codes, skip
-        'AU_lip_corner_pull': 'AU12',
-        'AU_ear_forward': 'EAD102',
-        'AU_ear_back': 'EAD103',
-        'AU_ear_asymmetry': 'EAD104', # Not in new codes, skip
-    }
-
-    # Get values with fallbacks
-    brow_raise = au_values.get('AU_brow_raise', 0.0)
-    eye_opening = au_values.get('AU_eye_opening', 0.5)
-    mouth_open = au_values.get('AU_mouth_open', 0.0)
-    jaw_drop = au_values.get('AU_jaw_drop', 0.0)
-    nose_wrinkle = au_values.get('AU_nose_wrinkle', 0.0)
-    lip_corner_pull = au_values.get('AU_lip_corner_pull', 0.0)
-    ear_forward = au_values.get('AU_ear_forward', 0.0)
-    ear_back = au_values.get('AU_ear_back', 0.0)
-    ear_asymmetry = au_values.get('AU_ear_asymmetry', 0.0)
-
-    blink = 1.0 - eye_opening
-    nose_lick = max(0.0, mouth_open * 0.5 - jaw_drop * 0.3)
-
-    all_au_values = [
-        brow_raise, blink, mouth_open, jaw_drop, nose_wrinkle,
-        lip_corner_pull, ear_forward, ear_back, ear_asymmetry, nose_lick
-    ]
-    mean_activation = sum(all_au_values) / len(all_au_values)
-
-    # Scoring (weighted)
-    happy_score = (
-        mouth_open * 0.35 +
-        ear_forward * 0.25 +
-        brow_raise * 0.15 +
-        (1 - ear_back) * 0.15 +
-        (1 - nose_lick) * 0.10
-    )
-
-    sad_score = (
-        ear_back * 0.40 +
-        blink * 0.15 +
-        (1 - brow_raise) * 0.15 +
-        (1 - mouth_open) * 0.15 +
-        nose_lick * 0.15
-    )
-
-    angry_score = (
-        ((mouth_open + jaw_drop) / 2) * 0.30 +
-        lip_corner_pull * 0.25 +
-        nose_wrinkle * 0.15 +
-        ((ear_back + ear_asymmetry) / 2) * 0.15 +
-        blink * 0.15
-    )
-
-    fearful_score = (
-        ear_back * 0.30 +
-        nose_lick * 0.25 +
-        blink * 0.20 +
-        brow_raise * 0.12 +
-        (1 - mouth_open) * 0.13
-    )
-
-    relaxed_score = (
-        (1 - mean_activation) * 0.50 +
-        (1 - ear_back) * 0.15 +
-        (1 - ear_forward) * 0.15 +
-        (1 - nose_lick) * 0.10 +
-        (1 - nose_wrinkle) * 0.10
-    )
-
-    neutral_score = (
-        (1 - mean_activation) * 0.70 +
-        (1 - (mouth_open + jaw_drop) / 2) * 0.15 +
-        (1 - (ear_back + ear_forward) / 2) * 0.15
-    )
-
-    scores = {
-        'happy': happy_score,
-        'sad': sad_score,
-        'angry': angry_score,
-        'fearful': fearful_score,
-        'relaxed': relaxed_score,
-        'neutral': neutral_score,
-    }
-
-    # Softmax normalization
-    temperature = 2.0
-    exp_scores = {k: np.exp(v * temperature) for k, v in scores.items()}
-    total_exp = sum(exp_scores.values())
-    probabilities = {k: v / total_exp for k, v in exp_scores.items()}
-
-    best_emotion = max(probabilities, key=probabilities.get)
-    best_prob = probabilities[best_emotion]
-
-    if best_prob < neutral_threshold and best_emotion != 'neutral':
-        best_emotion = 'neutral'
-        best_prob = probabilities['neutral']
-
-    emotion_id = EMOTION_CLASSES.index(best_emotion)
-
-    return EmotionPrediction(
-        emotion_id=emotion_id,
-        emotion=best_emotion,
-        confidence=best_prob,
-        probabilities=probabilities,
-        action_units=au_values,
-        rule_applied="legacy_weighted_scoring",
-    )
-
-
-def classify_emotion_from_keypoints(
-    keypoints_flat: np.ndarray,
-    neutral_threshold: float = 0.35,
-) -> EmotionPrediction:
-    """
-    LEGACY: Rule-based classification directly from keypoints.
-
-    Uses old absolute AU extraction (not delta-based).
-    Kept for backward compatibility.
-
-    Args:
-        keypoints_flat: Array [x0, y0, v0, ...] (60 values)
-        neutral_threshold: Threshold for neutral
-
-    Returns:
-        EmotionPrediction
-    """
-    from .action_units import extract_action_units, ACTION_UNIT_NAMES
-
-    # Extract absolute AUs (old method)
-    au_prediction = extract_action_units(keypoints_flat)
-
-    # Convert to dict
-    au_dict = {
-        ACTION_UNIT_NAMES[i]: float(au_prediction[i])
-        for i in range(len(ACTION_UNIT_NAMES))
-    }
-
-    # Classify using legacy method
-    return classify_emotion_from_au(au_dict, neutral_threshold)
+    engine = rule_engine if rule_engine is not None else DogFACSRuleEngine()
+    return engine.classify(delta_aus)

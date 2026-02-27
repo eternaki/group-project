@@ -17,15 +17,13 @@ import numpy as np
 from packages.models import (
     BBoxConfig,
     BBoxModel,
-    Detection,
     BreedConfig,
     BreedModel,
     BreedPrediction,
+    EmotionPrediction,
     KeypointsConfig,
     KeypointsModel,
     KeypointsPrediction,
-    EmotionPrediction,
-    classify_emotion_from_keypoints,
 )
 
 
@@ -362,17 +360,9 @@ class InferencePipeline:
                 except Exception as e:
                     print(f"  ! Błąd detekcji keypoints: {e}")
 
-            # Klasyfikacja emocji (rule-based: keypoints → AU → emotion)
-            if annotation.keypoints is not None:
-                try:
-                    keypoints_flat = annotation.keypoints.to_coco_format()
-                    import numpy as np
-                    emotion_pred = classify_emotion_from_keypoints(
-                        np.array(keypoints_flat, dtype=np.float32)
-                    )
-                    annotation.emotion = emotion_pred
-                except Exception as e:
-                    print(f"  ! Błąd klasyfikacji emocji: {e}")
+            # Klasyfikacja emocji wymaga neutral frame — pomijamy w trybie single-frame.
+            # Emocja jest klasyfikowana w process_video_for_dataset() po auto-detekcji
+            # klatki neutralnej i obliczeniu delta AU względem niej.
 
             result.annotations.append(annotation)
 
@@ -435,13 +425,13 @@ class InferencePipeline:
         if not self._models_loaded:
             raise RuntimeError("Pipeline nie załadowany. Wywołaj load() najpierw.")
 
+        from packages.models.delta_action_units import DeltaActionUnitsExtractor
+        from packages.models.emotion import classify_emotion_from_delta_aus
         from packages.pipeline.neutral_frame import (
             NeutralFrameDetector,
             estimate_head_pose,
         )
-        from packages.models.delta_action_units import DeltaActionUnitsExtractor
         from packages.pipeline.peak_selector import PeakFrameSelector, compute_tfm
-        from packages.models.emotion import classify_emotion_from_delta_aus
 
         print("\n" + "=" * 60)
         print("DATASET GENERATION PIPELINE")
@@ -644,7 +634,7 @@ class InferencePipeline:
         Returns:
             Obraz z narysowanymi anotacjami
         """
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
 
         # Kolory dla różnych psów
         colors = [

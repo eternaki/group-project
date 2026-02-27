@@ -6,12 +6,12 @@ Uses delta Action Units to compute facial movement magnitude.
 """
 
 from typing import Optional
+
 import numpy as np
 
 from packages.data.schemas import NUM_KEYPOINTS
 from packages.models.delta_action_units import DeltaActionUnit
 from packages.pipeline.neutral_frame import HeadPose
-
 
 # Weights for TFM computation (expressive AUs weighted higher)
 TFM_WEIGHTS = {

@@ -5,11 +5,9 @@ Definiuje interfejs dla wszystkich modeli w pipeline.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generic, Optional, TypeVar
-
-import numpy as np
+from typing import Any, Generic, TypeVar
 
 # Typ dla danych wejściowych i wyjściowych
 InputT = TypeVar("InputT")

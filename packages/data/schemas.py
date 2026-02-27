@@ -1,151 +1,231 @@
 """
-Схемы данных для проекта Dog FACS Dataset.
+Schematy danych dla projektu Dog FACS Dataset.
 
-Содержит определения 20 keypoints для детекции ключевых точек на морде собаки.
-Согласно спецификации проекта (docs/sprints/4-keypoint-detection/stories/4.2).
+Zawiera definicje 46 keypoints zgodnie ze schematem DogFLW (Dog Facial Landmarks),
+który jest podstawą do obliczania Action Units (AU) w systemie DogFACS.
+
+Źródło: DogFLW — psi odpowiednik punktów kluczowych twarzy człowieka.
 """
 
 from dataclasses import dataclass, field
 
-
-# Количество keypoints согласно спецификации проекта
-NUM_KEYPOINTS: int = 20
-
-# Количество keypoints в DogFLW dataset (для mapping)
-NUM_KEYPOINTS_DOGFLW: int = 46
+# Liczba keypoints zgodnie ze schematem DogFLW
+NUM_KEYPOINTS: int = 46
 
 
-# Названия 20 keypoints согласно спецификации
+# Nazwy 46 keypoints według schematu DogFLW
+# Grupowanie anatomiczne: oczy, brwi, uszy, nos, usta, pysk, kontur
 KEYPOINT_NAMES: list[str] = [
-    "left_eye",           # 0 - Left eye center
-    "right_eye",          # 1 - Right eye center
-    "nose",               # 2 - Nose tip
-    "left_ear_base",      # 3 - Base of left ear
-    "right_ear_base",     # 4 - Base of right ear
-    "left_ear_tip",       # 5 - Tip of left ear
-    "right_ear_tip",      # 6 - Tip of right ear
-    "left_mouth_corner",  # 7 - Left corner of mouth
-    "right_mouth_corner", # 8 - Right corner of mouth
-    "upper_lip",          # 9 - Center of upper lip
-    "lower_lip",          # 10 - Center of lower lip
-    "chin",               # 11 - Chin point
-    "left_cheek",         # 12 - Left cheek
-    "right_cheek",        # 13 - Right cheek
-    "forehead",           # 14 - Center forehead
-    "left_eyebrow",       # 15 - Left eyebrow (inner)
-    "right_eyebrow",      # 16 - Right eyebrow (inner)
-    "muzzle_top",         # 17 - Top of muzzle
-    "muzzle_left",        # 18 - Left side of muzzle
-    "muzzle_right",       # 19 - Right side of muzzle
+    # === Oczy (0-7) ===
+    "left_eye_inner",        # 0  - wewnętrzny kąt lewego oka
+    "left_eye_top",          # 1  - górna powieka lewego oka
+    "left_eye_outer",        # 2  - zewnętrzny kąt lewego oka
+    "left_eye_bottom",       # 3  - dolna powieka lewego oka
+    "right_eye_inner",       # 4  - wewnętrzny kąt prawego oka
+    "right_eye_top",         # 5  - górna powieka prawego oka
+    "right_eye_outer",       # 6  - zewnętrzny kąt prawego oka
+    "right_eye_bottom",      # 7  - dolna powieka prawego oka
+
+    # === Brwi (8-13) ===
+    "left_brow_inner",       # 8  - wewnętrzny punkt lewej brwi
+    "left_brow_center",      # 9  - środek lewej brwi
+    "left_brow_outer",       # 10 - zewnętrzny punkt lewej brwi
+    "right_brow_inner",      # 11 - wewnętrzny punkt prawej brwi
+    "right_brow_center",     # 12 - środek prawej brwi
+    "right_brow_outer",      # 13 - zewnętrzny punkt prawej brwi
+
+    # === Uszy (14-21) ===
+    "left_ear_base_front",   # 14 - przednia podstawa lewego ucha
+    "left_ear_base_back",    # 15 - tylna podstawa lewego ucha
+    "left_ear_mid",          # 16 - środek lewego ucha
+    "left_ear_tip",          # 17 - czubek lewego ucha
+    "right_ear_base_front",  # 18 - przednia podstawa prawego ucha
+    "right_ear_base_back",   # 19 - tylna podstawa prawego ucha
+    "right_ear_mid",         # 20 - środek prawego ucha
+    "right_ear_tip",         # 21 - czubek prawego ucha
+
+    # === Nos (22-25) ===
+    "nose_tip",              # 22 - czubek nosa
+    "nose_left_wing",        # 23 - lewe skrzydło nosa
+    "nose_right_wing",       # 24 - prawe skrzydło nosa
+    "nose_bridge",           # 25 - grzbiet nosa
+
+    # === Usta i wargi (26-33) ===
+    "mouth_left_corner",     # 26 - lewy kącik ust
+    "upper_lip_left",        # 27 - górna warga lewa
+    "upper_lip_center",      # 28 - środek górnej wargi
+    "upper_lip_right",       # 29 - górna warga prawa
+    "mouth_right_corner",    # 30 - prawy kącik ust
+    "lower_lip_right",       # 31 - dolna warga prawa
+    "lower_lip_center",      # 32 - środek dolnej wargi
+    "lower_lip_left",        # 33 - dolna warga lewa
+
+    # === Pysk / muzzle (34-37) ===
+    "muzzle_top",            # 34 - góra pyska
+    "muzzle_left",           # 35 - lewa strona pyska
+    "muzzle_right",          # 36 - prawa strona pyska
+    "chin",                  # 37 - podbródek
+
+    # === Kontur twarzy (38-45) ===
+    "forehead_center",       # 38 - środek czoła
+    "forehead_left",         # 39 - lewe czoło
+    "forehead_right",        # 40 - prawe czoło
+    "left_cheek_upper",      # 41 - górny lewy policzek
+    "left_cheek_lower",      # 42 - dolny lewy policzek
+    "right_cheek_upper",     # 43 - górny prawy policzek
+    "right_cheek_lower",     # 44 - dolny prawy policzek
+    "jaw_center",            # 45 - środek żuchwy
+]
+
+assert len(KEYPOINT_NAMES) == NUM_KEYPOINTS, (
+    f"Liczba nazw keypoints ({len(KEYPOINT_NAMES)}) "
+    f"musi być równa NUM_KEYPOINTS ({NUM_KEYPOINTS})"
+)
+
+
+# Indeksy kluczowych punktów dla czytelności kodu
+# Używane przez DeltaActionUnitsExtractor
+class KP:
+    """Indeksy keypoints dla łatwego dostępu w obliczeniach AU."""
+
+    # Oczy — centrum (dla AU)
+    LEFT_EYE_INNER: int = 0
+    LEFT_EYE_TOP: int = 1
+    LEFT_EYE_OUTER: int = 2
+    LEFT_EYE_BOTTOM: int = 3
+    RIGHT_EYE_INNER: int = 4
+    RIGHT_EYE_TOP: int = 5
+    RIGHT_EYE_OUTER: int = 6
+    RIGHT_EYE_BOTTOM: int = 7
+
+    # Brwi
+    LEFT_BROW_INNER: int = 8
+    LEFT_BROW_CENTER: int = 9
+    LEFT_BROW_OUTER: int = 10
+    RIGHT_BROW_INNER: int = 11
+    RIGHT_BROW_CENTER: int = 12
+    RIGHT_BROW_OUTER: int = 13
+
+    # Uszy
+    LEFT_EAR_BASE_FRONT: int = 14
+    LEFT_EAR_BASE_BACK: int = 15
+    LEFT_EAR_MID: int = 16
+    LEFT_EAR_TIP: int = 17
+    RIGHT_EAR_BASE_FRONT: int = 18
+    RIGHT_EAR_BASE_BACK: int = 19
+    RIGHT_EAR_MID: int = 20
+    RIGHT_EAR_TIP: int = 21
+
+    # Nos
+    NOSE_TIP: int = 22
+    NOSE_LEFT_WING: int = 23
+    NOSE_RIGHT_WING: int = 24
+    NOSE_BRIDGE: int = 25
+
+    # Usta
+    MOUTH_LEFT_CORNER: int = 26
+    UPPER_LIP_LEFT: int = 27
+    UPPER_LIP_CENTER: int = 28
+    UPPER_LIP_RIGHT: int = 29
+    MOUTH_RIGHT_CORNER: int = 30
+    LOWER_LIP_RIGHT: int = 31
+    LOWER_LIP_CENTER: int = 32
+    LOWER_LIP_LEFT: int = 33
+
+    # Pysk
+    MUZZLE_TOP: int = 34
+    MUZZLE_LEFT: int = 35
+    MUZZLE_RIGHT: int = 36
+    CHIN: int = 37
+
+    # Kontur
+    FOREHEAD_CENTER: int = 38
+    FOREHEAD_LEFT: int = 39
+    FOREHEAD_RIGHT: int = 40
+    LEFT_CHEEK_UPPER: int = 41
+    LEFT_CHEEK_LOWER: int = 42
+    RIGHT_CHEEK_UPPER: int = 43
+    RIGHT_CHEEK_LOWER: int = 44
+    JAW_CENTER: int = 45
+
+
+# Połączenia szkieletu do wizualizacji
+SKELETON_CONNECTIONS: list[tuple[int, int]] = [
+    # === Oczy ===
+    (KP.LEFT_EYE_INNER, KP.LEFT_EYE_TOP),
+    (KP.LEFT_EYE_TOP, KP.LEFT_EYE_OUTER),
+    (KP.LEFT_EYE_OUTER, KP.LEFT_EYE_BOTTOM),
+    (KP.LEFT_EYE_BOTTOM, KP.LEFT_EYE_INNER),
+    (KP.RIGHT_EYE_INNER, KP.RIGHT_EYE_TOP),
+    (KP.RIGHT_EYE_TOP, KP.RIGHT_EYE_OUTER),
+    (KP.RIGHT_EYE_OUTER, KP.RIGHT_EYE_BOTTOM),
+    (KP.RIGHT_EYE_BOTTOM, KP.RIGHT_EYE_INNER),
+
+    # === Brwi ===
+    (KP.LEFT_BROW_INNER, KP.LEFT_BROW_CENTER),
+    (KP.LEFT_BROW_CENTER, KP.LEFT_BROW_OUTER),
+    (KP.RIGHT_BROW_INNER, KP.RIGHT_BROW_CENTER),
+    (KP.RIGHT_BROW_CENTER, KP.RIGHT_BROW_OUTER),
+
+    # === Uszy ===
+    (KP.LEFT_EAR_BASE_FRONT, KP.LEFT_EAR_MID),
+    (KP.LEFT_EAR_MID, KP.LEFT_EAR_TIP),
+    (KP.RIGHT_EAR_BASE_FRONT, KP.RIGHT_EAR_MID),
+    (KP.RIGHT_EAR_MID, KP.RIGHT_EAR_TIP),
+
+    # === Nos ===
+    (KP.NOSE_BRIDGE, KP.NOSE_TIP),
+    (KP.NOSE_LEFT_WING, KP.NOSE_TIP),
+    (KP.NOSE_RIGHT_WING, KP.NOSE_TIP),
+
+    # === Usta ===
+    (KP.MOUTH_LEFT_CORNER, KP.UPPER_LIP_LEFT),
+    (KP.UPPER_LIP_LEFT, KP.UPPER_LIP_CENTER),
+    (KP.UPPER_LIP_CENTER, KP.UPPER_LIP_RIGHT),
+    (KP.UPPER_LIP_RIGHT, KP.MOUTH_RIGHT_CORNER),
+    (KP.MOUTH_LEFT_CORNER, KP.LOWER_LIP_LEFT),
+    (KP.LOWER_LIP_LEFT, KP.LOWER_LIP_CENTER),
+    (KP.LOWER_LIP_CENTER, KP.LOWER_LIP_RIGHT),
+    (KP.LOWER_LIP_RIGHT, KP.MOUTH_RIGHT_CORNER),
+
+    # === Pysk ===
+    (KP.NOSE_TIP, KP.MUZZLE_TOP),
+    (KP.MUZZLE_TOP, KP.UPPER_LIP_CENTER),
+    (KP.MUZZLE_LEFT, KP.MOUTH_LEFT_CORNER),
+    (KP.MUZZLE_RIGHT, KP.MOUTH_RIGHT_CORNER),
+    (KP.CHIN, KP.LOWER_LIP_CENTER),
+
+    # === Kontur twarzy ===
+    (KP.FOREHEAD_CENTER, KP.FOREHEAD_LEFT),
+    (KP.FOREHEAD_CENTER, KP.FOREHEAD_RIGHT),
+    (KP.FOREHEAD_LEFT, KP.LEFT_BROW_OUTER),
+    (KP.FOREHEAD_RIGHT, KP.RIGHT_BROW_OUTER),
+    (KP.LEFT_CHEEK_UPPER, KP.LEFT_CHEEK_LOWER),
+    (KP.RIGHT_CHEEK_UPPER, KP.RIGHT_CHEEK_LOWER),
+    (KP.LEFT_CHEEK_LOWER, KP.JAW_CENTER),
+    (KP.RIGHT_CHEEK_LOWER, KP.JAW_CENTER),
+    (KP.JAW_CENTER, KP.CHIN),
 ]
 
 
-# Mapping z DogFLW 46 landmarks do 20 keypoints projektu
-# Indeksy odpowiadają przybliżonym pozycjom anatomicznym
-# Na podstawie grupowania w DogFLW:
-# - 0-1: oczy, 2-13: kontur, 14-19: nos, 20-31: usta, 32-45: pozostałe
-DOGFLW_TO_PROJECT_MAPPING: dict[int, int] = {
-    # left_eye (0) - DogFLW landmark dla lewego oka
-    0: 0,
-    # right_eye (1) - DogFLW landmark dla prawego oka
-    1: 1,
-    # nose (2) - DogFLW landmark dla nosa
-    14: 2,
-    # left_ear_base (3) - podstawa lewego ucha
-    32: 3,
-    # right_ear_base (4) - podstawa prawego ucha
-    36: 4,
-    # left_ear_tip (5) - czubek lewego ucha
-    34: 5,
-    # right_ear_tip (6) - czubek prawego ucha
-    38: 6,
-    # left_mouth_corner (7) - lewy kącik ust
-    20: 7,
-    # right_mouth_corner (8) - prawy kącik ust
-    24: 8,
-    # upper_lip (9) - górna warga
-    22: 9,
-    # lower_lip (10) - dolna warga
-    26: 10,
-    # chin (11) - podbródek
-    28: 11,
-    # left_cheek (12) - lewy policzek
-    4: 12,
-    # right_cheek (13) - prawy policzek
-    8: 13,
-    # forehead (14) - czoło
-    40: 14,
-    # left_eyebrow (15) - lewa brew
-    42: 15,
-    # right_eyebrow (16) - prawa brew
-    44: 16,
-    # muzzle_top (17) - góra pyska
-    16: 17,
-    # muzzle_left (18) - lewa strona pyska
-    6: 18,
-    # muzzle_right (19) - prawa strona pyska
-    10: 19,
-}
-
-# Odwrotny mapping: project index -> DogFLW index
-PROJECT_TO_DOGFLW_MAPPING: dict[int, int] = {
-    v: k for k, v in DOGFLW_TO_PROJECT_MAPPING.items()
-}
-
-
-# Skeleton connections dla wizualizacji - pełna forma pyska psa
-# Struktura tworzy rozpoznawalny kształt twarzy
-SKELETON_CONNECTIONS: list[tuple[int, int]] = [
-    # === Oczy ===
-    (0, 1),   # left_eye - right_eye (linia oczu)
-    (0, 15),  # left_eye - left_eyebrow
-    (1, 16),  # right_eye - right_eyebrow
-
-    # === Brwi i czoło ===
-    (15, 14),  # left_eyebrow - forehead
-    (16, 14),  # right_eyebrow - forehead
-    (15, 16),  # left_eyebrow - right_eyebrow (linia brwi)
-
-    # === Uszy ===
-    (3, 5),   # left_ear_base - left_ear_tip
-    (4, 6),   # right_ear_base - right_ear_tip
-    (3, 15),  # left_ear_base - left_eyebrow
-    (4, 16),  # right_ear_base - right_eyebrow
-
-    # === Nos i pysk ===
-    (0, 2),   # left_eye - nose
-    (1, 2),   # right_eye - nose
-    (14, 17), # forehead - muzzle_top (linia środkowa)
-    (17, 2),  # muzzle_top - nose
-    (2, 18),  # nose - muzzle_left
-    (2, 19),  # nose - muzzle_right
-
-    # === Policzki i kontur ===
-    (0, 12),  # left_eye - left_cheek
-    (1, 13),  # right_eye - right_cheek
-    (12, 18), # left_cheek - muzzle_left
-    (13, 19), # right_cheek - muzzle_right
-    (12, 7),  # left_cheek - left_mouth_corner
-    (13, 8),  # right_cheek - right_mouth_corner
-
-    # === Usta ===
-    (7, 9),   # left_mouth_corner - upper_lip
-    (8, 9),   # right_mouth_corner - upper_lip
-    (7, 10),  # left_mouth_corner - lower_lip
-    (8, 10),  # right_mouth_corner - lower_lip
-    (2, 9),   # nose - upper_lip
-    (9, 10),  # upper_lip - lower_lip
-
-    # === Podbródek ===
-    (10, 11), # lower_lip - chin
-    (7, 11),  # left_mouth_corner - chin
-    (8, 11),  # right_mouth_corner - chin
+# 9 klas emocji zgodnie z Mota-Rojas et al. 2021
+EMOTION_CLASSES: list[str] = [
+    "happy",
+    "sad",
+    "angry",
+    "fearful",
+    "relaxed",
+    "neutral",
+    "surprise",
+    "pain",
+    "submission",
 ]
 
 
 @dataclass
 class Keypoint:
-    """Jedna kluczowa punkta."""
+    """Jeden punkt kluczowy twarzy psa."""
+
     x: float
     y: float
     visibility: float = 1.0  # 0 = niewidoczny, 0.5 = częściowo, 1.0 = widoczny
@@ -154,6 +234,7 @@ class Keypoint:
 @dataclass
 class KeypointsAnnotation:
     """Anotacja keypoints dla jednego obrazu."""
+
     image_id: str
     keypoints: list[Keypoint] = field(default_factory=list)
 
@@ -165,65 +246,60 @@ class KeypointsAnnotation:
         return result
 
     @classmethod
-    def from_coco_format(cls, image_id: str, keypoints_flat: list[float]) -> "KeypointsAnnotation":
+    def from_coco_format(
+        cls,
+        image_id: str,
+        keypoints_flat: list[float],
+    ) -> "KeypointsAnnotation":
         """Tworzy z formatu COCO."""
-        keypoints = []
-        for i in range(0, len(keypoints_flat), 3):
-            keypoints.append(Keypoint(
+        keypoints = [
+            Keypoint(
                 x=keypoints_flat[i],
                 y=keypoints_flat[i + 1],
                 visibility=keypoints_flat[i + 2],
-            ))
+            )
+            for i in range(0, len(keypoints_flat), 3)
+        ]
         return cls(image_id=image_id, keypoints=keypoints)
 
 
-def map_dogflw_to_project(dogflw_keypoints: list[Keypoint]) -> list[Keypoint]:
+def get_keypoint_color(index: int) -> tuple[int, int, int]:
     """
-    Mapuje 46 keypoints z DogFLW do 20 keypoints projektu.
+    Zwraca kolor BGR dla keypoint według grupy anatomicznej.
 
     Args:
-        dogflw_keypoints: Lista 46 keypoints z modelu DogFLW
+        index: Indeks keypoint (0-45)
 
     Returns:
-        Lista 20 keypoints zgodnie ze specyfikacją projektu
+        Kolor w formacie BGR (Blue, Green, Red)
     """
-    if len(dogflw_keypoints) != NUM_KEYPOINTS_DOGFLW:
-        raise ValueError(
-            f"Oczekiwano {NUM_KEYPOINTS_DOGFLW} keypoints z DogFLW, "
-            f"otrzymano: {len(dogflw_keypoints)}"
-        )
-
-    project_keypoints = []
-    for project_idx in range(NUM_KEYPOINTS):
-        dogflw_idx = PROJECT_TO_DOGFLW_MAPPING[project_idx]
-        project_keypoints.append(dogflw_keypoints[dogflw_idx])
-
-    return project_keypoints
-
-
-def get_keypoint_color(index: int) -> tuple[int, int, int]:
-    """Zwraca kolor dla keypoint po indeksie."""
-    # Różne kolory dla różnych grup anatomicznych
-    if index in [0, 1]:  # Oczy
-        return (0, 255, 0)  # Zielony
-    elif index == 2:  # Nos
-        return (0, 0, 255)  # Niebieski
-    elif index in [3, 4, 5, 6]:  # Uszy
-        return (255, 165, 0)  # Pomarańczowy
-    elif index in [7, 8, 9, 10, 11]:  # Usta/podbródek
-        return (255, 255, 0)  # Żółty
-    elif index in [12, 13]:  # Policzki
-        return (255, 0, 0)  # Czerwony
-    elif index in [14, 15, 16]:  # Czoło/brwi
-        return (128, 0, 255)  # Fioletowy
-    elif index in [17, 18, 19]:  # Pysk
-        return (255, 0, 255)  # Magenta
-    else:
-        return (128, 128, 128)  # Szary (domyślny)
+    if 0 <= index <= 7:    # Oczy
+        return (0, 255, 0)
+    elif 8 <= index <= 13:  # Brwi
+        return (128, 0, 255)
+    elif 14 <= index <= 21: # Uszy
+        return (255, 165, 0)
+    elif 22 <= index <= 25: # Nos
+        return (0, 0, 255)
+    elif 26 <= index <= 33: # Usta
+        return (255, 255, 0)
+    elif 34 <= index <= 37: # Pysk
+        return (255, 0, 255)
+    elif 38 <= index <= 45: # Kontur
+        return (255, 0, 0)
+    return (128, 128, 128)  # Domyślny szary
 
 
 def get_keypoint_name(index: int) -> str:
-    """Zwraca nazwę keypoint po indeksie."""
+    """
+    Zwraca nazwę keypoint według indeksu.
+
+    Args:
+        index: Indeks keypoint (0-45)
+
+    Returns:
+        Nazwa keypoint lub 'unknown_N' jeśli poza zakresem
+    """
     if 0 <= index < NUM_KEYPOINTS:
         return KEYPOINT_NAMES[index]
     return f"unknown_{index}"

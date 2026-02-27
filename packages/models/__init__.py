@@ -4,25 +4,29 @@ Pakiet modeli AI dla projektu Dog FACS.
 Zawiera:
 - BBoxModel: Detekcja psów (YOLOv8)
 - BreedModel: Klasyfikacja ras (EfficientNet-B4)
-- KeypointsModel: Detekcja punktów kluczowych (SimpleBaseline)
-- DogFACSRuleEngine: Rule-based emotion classification (NO ML)
-- HeadPose: Estymacja pozycji głowy (filtrowanie nie-frontalnych)
-- ActionUnits: Ekstrakcja Action Units z keypoints
+- KeypointsModel: Detekcja 46 punktów kluczowych (SimpleBaseline / DogFLW)
+- DogFACSRuleEngine: Klasyfikacja emocji oparta na regułach DogFACS (bez ML)
+- HeadPoseEstimator: Estymacja pozycji głowy
+- DeltaActionUnitsExtractor: Ekstrakcja 21 Action Units z keypoints (delta vs. neutralna)
 """
 
 from .base import BaseModel, ModelConfig
 from .bbox import BBoxConfig, BBoxModel, Detection
 from .breed import BreedConfig, BreedModel, BreedPrediction
-from .keypoints import KeypointsConfig, KeypointsModel, KeypointsPrediction
+from .delta_action_units import (
+    ACTION_UNIT_NAMES,
+    NUM_ACTION_UNITS,
+    DeltaActionUnit,
+    DeltaActionUnitsExtractor,
+    extract_delta_action_units,
+)
 from .emotion import (
+    EMOTION_CLASSES,
+    EMOTION_RULES,
+    NUM_EMOTIONS,
+    DogFACSRuleEngine,
     EmotionPrediction,
     EmotionRule,
-    DogFACSRuleEngine,
-    EMOTION_CLASSES,
-    NUM_EMOTIONS,
-    EMOTION_RULES,
-    classify_emotion_from_au,
-    classify_emotion_from_keypoints,
     classify_emotion_from_delta_aus,
 )
 from .head_pose import (
@@ -31,13 +35,7 @@ from .head_pose import (
     estimate_head_pose,
     validate_head_pose,
 )
-from .action_units import (
-    ActionUnitsExtractor,
-    ActionUnitsPrediction,
-    ACTION_UNIT_NAMES,
-    NUM_ACTION_UNITS,
-    extract_action_units,
-)
+from .keypoints import KeypointsConfig, KeypointsModel, KeypointsPrediction
 
 __all__ = [
     # Base
@@ -55,25 +53,23 @@ __all__ = [
     "KeypointsConfig",
     "KeypointsModel",
     "KeypointsPrediction",
-    # Emotion (Rule-based only, NO ML)
+    # Emocje (rule-based, bez ML)
     "EmotionPrediction",
     "EmotionRule",
     "DogFACSRuleEngine",
     "EMOTION_CLASSES",
     "NUM_EMOTIONS",
     "EMOTION_RULES",
-    "classify_emotion_from_au",
-    "classify_emotion_from_keypoints",
     "classify_emotion_from_delta_aus",
-    # Head Pose
+    # Poza głowy
     "HeadPose",
     "HeadPoseEstimator",
     "estimate_head_pose",
     "validate_head_pose",
-    # Action Units
-    "ActionUnitsExtractor",
-    "ActionUnitsPrediction",
+    # Delta Action Units (21 AU DogFACS)
+    "DeltaActionUnit",
+    "DeltaActionUnitsExtractor",
     "ACTION_UNIT_NAMES",
     "NUM_ACTION_UNITS",
-    "extract_action_units",
+    "extract_delta_action_units",
 ]

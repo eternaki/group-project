@@ -1,14 +1,12 @@
 """
 Model detekcji keypoints na twarzy psa.
 
-Wykrywa 46 kluczowych punktów na twarzy psa używając architektury
-SimpleBaseline (ResNet50 + Deconv Head), a następnie mapuje je
-do 20 keypoints zgodnie ze specyfikacją projektu.
+Wykrywa 46 kluczowych punktów na twarzy psa zgodnie ze schematem DogFLW,
+używając architektury SimpleBaseline (ResNet34 + Deconv Head).
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
@@ -16,11 +14,10 @@ import torch.nn as nn
 from torchvision import transforms
 
 from packages.data.schemas import (
-    NUM_KEYPOINTS,
-    NUM_KEYPOINTS_DOGFLW,
     KEYPOINT_NAMES,
+    KP,
+    NUM_KEYPOINTS,
     SKELETON_CONNECTIONS,
-    PROJECT_TO_DOGFLW_MAPPING,
     Keypoint,
     KeypointsAnnotation,
     get_keypoint_color,
@@ -41,7 +38,7 @@ class KeypointsConfig(ModelConfig):
 
 @dataclass
 class KeypointsPrediction:
-    """Wynik predykcji keypoints dla jednego obrazu (20 keypoints)."""
+    """Wynik predykcji keypoints dla jednego obrazu (46 keypoints DogFLW)."""
 
     keypoints: list[Keypoint]
     confidence: float
@@ -67,7 +64,7 @@ class SimpleBaselineModel(nn.Module):
     Używa ResNet34 backbone + Deconv head.
     """
 
-    def __init__(self, num_keypoints: int = NUM_KEYPOINTS_DOGFLW, backbone: str = "resnet34"):
+    def __init__(self, num_keypoints: int = NUM_KEYPOINTS, backbone: str = "resnet34"):
         super().__init__()
         import timm
 
@@ -108,19 +105,15 @@ class SimpleBaselineModel(nn.Module):
 
 class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
     """
-    Model do detekcji keypoints na twarzy psa.
-
-    Wewnętrznie używa modelu DogFLW (46 keypoints),
-    ale zwraca 20 keypoints zgodnie ze specyfikacją projektu.
+    Model do detekcji 46 keypoints na twarzy psa (schemat DogFLW).
 
     Użycie:
-        config = KeypointsConfig(weights_path="models/keypoints_best.pt")
+        config = KeypointsConfig(weights_path="models/keypoints_dogflw.pt")
         model = KeypointsModel(config)
         model.load()
 
         prediction = model.predict(image)
         print(f"Wykryto {prediction.num_detected} keypoints")
-        print(f"Nazwy: {[KEYPOINT_NAMES[i] for i in range(20)]}")
     """
 
     def __init__(self, config: KeypointsConfig) -> None:
@@ -143,7 +136,7 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
         """Ładuje model z wag."""
         # Model DogFLW ma 46 keypoints, używa ResNet34
         self.model = SimpleBaselineModel(
-            num_keypoints=NUM_KEYPOINTS_DOGFLW,
+            num_keypoints=NUM_KEYPOINTS,
             backbone=self.config.model_name,
         )
 
@@ -169,25 +162,62 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
         tensor = self.transform(image)
         return tensor.unsqueeze(0).to(self.device)
 
-    # Mapping dla flip (zamiana lewych i prawych keypoints po odbiciu)
-    # Format: project_idx -> flipped_project_idx
+    # Mapping dla flip TTA (zamiana lewych i prawych keypoints po odbiciu poziomym)
+    # Format: idx -> flipped_idx (symetryczne pary lewo/prawa)
     FLIP_MAPPING: dict[int, int] = {
-        0: 1, 1: 0,    # left_eye <-> right_eye
-        3: 4, 4: 3,    # left_ear_base <-> right_ear_base
-        5: 6, 6: 5,    # left_ear_tip <-> right_ear_tip
-        7: 8, 8: 7,    # left_mouth_corner <-> right_mouth_corner
-        12: 13, 13: 12,  # left_cheek <-> right_cheek
-        15: 16, 16: 15,  # left_eyebrow <-> right_eyebrow
-        18: 19, 19: 18,  # muzzle_left <-> muzzle_right
-        # Środkowe punkty pozostają bez zmian:
-        2: 2, 9: 9, 10: 10, 11: 11, 14: 14, 17: 17,
+        # Oczy (0-7)
+        KP.LEFT_EYE_INNER: KP.RIGHT_EYE_INNER,
+        KP.LEFT_EYE_TOP: KP.RIGHT_EYE_TOP,
+        KP.LEFT_EYE_OUTER: KP.RIGHT_EYE_OUTER,
+        KP.LEFT_EYE_BOTTOM: KP.RIGHT_EYE_BOTTOM,
+        KP.RIGHT_EYE_INNER: KP.LEFT_EYE_INNER,
+        KP.RIGHT_EYE_TOP: KP.LEFT_EYE_TOP,
+        KP.RIGHT_EYE_OUTER: KP.LEFT_EYE_OUTER,
+        KP.RIGHT_EYE_BOTTOM: KP.LEFT_EYE_BOTTOM,
+        # Brwi (8-13)
+        KP.LEFT_BROW_INNER: KP.RIGHT_BROW_INNER,
+        KP.LEFT_BROW_CENTER: KP.RIGHT_BROW_CENTER,
+        KP.LEFT_BROW_OUTER: KP.RIGHT_BROW_OUTER,
+        KP.RIGHT_BROW_INNER: KP.LEFT_BROW_INNER,
+        KP.RIGHT_BROW_CENTER: KP.LEFT_BROW_CENTER,
+        KP.RIGHT_BROW_OUTER: KP.LEFT_BROW_OUTER,
+        # Uszy (14-21)
+        KP.LEFT_EAR_BASE_FRONT: KP.RIGHT_EAR_BASE_FRONT,
+        KP.LEFT_EAR_BASE_BACK: KP.RIGHT_EAR_BASE_BACK,
+        KP.LEFT_EAR_MID: KP.RIGHT_EAR_MID,
+        KP.LEFT_EAR_TIP: KP.RIGHT_EAR_TIP,
+        KP.RIGHT_EAR_BASE_FRONT: KP.LEFT_EAR_BASE_FRONT,
+        KP.RIGHT_EAR_BASE_BACK: KP.LEFT_EAR_BASE_BACK,
+        KP.RIGHT_EAR_MID: KP.LEFT_EAR_MID,
+        KP.RIGHT_EAR_TIP: KP.LEFT_EAR_TIP,
+        # Nos — skrzydła (23 ↔ 24)
+        KP.NOSE_LEFT_WING: KP.NOSE_RIGHT_WING,
+        KP.NOSE_RIGHT_WING: KP.NOSE_LEFT_WING,
+        # Usta (26-33)
+        KP.MOUTH_LEFT_CORNER: KP.MOUTH_RIGHT_CORNER,
+        KP.UPPER_LIP_LEFT: KP.UPPER_LIP_RIGHT,
+        KP.UPPER_LIP_RIGHT: KP.UPPER_LIP_LEFT,
+        KP.MOUTH_RIGHT_CORNER: KP.MOUTH_LEFT_CORNER,
+        KP.LOWER_LIP_RIGHT: KP.LOWER_LIP_LEFT,
+        KP.LOWER_LIP_LEFT: KP.LOWER_LIP_RIGHT,
+        # Pysk boczny (35 ↔ 36)
+        KP.MUZZLE_LEFT: KP.MUZZLE_RIGHT,
+        KP.MUZZLE_RIGHT: KP.MUZZLE_LEFT,
+        # Czoło (39 ↔ 40)
+        KP.FOREHEAD_LEFT: KP.FOREHEAD_RIGHT,
+        KP.FOREHEAD_RIGHT: KP.FOREHEAD_LEFT,
+        # Policzki (41 ↔ 43, 42 ↔ 44)
+        KP.LEFT_CHEEK_UPPER: KP.RIGHT_CHEEK_UPPER,
+        KP.LEFT_CHEEK_LOWER: KP.RIGHT_CHEEK_LOWER,
+        KP.RIGHT_CHEEK_UPPER: KP.LEFT_CHEEK_UPPER,
+        KP.RIGHT_CHEEK_LOWER: KP.LEFT_CHEEK_LOWER,
     }
 
     def predict(self, image: np.ndarray) -> KeypointsPrediction:
         """
         Wykrywa keypoints na obrazie.
 
-        Zwraca 20 keypoints zgodnie ze specyfikacją projektu.
+        Zwraca 46 keypoints zgodnie ze schematem DogFLW.
         Jeśli use_tta=True, używa Test-Time Augmentation (flip + average).
         """
         if not self._loaded:
@@ -235,14 +265,11 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
         with torch.no_grad():
             heatmaps = self.model(tensor)
 
-        dogflw_keypoints = self._decode_heatmaps(
+        return self._decode_heatmaps(
             heatmaps[0],
             original_w,
             original_h,
-            num_keypoints=NUM_KEYPOINTS_DOGFLW,
         )
-
-        return self._map_to_project_keypoints(dogflw_keypoints)
 
     def _merge_with_flipped(
         self,
@@ -282,25 +309,6 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
 
         return merged
 
-    def _map_to_project_keypoints(
-        self,
-        dogflw_keypoints: list[Keypoint],
-    ) -> list[Keypoint]:
-        """
-        Mapuje 46 keypoints DogFLW do 20 keypoints projektu.
-
-        Args:
-            dogflw_keypoints: Lista 46 keypoints z modelu DogFLW
-
-        Returns:
-            Lista 20 keypoints zgodnie ze specyfikacją projektu
-        """
-        project_keypoints = []
-        for project_idx in range(NUM_KEYPOINTS):
-            dogflw_idx = PROJECT_TO_DOGFLW_MAPPING[project_idx]
-            project_keypoints.append(dogflw_keypoints[dogflw_idx])
-        return project_keypoints
-
     def postprocess(self, output: KeypointsPrediction) -> dict:
         """Przetwarza wynik predykcji do formatu słownika."""
         return {
@@ -322,7 +330,7 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
         heatmaps: torch.Tensor,
         target_width: int,
         target_height: int,
-        num_keypoints: int = NUM_KEYPOINTS_DOGFLW,
+        num_keypoints: int = NUM_KEYPOINTS,
     ) -> list[Keypoint]:
         """Dekoduje heatmapy do keypoints."""
         hm_height, hm_width = heatmaps.shape[1], heatmaps.shape[2]
@@ -393,22 +401,47 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
             "chin": (255, 0, 255),     # Magenta - podbródek
         }
 
+        _eye_kps = {
+            KP.LEFT_EYE_INNER, KP.LEFT_EYE_TOP, KP.LEFT_EYE_OUTER, KP.LEFT_EYE_BOTTOM,
+            KP.RIGHT_EYE_INNER, KP.RIGHT_EYE_TOP, KP.RIGHT_EYE_OUTER, KP.RIGHT_EYE_BOTTOM,
+        }
+        _brow_kps = {
+            KP.LEFT_BROW_INNER, KP.LEFT_BROW_CENTER, KP.LEFT_BROW_OUTER,
+            KP.RIGHT_BROW_INNER, KP.RIGHT_BROW_CENTER, KP.RIGHT_BROW_OUTER,
+            KP.FOREHEAD_CENTER, KP.FOREHEAD_LEFT, KP.FOREHEAD_RIGHT,
+        }
+        _ear_kps = {
+            KP.LEFT_EAR_BASE_FRONT, KP.LEFT_EAR_BASE_BACK, KP.LEFT_EAR_MID, KP.LEFT_EAR_TIP,
+            KP.RIGHT_EAR_BASE_FRONT, KP.RIGHT_EAR_BASE_BACK, KP.RIGHT_EAR_MID, KP.RIGHT_EAR_TIP,
+        }
+        _nose_kps = {KP.NOSE_TIP, KP.NOSE_LEFT_WING, KP.NOSE_RIGHT_WING, KP.NOSE_BRIDGE}
+        _cheek_kps = {
+            KP.LEFT_CHEEK_UPPER, KP.LEFT_CHEEK_LOWER,
+            KP.RIGHT_CHEEK_UPPER, KP.RIGHT_CHEEK_LOWER,
+        }
+        _mouth_kps = {
+            KP.MOUTH_LEFT_CORNER, KP.UPPER_LIP_LEFT, KP.UPPER_LIP_CENTER, KP.UPPER_LIP_RIGHT,
+            KP.MOUTH_RIGHT_CORNER, KP.LOWER_LIP_RIGHT, KP.LOWER_LIP_CENTER, KP.LOWER_LIP_LEFT,
+            KP.MUZZLE_TOP, KP.MUZZLE_LEFT, KP.MUZZLE_RIGHT,
+        }
+        _chin_kps = {KP.CHIN, KP.JAW_CENTER}
+
         def get_skeleton_color(i: int, j: int) -> tuple[int, int, int]:
             """Zwraca kolor dla połączenia skeleton."""
             pts = {i, j}
-            if pts & {0, 1}:  # Oczy
+            if pts & _eye_kps:
                 return skeleton_colors["eyes"]
-            if pts & {15, 16, 14}:  # Brwi/czoło
+            if pts & _brow_kps:
                 return skeleton_colors["brows"]
-            if pts & {3, 4, 5, 6}:  # Uszy
+            if pts & _ear_kps:
                 return skeleton_colors["ears"]
-            if pts & {2, 17, 18, 19}:  # Nos/pysk
+            if pts & _nose_kps:
                 return skeleton_colors["nose"]
-            if pts & {12, 13}:  # Policzki
+            if pts & _cheek_kps:
                 return skeleton_colors["cheeks"]
-            if pts & {7, 8, 9, 10}:  # Usta
+            if pts & _mouth_kps:
                 return skeleton_colors["mouth"]
-            if pts & {11}:  # Podbródek
+            if pts & _chin_kps:
                 return skeleton_colors["chin"]
             return (150, 150, 150)  # Domyślny szary
 

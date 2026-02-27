@@ -11,8 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from packages.data.schemas import KEYPOINT_NAMES, NUM_KEYPOINTS, SKELETON_CONNECTIONS
-from packages.models.emotion import EMOTION_CLASSES
+from packages.data.schemas import KEYPOINT_NAMES, SKELETON_CONNECTIONS
 
 
 @dataclass
@@ -272,7 +271,7 @@ class COCODataset:
     def add_annotation_from_dog(
         self,
         image_id: int,
-        dog_annotation: "DogAnnotation",  # type: ignore
+        dog_annotation: "DogAnnotation",  # type: ignore[name-defined]  # noqa: F821
     ) -> int:
         """
         Dodaje anotację z obiektu DogAnnotation.

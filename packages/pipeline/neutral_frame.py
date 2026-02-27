@@ -1,249 +1,143 @@
 """
-Neutral frame detection for delta-based AU calculation.
+Detekcja klatki neutralnej dla obliczeń delta AU.
 
-Detects the "neutral baseline" frame in a video sequence where the dog's
-facial expression is most relaxed and stable (minimal movement).
+Wykrywa "neutralną klatkę bazową" w sekwencji wideo, gdzie wyraz twarzy
+psa jest najbardziej rozluźniony i stabilny (minimalne ruchy).
 
-This neutral frame serves as the reference point for computing delta AUs.
+Neutralna klatka służy jako punkt odniesienia do obliczania delta AU.
 """
 
-from dataclasses import dataclass
 from typing import Optional
+
 import numpy as np
 
-from packages.data.schemas import NUM_KEYPOINTS
-
-
-# Keypoint indices for critical points
-KP_LEFT_EYE = 0
-KP_RIGHT_EYE = 1
-KP_NOSE = 2
-KP_LEFT_EAR_BASE = 3
-KP_RIGHT_EAR_BASE = 4
-
-
-@dataclass
-class HeadPose:
-    """
-    Head pose estimation from keypoints.
-
-    Attributes:
-        yaw: Rotation around vertical axis (degrees)
-        pitch: Rotation around horizontal axis (degrees)
-        roll: Rotation around depth axis (degrees)
-        is_frontal: Whether pose is frontal (all angles < threshold)
-        confidence: Confidence of pose estimation
-    """
-    yaw: float
-    pitch: float
-    roll: float
-    is_frontal: bool
-    confidence: float
-
-
-def estimate_head_pose(keypoints: Optional[np.ndarray]) -> Optional[HeadPose]:
-    """
-    Estimate head pose from keypoints.
-
-    Simple heuristic-based estimation using eye, ear, and nose positions.
-
-    Args:
-        keypoints: Keypoints array [x0,y0,v0,...] (60 values) or (20, 3), or None
-
-    Returns:
-        HeadPose estimation or None if keypoints is None
-    """
-    # None check
-    if keypoints is None:
-        return None
-
-    if len(keypoints.shape) == 1:
-        kp = keypoints.reshape(NUM_KEYPOINTS, 3)
-    else:
-        kp = keypoints
-
-    coords = kp[:, :2]
-    visibility = kp[:, 2]
-
-    # YAW: Left-right rotation
-    # Based on nose position relative to eyes
-    eye_center_x = (coords[KP_LEFT_EYE][0] + coords[KP_RIGHT_EYE][0]) / 2
-    nose_x = coords[KP_NOSE][0]
-    eye_distance = np.linalg.norm(coords[KP_LEFT_EYE] - coords[KP_RIGHT_EYE])
-
-    if eye_distance > 1e-6:
-        yaw_ratio = (nose_x - eye_center_x) / eye_distance
-        yaw = np.arctan(yaw_ratio) * (180 / np.pi)  # Convert to degrees
-        yaw = np.clip(yaw, -45, 45)
-    else:
-        yaw = 0.0
-
-    # PITCH: Up-down rotation
-    # Based on nose position relative to ears
-    ear_center_y = (coords[KP_LEFT_EAR_BASE][1] + coords[KP_RIGHT_EAR_BASE][1]) / 2
-    nose_y = coords[KP_NOSE][1]
-
-    if eye_distance > 1e-6:
-        pitch_ratio = (nose_y - ear_center_y) / eye_distance
-        pitch = np.arctan(pitch_ratio) * (180 / np.pi)
-        pitch = np.clip(pitch, -30, 30)
-    else:
-        pitch = 0.0
-
-    # ROLL: Tilt rotation
-    # Based on eye alignment
-    left_eye_y = coords[KP_LEFT_EYE][1]
-    right_eye_y = coords[KP_RIGHT_EYE][1]
-    dy = right_eye_y - left_eye_y
-    dx = coords[KP_RIGHT_EYE][0] - coords[KP_LEFT_EYE][0]
-
-    if abs(dx) > 1e-6:
-        roll = np.arctan2(dy, dx) * (180 / np.pi)
-        roll = np.clip(roll, -30, 30)
-    else:
-        roll = 0.0
-
-    # Is frontal? (all angles within threshold)
-    # Używamy 40° dla yaw/pitch (bardziej tolerancyjne dla realistycznych wideo)
-    # Roll pozostaje 20° (przechył głowy jest mniej akceptowalny)
-    is_frontal = abs(yaw) < 40 and abs(pitch) < 40 and abs(roll) < 20
-
-    # Confidence from keypoint visibility
-    critical_kps = [KP_LEFT_EYE, KP_RIGHT_EYE, KP_NOSE, KP_LEFT_EAR_BASE, KP_RIGHT_EAR_BASE]
-    confidence = float(np.mean([visibility[idx] for idx in critical_kps]))
-
-    return HeadPose(
-        yaw=float(yaw),
-        pitch=float(pitch),
-        roll=float(roll),
-        is_frontal=is_frontal,
-        confidence=confidence,
-    )
+from packages.data.schemas import KP, NUM_KEYPOINTS
+from packages.models.head_pose import HeadPose, estimate_head_pose
 
 
 class NeutralFrameDetector:
     """
-    Detects neutral baseline frame from video sequence.
+    Wykrywa neutralną klatkę bazową z sekwencji wideo.
 
-    The neutral frame should have:
-    1. Minimal keypoint variance (stable, no movement)
-    2. Frontal head pose
-    3. High keypoint confidence
-    4. Critical keypoints visible
+    Neutralna klatka powinna mieć:
+    1. Minimalną wariancję keypoints (stabilna, bez ruchu)
+    2. Frontalną pozę głowy
+    3. Wysoką pewność keypoints
+    4. Krytyczne keypoints widoczne
 
-    Example:
+    Przykład:
         >>> detector = NeutralFrameDetector()
-        >>> frames = [frame1, frame2, ...]  # Video frames
-        >>> keypoints_list = [kp1, kp2, ...]  # Keypoints for each frame
-        >>> head_poses = [pose1, pose2, ...]  # Head poses
-        >>> neutral_idx = detector.detect_auto(frames, keypoints_list, head_poses)
-        >>> print(f"Neutral frame: {neutral_idx}")
+        >>> frames = [frame1, frame2, ...]
+        >>> keypoints_list = [kp1, kp2, ...]   # 138 wartości każdy
+        >>> neutral_idx = detector.detect_auto(frames, keypoints_list)
+        >>> print(f"Neutralna klatka: {neutral_idx}")
     """
 
     def __init__(
         self,
         window_size: int = 10,
-        variance_threshold: float = 0.02,
-        min_confidence: float = 0.5,  # Zmniejszono z 0.7 (zbyt restrykcyjne)
-        frontal_yaw_threshold: float = 40.0,  # Zwiększono z 20.0
-        frontal_pitch_threshold: float = 40.0,  # Zwiększono z 20.0
-    ):
+        min_keypoint_conf: float = 0.5,
+        max_yaw: float = 35.0,
+        max_pitch: float = 40.0,
+        max_roll: float = 20.0,
+    ) -> None:
         """
-        Initialize detector.
+        Inicjalizuje detektor.
 
         Args:
-            window_size: Size of sliding window for stability computation
-            variance_threshold: Max variance for stable frame
-            min_confidence: Minimum keypoint confidence (default 0.5)
-            frontal_yaw_threshold: Max yaw angle for frontal (default 40°)
-            frontal_pitch_threshold: Max pitch angle for frontal (default 40°)
+            window_size: Rozmiar okna do obliczania stabilności
+            min_keypoint_conf: Minimalna pewność keypoints (domyślnie 0.5)
+            max_yaw: Maks. kąt yaw dla frontalnej pozy (stopnie)
+            max_pitch: Maks. kąt pitch dla frontalnej pozy (stopnie)
+            max_roll: Maks. kąt roll dla frontalnej pozy (stopnie)
         """
         self.window_size = window_size
-        self.variance_threshold = variance_threshold
-        self.min_confidence = min_confidence
-        self.frontal_yaw_threshold = frontal_yaw_threshold
-        self.frontal_pitch_threshold = frontal_pitch_threshold
+        self.min_keypoint_conf = min_keypoint_conf
+        self.max_yaw = max_yaw
+        self.max_pitch = max_pitch
+        self.max_roll = max_roll
 
     def detect_auto(
         self,
         frames: list[np.ndarray],
-        keypoints_list: list[np.ndarray],
-        head_poses: Optional[list[HeadPose]] = None,
+        keypoints_list: list[Optional[np.ndarray]],
+        head_poses: Optional[list[Optional[HeadPose]]] = None,
         debug: bool = False,
     ) -> int:
         """
-        Auto-detect neutral frame from video sequence.
+        Automatycznie wykrywa neutralną klatkę z sekwencji wideo.
 
         Args:
-            frames: List of video frames (not used currently, for future)
-            keypoints_list: List of keypoints arrays (60 values each)
-            head_poses: Optional list of HeadPose objects (computed if None)
-            debug: Enable debug logging to see why frames are rejected
+            frames: Lista klatek wideo
+            keypoints_list: Lista tablic keypoints (138 wartości każda)
+            head_poses: Opcjonalna lista HeadPose (obliczana jeśli None)
+            debug: Włącz logowanie debugowania
 
         Returns:
-            Index of neutral frame
+            Indeks neutralnej klatki
 
         Raises:
-            ValueError: If no valid candidates found
+            ValueError: Gdy sekwencja jest pusta lub brak kandydatów
         """
-        # Estimate head poses if not provided
+        if not frames:
+            raise ValueError("Sekwencja klatek jest pusta")
+
+        if len(frames) == 1:
+            return 0
+
         if head_poses is None:
-            head_poses = [estimate_head_pose(kp) for kp in keypoints_list]
+            head_poses = [
+                estimate_head_pose(kp) if kp is not None else None
+                for kp in keypoints_list
+            ]
 
-        # Step 1: Filter valid candidates (strict criteria)
-        candidates = []
-        if debug:
-            print(f"  Checking {len(frames)} frames for ideal neutral candidate...")
+        candidates = self._find_candidates(keypoints_list, head_poses, debug)
 
-        for i in range(len(frames)):
-            if self._is_valid_candidate(
-                keypoints_list[i], head_poses[i], frame_idx=i, debug=debug
-            ):
-                candidates.append(i)
-
-        if candidates:
-            print(f"  → Found {len(candidates)} ideal neutral candidates")
-
-        # If no strict candidates, use relaxed criteria (best available)
         if not candidates:
-            print("⚠️  No ideal neutral frames found. Using best available frame...")
-            candidates = self._get_relaxed_candidates(keypoints_list, head_poses)
+            candidates = self._find_relaxed_candidates(keypoints_list, head_poses)
 
-            if not candidates:
-                # Last resort: find any frame with keypoints
-                for i, kp in enumerate(keypoints_list):
-                    if kp is not None:
-                        kp_reshaped = kp.reshape(NUM_KEYPOINTS, 3)
-                        if np.mean(kp_reshaped[:, 2]) > 0.3:  # At least 30% visible
-                            print(f"  → Using fallback frame: {i}")
-                            return i
+        if not candidates:
+            # Ostatnia deska ratunku: jakakolwiek klatka z keypoints
+            for i, kp in enumerate(keypoints_list):
+                if kp is not None and np.mean(kp.reshape(NUM_KEYPOINTS, 3)[:, 2]) > 0.3:
+                    return i
 
-                raise ValueError(
-                    "No valid neutral frame candidates found. "
-                    "Video may have too few keypoints detected."
-                )
+            raise ValueError(
+                "Brak kandydatów na neutralną klatkę. "
+                "Wideo może mieć za mało wykrytych keypoints."
+            )
 
-        # Step 2: Compute stability score for each candidate
-        scores = []
-        for idx in candidates:
-            stability = self._compute_stability_score(keypoints_list, idx)
-            scores.append((idx, stability))
-
-        # Step 3: Return frame with highest stability (lowest variance)
-        best_idx, best_score = max(scores, key=lambda x: x[1])
+        scores = [
+            (idx, self._compute_stability_score(keypoints_list, idx))
+            for idx in candidates
+        ]
+        best_idx, _ = max(scores, key=lambda x: x[1])
         return best_idx
 
     def detect_manual(self, frame_idx: int) -> int:
         """
-        Manual neutral frame selection.
+        Manualne wskazanie neutralnej klatki.
 
         Args:
-            frame_idx: User-selected frame index
+            frame_idx: Indeks klatki wybrany przez użytkownika
 
         Returns:
-            The same frame_idx (for consistency with auto detection)
+            Ten sam frame_idx (dla spójności z detect_auto)
         """
         return frame_idx
+
+    def _find_candidates(
+        self,
+        keypoints_list: list[Optional[np.ndarray]],
+        head_poses: list[Optional[HeadPose]],
+        debug: bool,
+    ) -> list[int]:
+        """Filtruje kandydatów według ścisłych kryteriów."""
+        return [
+            i
+            for i in range(len(keypoints_list))
+            if self._is_valid_candidate(keypoints_list[i], head_poses[i], i, debug)
+        ]
 
     def _is_valid_candidate(
         self,
@@ -253,103 +147,84 @@ class NeutralFrameDetector:
         debug: bool = False,
     ) -> bool:
         """
-        Check if frame is valid neutral candidate (strict criteria).
+        Sprawdza czy klatka jest kandydatem na neutralną (ścisłe kryteria).
 
         Args:
-            keypoints: Keypoints array (60 values) or None
-            head_pose: Head pose estimation or None
-            frame_idx: Frame index for debug logging
-            debug: Enable debug logging
+            keypoints: Tablica keypoints (138 wartości) lub None
+            head_pose: Estymacja pozy głowy lub None
+            frame_idx: Indeks klatki do logowania
+            debug: Włącz logowanie
 
         Returns:
-            True if valid candidate
+            True jeśli klatka jest prawidłowym kandydatem
         """
-        # None check
         if keypoints is None or head_pose is None:
             return False
 
-        # Reshape keypoints
         kp = keypoints.reshape(NUM_KEYPOINTS, 3)
 
-        # 1. Frontal head pose
-        if not head_pose.is_frontal:
+        # Sprawdź frontalność
+        if not _is_frontal_pose(head_pose, self.max_yaw, self.max_pitch, self.max_roll):
             if debug:
-                print(f"  Frame {frame_idx}: rejected - not frontal "
+                print(f"  Klatka {frame_idx}: odrzucona — nie frontalna "
                       f"(yaw={head_pose.yaw:.1f}, pitch={head_pose.pitch:.1f})")
             return False
 
-        # 2. Overall keypoint confidence (relaxed to 0.3)
-        mean_visibility = np.mean(kp[:, 2])
-        if mean_visibility < 0.3:  # Zmniejszono z min_confidence (było 0.5)
+        # Sprawdź ogólną widoczność
+        mean_visibility = float(np.mean(kp[:, 2]))
+        if mean_visibility < self.min_keypoint_conf:
             if debug:
-                print(f"  Frame {frame_idx}: rejected - low visibility "
-                      f"({mean_visibility:.2f} < 0.3)")
+                print(f"  Klatka {frame_idx}: odrzucona — niska widoczność "
+                      f"({mean_visibility:.2f} < {self.min_keypoint_conf})")
             return False
 
-        # 3. Critical keypoints must be visible (relaxed to 0.3)
-        critical_kps = [KP_LEFT_EYE, KP_RIGHT_EYE, KP_NOSE,
-                        KP_LEFT_EAR_BASE, KP_RIGHT_EAR_BASE]
-        critical_names = ["left_eye", "right_eye", "nose", "left_ear", "right_ear"]
-        for kp_idx, kp_name in zip(critical_kps, critical_names):
-            if kp[kp_idx, 2] < 0.3:  # Zmniejszono z 0.5
-                if debug:
-                    print(f"  Frame {frame_idx}: rejected - {kp_name} not visible "
-                          f"({kp[kp_idx, 2]:.2f} < 0.3)")
-                return False
-
-        if debug:
-            print(f"  Frame {frame_idx}: VALID candidate "
-                  f"(vis={mean_visibility:.2f}, yaw={head_pose.yaw:.1f})")
+        # Sprawdź krytyczne keypoints
+        if not _critical_keypoints_visible(kp, threshold=0.3):
+            if debug:
+                print(f"  Klatka {frame_idx}: odrzucona — brak krytycznych keypoints")
+            return False
 
         return True
 
-    def _get_relaxed_candidates(
+    def _find_relaxed_candidates(
         self,
         keypoints_list: list[Optional[np.ndarray]],
         head_poses: list[Optional[HeadPose]],
     ) -> list[int]:
         """
-        Get candidates with relaxed criteria (fallback when no ideal frames).
+        Szuka kandydatów z poluzowanymi kryteriami (fallback).
 
-        Relaxed criteria:
-        - Yaw/pitch up to 40° (instead of 20°)
-        - Min confidence 0.4 (instead of 0.7)
-        - At least 3 critical keypoints visible
+        Poluzowane kryteria:
+        - Kąt do 60° (zamiast max_yaw/max_pitch)
+        - Pewność 0.4 (zamiast min_keypoint_conf)
+        - Co najmniej 3 krytyczne keypoints widoczne
 
         Args:
-            keypoints_list: List of keypoints (may contain None)
-            head_poses: List of head poses (may contain None)
+            keypoints_list: Lista keypoints (może zawierać None)
+            head_poses: Lista head poses (może zawierać None)
 
         Returns:
-            List of candidate indices
+            Lista indeksów kandydatów
         """
-        candidates = []
+        relaxed_angle = 60.0
+        relaxed_conf = 0.4
 
+        candidates = []
         for i in range(len(keypoints_list)):
-            # Skip None keypoints
             if keypoints_list[i] is None or head_poses[i] is None:
                 continue
 
             kp = keypoints_list[i].reshape(NUM_KEYPOINTS, 3)
             pose = head_poses[i]
 
-            # Relaxed head pose (40° instead of 20°)
-            if abs(pose.yaw) > 40 or abs(pose.pitch) > 40:
+            if abs(pose.yaw) > relaxed_angle or abs(pose.pitch) > relaxed_angle:
                 continue
 
-            # Relaxed confidence (40% instead of 70%)
-            mean_visibility = np.mean(kp[:, 2])
-            if mean_visibility < 0.4:
+            if float(np.mean(kp[:, 2])) < relaxed_conf:
                 continue
 
-            # At least 3 out of 5 critical keypoints visible
-            critical_kps = [KP_LEFT_EYE, KP_RIGHT_EYE, KP_NOSE,
-                            KP_LEFT_EAR_BASE, KP_RIGHT_EAR_BASE]
-            visible_count = sum(1 for idx in critical_kps if kp[idx, 2] > 0.4)
-            if visible_count < 3:
-                continue
-
-            candidates.append(i)
+            if _count_visible_critical_kps(kp, threshold=0.4) >= 3:
+                candidates.append(i)
 
         return candidates
 
@@ -359,45 +234,67 @@ class NeutralFrameDetector:
         center_idx: int,
     ) -> float:
         """
-        Compute stability score for a frame.
+        Oblicza wynik stabilności klatki.
 
-        Stability = 1 / (1 + variance)
-
-        Higher stability = more likely neutral frame.
+        Stabilność = 1 / (1 + wariancja). Wyższy = bardziej neutralna.
 
         Args:
-            keypoints_list: List of all keypoints (may contain None)
-            center_idx: Index of frame to evaluate
+            keypoints_list: Lista wszystkich keypoints (może zawierać None)
+            center_idx: Indeks klatki do oceny
 
         Returns:
-            Stability score (higher = more stable)
+            Wynik stabilności (wyższy = bardziej stabilna)
         """
-        # Extract window around center frame
         start = max(0, center_idx - self.window_size // 2)
         end = min(len(keypoints_list), center_idx + self.window_size // 2 + 1)
 
-        window_kps = []
-        for kp in keypoints_list[start:end]:
-            # Skip None keypoints in window
-            if kp is None:
-                continue
-            kp_reshaped = kp.reshape(NUM_KEYPOINTS, 3)
-            # Only use x,y coordinates (ignore visibility)
-            window_kps.append(kp_reshaped[:, :2])
+        window_coords = [
+            kp.reshape(NUM_KEYPOINTS, 3)[:, :2]
+            for kp in keypoints_list[start:end]
+            if kp is not None
+        ]
 
-        # If too few valid keypoints in window, return low stability
-        if len(window_kps) < 2:
+        if len(window_coords) < 2:
             return 0.0
 
-        # Convert to numpy array: (window_size, 20, 2)
-        coords_array = np.array(window_kps)
+        coords_array = np.array(window_coords)   # (window, 46, 2)
+        mean_variance = float(np.mean(np.var(coords_array, axis=0)))
+        return 1.0 / (1.0 + mean_variance * 10)
 
-        # Compute variance of each keypoint across time
-        variance_per_kp = np.var(coords_array, axis=0)  # (20, 2)
-        mean_variance = np.mean(variance_per_kp)
 
-        # Stability score: inverse of variance
-        # Higher variance = lower stability
-        stability = 1.0 / (1.0 + mean_variance * 100)
+# =============================================================================
+# Funkcje pomocnicze (prywatne)
+# =============================================================================
 
-        return float(stability)
+# Indeksy krytycznych keypoints (oczy, nos, uszy)
+_CRITICAL_KP_INDICES: list[int] = [
+    KP.LEFT_EYE_INNER,
+    KP.RIGHT_EYE_INNER,
+    KP.NOSE_TIP,
+    KP.LEFT_EAR_BASE_FRONT,
+    KP.RIGHT_EAR_BASE_FRONT,
+]
+
+
+def _is_frontal_pose(
+    pose: HeadPose,
+    max_yaw: float,
+    max_pitch: float,
+    max_roll: float,
+) -> bool:
+    """Sprawdza czy poza głowy jest frontalna."""
+    return (
+        abs(pose.yaw) <= max_yaw
+        and abs(pose.pitch) <= max_pitch
+        and abs(pose.roll) <= max_roll
+    )
+
+
+def _critical_keypoints_visible(kp: np.ndarray, threshold: float) -> bool:
+    """Sprawdza czy wszystkie krytyczne keypoints są widoczne."""
+    return all(kp[idx, 2] >= threshold for idx in _CRITICAL_KP_INDICES)
+
+
+def _count_visible_critical_kps(kp: np.ndarray, threshold: float) -> int:
+    """Liczy widoczne krytyczne keypoints."""
+    return sum(1 for idx in _CRITICAL_KP_INDICES if kp[idx, 2] >= threshold)

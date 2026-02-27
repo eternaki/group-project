@@ -1,5 +1,6 @@
 """Модуль данных для проекта Dog FACS Dataset."""
 
+from .coco import COCOCategory, COCODataset, COCOInfo
 from .schemas import (
     KEYPOINT_NAMES,
     NUM_KEYPOINTS,
@@ -8,7 +9,6 @@ from .schemas import (
     KeypointsAnnotation,
     get_keypoint_color,
 )
-from .coco import COCODataset, COCOInfo, COCOCategory
 
 __all__ = [
     "Keypoint",

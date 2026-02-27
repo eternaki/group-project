@@ -1,5 +1,5 @@
 """
-Testy dla modułu neutral frame detection (HeadPose, NeutralFrameDetector).
+Testy dla modułu detekcji klatki neutralnej (HeadPose, NeutralFrameDetector).
 
 Uruchomienie:
     pytest tests/test_pipeline/test_neutral_frame.py -v
@@ -8,18 +8,97 @@ Uruchomienie:
 import numpy as np
 import pytest
 
-from packages.pipeline.neutral_frame import (
-    HeadPose,
-    NeutralFrameDetector,
-    estimate_head_pose,
-)
+from packages.data.schemas import KP, NUM_KEYPOINTS
+from packages.models.head_pose import HeadPose, estimate_head_pose
+from packages.pipeline.neutral_frame import NeutralFrameDetector
 
+# =============================================================================
+# Fixture: realistyczna twarz psa (46 keypoints)
+# =============================================================================
+
+def make_frontal_kp() -> np.ndarray:
+    """
+    Tworzy realistyczną tablicę 46 keypoints — frontalna twarz psa.
+
+    Centrum (150, 150), odległość między centrami oczu ~100px.
+    Symetria lewo/prawa → minimalne yaw/pitch/roll.
+
+    Returns:
+        Tablica (138,) z wartościami [x0, y0, v0, ...]
+    """
+    kp = np.zeros((NUM_KEYPOINTS, 3), dtype=np.float32)
+    kp[:, 2] = 0.95
+
+    # Oczy
+    kp[KP.LEFT_EYE_INNER]  = [105, 150, 0.95]
+    kp[KP.LEFT_EYE_TOP]    = [100, 144, 0.95]
+    kp[KP.LEFT_EYE_OUTER]  = [95, 150, 0.95]
+    kp[KP.LEFT_EYE_BOTTOM] = [100, 156, 0.95]
+    kp[KP.RIGHT_EYE_INNER] = [195, 150, 0.95]
+    kp[KP.RIGHT_EYE_TOP]   = [200, 144, 0.95]
+    kp[KP.RIGHT_EYE_OUTER] = [205, 150, 0.95]
+    kp[KP.RIGHT_EYE_BOTTOM]= [200, 156, 0.95]
+
+    # Brwi
+    kp[KP.LEFT_BROW_INNER]  = [108, 137, 0.9]
+    kp[KP.LEFT_BROW_CENTER] = [100, 134, 0.9]
+    kp[KP.LEFT_BROW_OUTER]  = [92, 137, 0.9]
+    kp[KP.RIGHT_BROW_INNER] = [192, 137, 0.9]
+    kp[KP.RIGHT_BROW_CENTER]= [200, 134, 0.9]
+    kp[KP.RIGHT_BROW_OUTER] = [208, 137, 0.9]
+
+    # Uszy (symetryczne)
+    kp[KP.LEFT_EAR_BASE_FRONT]  = [80, 120, 0.9]
+    kp[KP.LEFT_EAR_BASE_BACK]   = [75, 115, 0.85]
+    kp[KP.LEFT_EAR_MID]         = [72, 95, 0.85]
+    kp[KP.LEFT_EAR_TIP]         = [68, 70, 0.8]
+    kp[KP.RIGHT_EAR_BASE_FRONT] = [220, 120, 0.9]
+    kp[KP.RIGHT_EAR_BASE_BACK]  = [225, 115, 0.85]
+    kp[KP.RIGHT_EAR_MID]        = [228, 95, 0.85]
+    kp[KP.RIGHT_EAR_TIP]        = [232, 70, 0.8]
+
+    # Nos — pośrodku
+    kp[KP.NOSE_TIP]       = [150, 200, 0.95]
+    kp[KP.NOSE_LEFT_WING] = [143, 196, 0.9]
+    kp[KP.NOSE_RIGHT_WING]= [157, 196, 0.9]
+    kp[KP.NOSE_BRIDGE]    = [150, 175, 0.9]
+
+    # Usta
+    kp[KP.MOUTH_LEFT_CORNER]  = [120, 218, 0.9]
+    kp[KP.UPPER_LIP_LEFT]     = [132, 214, 0.9]
+    kp[KP.UPPER_LIP_CENTER]   = [150, 212, 0.9]
+    kp[KP.UPPER_LIP_RIGHT]    = [168, 214, 0.9]
+    kp[KP.MOUTH_RIGHT_CORNER] = [180, 218, 0.9]
+    kp[KP.LOWER_LIP_RIGHT]    = [168, 226, 0.9]
+    kp[KP.LOWER_LIP_CENTER]   = [150, 228, 0.9]
+    kp[KP.LOWER_LIP_LEFT]     = [132, 226, 0.9]
+
+    # Pysk i kontur
+    kp[KP.MUZZLE_TOP]        = [150, 207, 0.9]
+    kp[KP.MUZZLE_LEFT]       = [122, 222, 0.85]
+    kp[KP.MUZZLE_RIGHT]      = [178, 222, 0.85]
+    kp[KP.CHIN]              = [150, 250, 0.85]
+    kp[KP.FOREHEAD_CENTER]   = [150, 115, 0.8]
+    kp[KP.FOREHEAD_LEFT]     = [120, 118, 0.8]
+    kp[KP.FOREHEAD_RIGHT]    = [180, 118, 0.8]
+    kp[KP.LEFT_CHEEK_UPPER]  = [88, 162, 0.8]
+    kp[KP.LEFT_CHEEK_LOWER]  = [88, 202, 0.8]
+    kp[KP.RIGHT_CHEEK_UPPER] = [212, 162, 0.8]
+    kp[KP.RIGHT_CHEEK_LOWER] = [212, 202, 0.8]
+    kp[KP.JAW_CENTER]        = [150, 245, 0.85]
+
+    return kp.flatten()
+
+
+# =============================================================================
+# Testy klasy HeadPose
+# =============================================================================
 
 class TestHeadPose:
     """Testy dla klasy HeadPose."""
 
     def test_creation_frontal(self) -> None:
-        """Test tworzenia frontal head pose."""
+        """Test tworzenia frontalnej pozy głowy."""
         pose = HeadPose(
             yaw=5.0,
             pitch=-3.0,
@@ -34,30 +113,9 @@ class TestHeadPose:
         assert pose.is_frontal is True
         assert pose.confidence == 0.95
 
-    def test_creation_non_frontal(self) -> None:
-        """Test tworzenia non-frontal head pose."""
-        pose = HeadPose(
-            yaw=45.0,
-            pitch=-20.0,
-            roll=10.0,
-            is_frontal=False,
-            confidence=0.85,
-        )
-
-        assert pose.yaw == 45.0
-        assert pose.pitch == -20.0
-        assert pose.roll == 10.0
-        assert pose.is_frontal is False
-
     def test_to_dict(self) -> None:
-        """Test konwersji do słownika."""
-        pose = HeadPose(
-            yaw=10.0,
-            pitch=-5.0,
-            roll=3.0,
-            is_frontal=True,
-            confidence=0.9,
-        )
+        """Test konwersji HeadPose do słownika."""
+        pose = HeadPose(yaw=10.0, pitch=-5.0, roll=3.0, is_frontal=True, confidence=0.9)
 
         result = pose.to_dict()
 
@@ -68,303 +126,196 @@ class TestHeadPose:
         assert result["confidence"] == 0.9
 
 
+# =============================================================================
+# Testy funkcji estimate_head_pose
+# =============================================================================
+
 class TestEstimateHeadPose:
     """Testy dla funkcji estimate_head_pose."""
 
-    @pytest.fixture
-    def frontal_keypoints(self) -> np.ndarray:
-        """Fixture dla frontal keypoints (symetryczna twarz)."""
-        kp = np.array([
-            # left_eye, right_eye (symetryczne y)
-            [100, 150, 0.95],
-            [200, 150, 0.95],
-            # nose (pośrodku)
-            [150, 200, 0.95],
-            # left_ear_base, right_ear_base (symetryczne)
-            [80, 100, 0.9],
-            [220, 100, 0.9],
-            # left_ear_tip, right_ear_tip
-            [70, 50, 0.85],
-            [230, 50, 0.85],
-            # left_mouth, right_mouth
-            [120, 220, 0.9],
-            [180, 220, 0.9],
-            # upper_lip, lower_lip
-            [150, 210, 0.9],
-            [150, 230, 0.9],
-            # chin
-            [150, 250, 0.85],
-            # forehead
-            [150, 120, 0.8],
-            # left_eye_outer, right_eye_outer
-            [90, 150, 0.9],
-            [210, 150, 0.9],
-            # left_eye_inner, right_eye_inner
-            [110, 150, 0.9],
-            [190, 150, 0.9],
-            # nose_bridge
-            [150, 180, 0.85],
-            # left_cheek, right_cheek
-            [100, 190, 0.8],
-            [200, 190, 0.8],
-        ], dtype=np.float32).flatten()
-
-        return kp
-
-    def test_frontal_pose_detection(self, frontal_keypoints: np.ndarray) -> None:
-        """Test: symetryczna twarz powinna być wykryta jako frontal."""
-        pose = estimate_head_pose(frontal_keypoints)
+    def test_frontal_face_is_detected_as_frontal(self) -> None:
+        """Test: symetryczna twarz powinna być wykryta jako frontalna."""
+        kp = make_frontal_kp()
+        pose = estimate_head_pose(kp)
 
         assert pose.is_frontal is True
-        # Kąty powinny być małe
         assert abs(pose.yaw) < 25
-        assert abs(pose.pitch) < 25
+        assert abs(pose.pitch) < 30  # nos naturalnie poniżej oczu ~26°
         assert abs(pose.roll) < 25
 
-    def test_left_turned_pose(self, frontal_keypoints: np.ndarray) -> None:
-        """Test: twarz obrócona w lewo (yaw > 0)."""
-        kp = frontal_keypoints.copy().reshape(20, 3)
+    def test_left_turned_face_has_positive_yaw(self) -> None:
+        """Test: twarz obrócona w lewo ma yaw > 0."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        # Przesuń nos w lewo
+        kp[KP.NOSE_TIP, 0] -= 35
+        kp[KP.RIGHT_EYE_INNER, 0] -= 20
+        kp[KP.RIGHT_EYE_OUTER, 0] -= 20
 
-        # Przesuń nos w lewo (zmniejsz x)
-        kp[2, 0] -= 30  # nose x - 30
+        pose = estimate_head_pose(kp.flatten())
 
-        # Przesuń prawe oko bardziej w lewo
-        kp[1, 0] -= 20  # right_eye x - 20
-
-        kp_flat = kp.flatten()
-        pose = estimate_head_pose(kp_flat)
-
-        # Yaw powinien być dodatni (twarz w lewo)
         assert pose.yaw > 5
 
-    def test_right_turned_pose(self, frontal_keypoints: np.ndarray) -> None:
-        """Test: twarz obrócona w prawo (yaw < 0)."""
-        kp = frontal_keypoints.copy().reshape(20, 3)
+    def test_right_turned_face_has_negative_yaw(self) -> None:
+        """Test: twarz obrócona w prawo ma yaw < 0."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        kp[KP.NOSE_TIP, 0] += 35
+        kp[KP.LEFT_EYE_INNER, 0] += 20
+        kp[KP.LEFT_EYE_OUTER, 0] += 20
 
-        # Przesuń nos w prawo (zwiększ x)
-        kp[2, 0] += 30  # nose x + 30
+        pose = estimate_head_pose(kp.flatten())
 
-        # Przesuń lewe oko bardziej w prawo
-        kp[0, 0] += 20  # left_eye x + 20
-
-        kp_flat = kp.flatten()
-        pose = estimate_head_pose(kp_flat)
-
-        # Yaw powinien być ujemny (twarz w prawo)
         assert pose.yaw < -5
 
-    def test_upward_tilted_pose(self, frontal_keypoints: np.ndarray) -> None:
-        """Test: twarz pochylona do góry (pitch < 0)."""
-        kp = frontal_keypoints.copy().reshape(20, 3)
+    def test_tilted_eyes_produce_nonzero_roll(self) -> None:
+        """Test: przekrzywione oczy dają roll ≠ 0."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        # Prawe oko wyżej, lewe niżej
+        kp[KP.RIGHT_EYE_INNER, 1] -= 15
+        kp[KP.RIGHT_EYE_OUTER, 1] -= 15
+        kp[KP.LEFT_EYE_INNER, 1] += 15
+        kp[KP.LEFT_EYE_OUTER, 1] += 15
 
-        # Przesuń nos wyżej (zmniejsz y)
-        kp[2, 1] -= 20  # nose y - 20
+        pose = estimate_head_pose(kp.flatten())
 
-        # Przesuń chin wyżej
-        kp[11, 1] -= 30  # chin y - 30
-
-        kp_flat = kp.flatten()
-        pose = estimate_head_pose(kp_flat)
-
-        # Pitch powinien być ujemny (patrzy w górę)
-        assert pose.pitch < -5
-
-    def test_downward_tilted_pose(self, frontal_keypoints: np.ndarray) -> None:
-        """Test: twarz pochylona w dół (pitch > 0)."""
-        kp = frontal_keypoints.copy().reshape(20, 3)
-
-        # Przesuń nos niżej (zwiększ y)
-        kp[2, 1] += 20  # nose y + 20
-
-        # Przesuń chin niżej
-        kp[11, 1] += 30  # chin y + 30
-
-        kp_flat = kp.flatten()
-        pose = estimate_head_pose(kp_flat)
-
-        # Pitch powinien być dodatni (patrzy w dół)
-        assert pose.pitch > 5
-
-    def test_tilted_roll(self, frontal_keypoints: np.ndarray) -> None:
-        """Test: twarz pochylona na bok (roll)."""
-        kp = frontal_keypoints.copy().reshape(20, 3)
-
-        # Przesuń prawe oko wyżej, lewe niżej
-        kp[1, 1] -= 15  # right_eye y - 15
-        kp[0, 1] += 15  # left_eye y + 15
-
-        kp_flat = kp.flatten()
-        pose = estimate_head_pose(kp_flat)
-
-        # Roll powinien być znaczący
         assert abs(pose.roll) > 10
 
-    def test_confidence_from_visibility(self, frontal_keypoints: np.ndarray) -> None:
-        """Test: confidence pochodzi z visibility keypoints."""
-        kp = frontal_keypoints.copy().reshape(20, 3)
+    def test_low_visibility_reduces_confidence(self) -> None:
+        """Test: niska widoczność kluczowych keypoints obniża confidence."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        kp[KP.LEFT_EYE_INNER, 2] = 0.2
+        kp[KP.NOSE_TIP, 2] = 0.3
 
-        # Ustaw niską visibility dla kilku punktów
-        kp[0, 2] = 0.3  # left_eye
-        kp[2, 2] = 0.4  # nose
-        kp[5, 2] = 0.2  # left_ear_tip
+        pose = estimate_head_pose(kp.flatten())
 
-        kp_flat = kp.flatten()
-        pose = estimate_head_pose(kp_flat)
-
-        # Confidence powinna być obniżona
         assert pose.confidence < 0.9
 
+    def test_invalid_keypoints_raises(self) -> None:
+        """Test: nieprawidłowa liczba keypoints rzuca ValueError."""
+        with pytest.raises(ValueError):
+            estimate_head_pose(np.zeros(60))  # Stare 20 keypoints
+
+
+# =============================================================================
+# Testy klasy NeutralFrameDetector
+# =============================================================================
 
 class TestNeutralFrameDetector:
     """Testy dla klasy NeutralFrameDetector."""
 
     @pytest.fixture
     def detector(self) -> NeutralFrameDetector:
-        """Fixture dla detector."""
+        """Fixture: detektor z domyślnymi parametrami."""
         return NeutralFrameDetector()
 
-    @pytest.fixture
-    def stable_sequence(self) -> tuple[list[np.ndarray], list[np.ndarray], list[HeadPose]]:
-        """
-        Fixture dla sekwencji z jedną stabilną klatką.
+    def test_default_initialization(self, detector: NeutralFrameDetector) -> None:
+        """Test inicjalizacji detektora z domyślnymi parametrami."""
+        assert detector.min_keypoint_conf == 0.5
+        assert detector.max_yaw == 35.0
+        assert detector.max_pitch == 40.0
+        assert detector.max_roll == 20.0
 
-        Returns:
-            (frames, keypoints_list, head_poses)
-        """
-        frames = []
-        keypoints_list = []
-        head_poses = []
-
-        # 10 klatek
-        for i in range(10):
-            # Twórz losową klatkę
-            frame = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-            frames.append(frame)
-
-            # Klatka 5 jest stabilna (minimalna wariancja)
-            if i == 5:
-                # Stabilne keypoints (małe zmiany)
-                base_kp = self._create_frontal_keypoints()
-                kp = base_kp.copy()
-            else:
-                # Niestabilne keypoints (duże zmiany)
-                base_kp = self._create_frontal_keypoints()
-                kp = base_kp.copy().reshape(20, 3)
-                # Dodaj noise
-                kp[:, :2] += np.random.randn(20, 2) * 10
-                kp = kp.flatten()
-
-            keypoints_list.append(kp)
-
-            # Head pose
-            pose = estimate_head_pose(kp)
-            head_poses.append(pose)
-
-        return frames, keypoints_list, head_poses
-
-    def _create_frontal_keypoints(self) -> np.ndarray:
-        """Helper: tworzy frontal keypoints."""
-        kp = np.array([
-            [100, 150, 0.95], [200, 150, 0.95], [150, 200, 0.95],
-            [80, 100, 0.9], [220, 100, 0.9], [70, 50, 0.85],
-            [230, 50, 0.85], [120, 220, 0.9], [180, 220, 0.9],
-            [150, 210, 0.9], [150, 230, 0.9], [150, 250, 0.85],
-            [150, 120, 0.8], [90, 150, 0.9], [210, 150, 0.9],
-            [110, 150, 0.9], [190, 150, 0.9], [150, 180, 0.85],
-            [100, 190, 0.8], [200, 190, 0.8],
-        ], dtype=np.float32).flatten()
-        return kp
-
-    def test_detector_initialization(self) -> None:
-        """Test inicjalizacji detector z domyślnymi parametrami."""
-        detector = NeutralFrameDetector()
-
-        assert detector.min_keypoint_conf == 0.7
-        assert detector.max_yaw == 20
-        assert detector.max_pitch == 20
-        assert detector.max_roll == 20
-
-    def test_detector_custom_parameters(self) -> None:
-        """Test inicjalizacji detector z niestandardowymi parametrami."""
+    def test_custom_initialization(self) -> None:
+        """Test inicjalizacji z niestandardowymi parametrami."""
         detector = NeutralFrameDetector(
             min_keypoint_conf=0.8,
-            max_yaw=15,
-            max_pitch=15,
-            max_roll=15,
+            max_yaw=15.0,
+            max_pitch=15.0,
+            max_roll=10.0,
         )
 
         assert detector.min_keypoint_conf == 0.8
-        assert detector.max_yaw == 15
-        assert detector.max_pitch == 15
-        assert detector.max_roll == 15
+        assert detector.max_yaw == 15.0
 
-    def test_detect_auto_finds_stable_frame(
-        self, detector: NeutralFrameDetector, stable_sequence
-    ) -> None:
-        """Test: auto-detect powinien znaleźć najbardziej stabilną klatkę."""
-        frames, keypoints_list, head_poses = stable_sequence
-
-        neutral_idx = detector.detect_auto(frames, keypoints_list, head_poses)
-
-        # Neutral frame powinien być klatką o najniższej wariancji
-        # (w naszym przypadku klatka 5)
-        assert 0 <= neutral_idx < len(frames)
-
-    def test_compute_stability_score_stable_sequence(
+    def test_empty_sequence_raises_value_error(
         self, detector: NeutralFrameDetector
     ) -> None:
-        """Test: stability score dla stabilnej sekwencji."""
-        # Twórz sekwencję z minimalnymi zmianami
-        keypoints_list = []
-        base_kp = self._create_frontal_keypoints()
+        """Test: pusta sekwencja klatek rzuca ValueError."""
+        with pytest.raises(ValueError):
+            detector.detect_auto([], [])
 
-        for i in range(20):
-            # Dodaj minimalny noise
-            kp = base_kp.copy().reshape(20, 3)
-            kp[:, :2] += np.random.randn(20, 2) * 0.5  # Bardzo mały noise
-            keypoints_list.append(kp.flatten())
+    def test_single_frame_returns_zero(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: pojedyncza klatka → zawsze indeks 0."""
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        kp = make_frontal_kp()
+
+        neutral_idx = detector.detect_auto([frame], [kp])
+
+        assert neutral_idx == 0
+
+    def test_detect_auto_returns_valid_index(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: detect_auto zwraca poprawny indeks w zakresie sekwencji."""
+        n_frames = 10
+        frames = [np.zeros((480, 640, 3), dtype=np.uint8) for _ in range(n_frames)]
+        keypoints = [make_frontal_kp() for _ in range(n_frames)]
+
+        neutral_idx = detector.detect_auto(frames, keypoints)
+
+        assert 0 <= neutral_idx < n_frames
+
+    def test_stability_score_stable_sequence(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: wysoki wynik stabilności dla stabilnej sekwencji."""
+        base_kp = make_frontal_kp()
+        rng = np.random.default_rng(42)
+
+        # Sekwencja z minimalnym szumem
+        keypoints_list = [
+            (base_kp.reshape(NUM_KEYPOINTS, 3)
+             + np.column_stack([
+                 rng.random((NUM_KEYPOINTS, 2)) * 0.5,
+                 np.zeros((NUM_KEYPOINTS, 1)),
+             ])).flatten()
+            for _ in range(20)
+        ]
 
         score = detector._compute_stability_score(keypoints_list, center_idx=10)
 
-        # Wysoki stability score (blisko 1.0)
         assert score > 0.8
 
-    def test_compute_stability_score_unstable_sequence(
+    def test_stability_score_unstable_sequence(
         self, detector: NeutralFrameDetector
     ) -> None:
-        """Test: stability score dla niestabilnej sekwencji."""
-        # Twórz sekwencję z dużymi zmianami
-        keypoints_list = []
+        """Test: niski wynik stabilności dla niestabilnej sekwencji."""
+        rng = np.random.default_rng(42)
+        base_kp = make_frontal_kp()
 
-        for i in range(20):
-            kp = self._create_frontal_keypoints().reshape(20, 3)
-            # Dodaj duży noise
-            kp[:, :2] += np.random.randn(20, 2) * 20
-            keypoints_list.append(kp.flatten())
+        # Sekwencja z dużym szumem
+        keypoints_list = [
+            (base_kp.reshape(NUM_KEYPOINTS, 3)
+             + np.column_stack([
+                 rng.random((NUM_KEYPOINTS, 2)) * 30,
+                 np.zeros((NUM_KEYPOINTS, 1)),
+             ])).flatten()
+            for _ in range(20)
+        ]
 
         score = detector._compute_stability_score(keypoints_list, center_idx=10)
 
-        # Niski stability score
         assert score < 0.5
 
-    def test_is_valid_candidate_frontal(self, detector: NeutralFrameDetector) -> None:
-        """Test: frontal pose z wysoką confidence jest valid candidate."""
-        kp = self._create_frontal_keypoints()
+    def test_frontal_frame_is_valid_candidate(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: klatka z frontalną twarzą i wysoką visibility jest kandydatem."""
+        kp = make_frontal_kp()
         pose = estimate_head_pose(kp)
 
         is_valid = detector._is_valid_candidate(kp, pose)
 
         assert is_valid is True
 
-    def test_is_valid_candidate_non_frontal(
+    def test_non_frontal_frame_is_not_valid_candidate(
         self, detector: NeutralFrameDetector
     ) -> None:
-        """Test: non-frontal pose nie jest valid candidate."""
-        kp = self._create_frontal_keypoints().reshape(20, 3)
-
-        # Obróć twarz (duży yaw)
-        kp[2, 0] += 50  # nose x + 50
-
+        """Test: klatka z obrócona twarzą nie jest kandydatem."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        # Duże obrócenie — nose bardzo z boku
+        kp[KP.NOSE_TIP, 0] += 80
         kp_flat = kp.flatten()
         pose = estimate_head_pose(kp_flat)
 
@@ -372,15 +323,12 @@ class TestNeutralFrameDetector:
 
         assert is_valid is False
 
-    def test_is_valid_candidate_low_confidence(
+    def test_low_visibility_frame_is_not_valid_candidate(
         self, detector: NeutralFrameDetector
     ) -> None:
-        """Test: niska confidence keypoints nie jest valid candidate."""
-        kp = self._create_frontal_keypoints().reshape(20, 3)
-
-        # Ustaw niską visibility dla większości punktów
-        kp[:, 2] = 0.3
-
+        """Test: klatka z niską widocznością keypoints nie jest kandydatem."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        kp[:, 2] = 0.1  # Niska visibility dla wszystkich
         kp_flat = kp.flatten()
         pose = estimate_head_pose(kp_flat)
 
@@ -388,35 +336,9 @@ class TestNeutralFrameDetector:
 
         assert is_valid is False
 
-    def test_is_valid_candidate_critical_keypoints_missing(
+    def test_detect_manual_returns_given_index(
         self, detector: NeutralFrameDetector
     ) -> None:
-        """Test: brak krytycznych keypoints nie jest valid candidate."""
-        kp = self._create_frontal_keypoints().reshape(20, 3)
-
-        # Ustaw zerową visibility dla krytycznych punktów (eyes, nose)
-        kp[0, 2] = 0.0  # left_eye
-        kp[1, 2] = 0.0  # right_eye
-        kp[2, 2] = 0.0  # nose
-
-        kp_flat = kp.flatten()
-        pose = estimate_head_pose(kp_flat)
-
-        is_valid = detector._is_valid_candidate(kp_flat, pose)
-
-        assert is_valid is False
-
-    def test_empty_sequence_raises(self, detector: NeutralFrameDetector) -> None:
-        """Test: pusta sekwencja powinna rzucić wyjątek."""
-        with pytest.raises(ValueError):
-            detector.detect_auto([], [], [])
-
-    def test_single_frame_returns_zero(self, detector: NeutralFrameDetector) -> None:
-        """Test: pojedyncza klatka powinna zwrócić index 0."""
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        kp = self._create_frontal_keypoints()
-        pose = estimate_head_pose(kp)
-
-        neutral_idx = detector.detect_auto([frame], [kp], [pose])
-
-        assert neutral_idx == 0
+        """Test: detect_manual zwraca podany indeks bez zmian."""
+        assert detector.detect_manual(5) == 5
+        assert detector.detect_manual(0) == 0

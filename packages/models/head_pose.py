@@ -1,54 +1,44 @@
 """
-Head Pose Estimation из keypoints.
+Estymacja pozy głowy psa z keypoints.
 
-Вычисляет ориентацию головы собаки (yaw, pitch, roll) для фильтрации
-не-фронтальных изображений. Только фронтальные морды дают надёжные AU.
+Oblicza orientację głowy (yaw, pitch, roll) do filtrowania
+niefrونtalnych klatek. Tylko frontalne mordy dają wiarygodne AU.
 
-Используется для:
-- Фильтрации кадров в видео (пропуск повёрнутых голов)
-- Оценки качества детекции keypoints
-- Валидации перед вычислением эмоций
+Używane do:
+- Filtrowania klatek w wideo (pomijanie obróconej głowy)
+- Oceny jakości detekcji keypoints
+- Walidacji przed obliczaniem emocji
 """
 
-from dataclasses import dataclass
-import numpy as np
 import math
-from typing import Optional
+from dataclasses import dataclass
 
-from packages.data.schemas import NUM_KEYPOINTS
+import numpy as np
 
-
-# Индексы keypoints для head pose
-KP_LEFT_EYE = 0
-KP_RIGHT_EYE = 1
-KP_NOSE = 2
-KP_LEFT_EAR_BASE = 3
-KP_RIGHT_EAR_BASE = 4
-KP_LEFT_EAR_TIP = 5
-KP_RIGHT_EAR_TIP = 6
-KP_FOREHEAD = 14
+from packages.data.schemas import KP, NUM_KEYPOINTS
 
 
 @dataclass
 class HeadPose:
     """
-    Результат оценки позы головы.
+    Wynik estymacji pozy głowy.
 
     Attributes:
-        yaw: Поворот влево/вправо в градусах (-90 до +90)
-        pitch: Наклон вверх/вниз в градусах (-90 до +90)
-        roll: Наклон набок в градусах (-90 до +90)
-        is_frontal: True если голова достаточно фронтальная
-        confidence: Уверенность оценки (0-1)
+        yaw: Obrót lewo/prawo w stopniach (-90 do +90)
+        pitch: Nachylenie góra/dół w stopniach (-90 do +90)
+        roll: Przechylenie na bok w stopniach (-90 do +90)
+        is_frontal: True jeśli głowa jest wystarczająco frontalna
+        confidence: Pewność estymacji (0-1)
     """
-    yaw: float      # Поворот влево/вправо
-    pitch: float    # Наклон вверх/вниз
-    roll: float     # Наклон набок
+
+    yaw: float
+    pitch: float
+    roll: float
     is_frontal: bool
     confidence: float
 
     def to_dict(self) -> dict:
-        """Конвертирует в словарь."""
+        """Konwertuje do słownika."""
         return {
             "yaw": round(self.yaw, 1),
             "pitch": round(self.pitch, 1),
@@ -60,91 +50,83 @@ class HeadPose:
 
 class HeadPoseEstimator:
     """
-    Оценивает позу головы собаки из keypoints.
+    Estymuje pozę głowy psa z keypoints (46 punktów DogFLW).
 
-    Алгоритм:
-    - YAW: угол между носом и центром глаз относительно ширины глаз
-    - PITCH: угол между носом и центром ушей относительно высоты головы
-    - ROLL: угол наклона линии между ушами
+    Algorytm:
+    - YAW: kąt między nosem a centrum oczu względem szerokości oczu
+    - PITCH: kąt między nosem a centrum uszu względem wysokości głowy
+    - ROLL: kąt przechylenia linii między centrami oczu
 
-    Example:
-        estimator = HeadPoseEstimator(frontal_threshold=30)
-        keypoints = np.array([x0, y0, v0, x1, y1, v1, ...])  # 60 values
-        pose = estimator.estimate(keypoints)
-        if pose.is_frontal:
-            # Можно вычислять AU
+    Przykład:
+        >>> estimator = HeadPoseEstimator(frontal_threshold=30)
+        >>> keypoints = np.zeros(138)  # 46 × 3 wartości
+        >>> pose = estimator.estimate(keypoints)
+        >>> if pose.is_frontal:
+        ...     pass  # można obliczać AU
     """
 
     def __init__(self, frontal_threshold: float = 30.0) -> None:
         """
-        Инициализирует estimator.
+        Inicjalizuje estimator.
 
         Args:
-            frontal_threshold: Максимальный угол для фронтальной позы (градусы)
+            frontal_threshold: Maksymalny kąt dla frontalnej pozy (stopnie)
         """
         self.frontal_threshold = frontal_threshold
 
     def estimate(self, keypoints_flat: np.ndarray) -> HeadPose:
         """
-        Оценивает позу головы из keypoints.
+        Estymuje pozę głowy z keypoints.
 
         Args:
-            keypoints_flat: Array [x0, y0, v0, x1, y1, v1, ...] (60 values)
+            keypoints_flat: Array [x0, y0, v0, ...] (138 wartości = 46×3)
 
         Returns:
-            HeadPose с yaw, pitch, roll и флагом is_frontal
+            HeadPose z yaw, pitch, roll i flagą is_frontal
+
+        Raises:
+            ValueError: Gdy liczba wartości keypoints jest nieprawidłowa
         """
-        # Reshape to (20, 3)
+        expected = NUM_KEYPOINTS * 3
+        if len(keypoints_flat) != expected:
+            raise ValueError(
+                f"Oczekiwano {expected} wartości keypoints, "
+                f"otrzymano {len(keypoints_flat)}"
+            )
+
         kp = keypoints_flat.reshape(NUM_KEYPOINTS, 3)
-        coords = kp[:, :2]  # (20, 2)
-        visibility = kp[:, 2]  # (20,)
+        coords = kp[:, :2]
+        visibility = kp[:, 2]
 
-        # Вычислить confidence как среднюю visibility ключевых точек
-        key_indices = [KP_LEFT_EYE, KP_RIGHT_EYE, KP_NOSE,
-                       KP_LEFT_EAR_BASE, KP_RIGHT_EAR_BASE]
-        confidence = float(np.mean([visibility[i] for i in key_indices]))
+        # Centrum oka = średnia kąta wewnętrznego i zewnętrznego
+        left_eye = (coords[KP.LEFT_EYE_INNER] + coords[KP.LEFT_EYE_OUTER]) / 2
+        right_eye = (coords[KP.RIGHT_EYE_INNER] + coords[KP.RIGHT_EYE_OUTER]) / 2
+        nose = coords[KP.NOSE_TIP]
 
-        # Получить координаты ключевых точек
-        left_eye = coords[KP_LEFT_EYE]
-        right_eye = coords[KP_RIGHT_EYE]
-        nose = coords[KP_NOSE]
-        left_ear = coords[KP_LEFT_EAR_BASE]
-        right_ear = coords[KP_RIGHT_EAR_BASE]
-        forehead = coords[KP_FOREHEAD]
+        eye_width = _euclidean_dist(left_eye, right_eye)
 
-        # Вычислить YAW (поворот влево/вправо)
-        eye_center = (left_eye + right_eye) / 2
-        eye_width = self._distance(left_eye, right_eye)
+        # YAW: przesunięcie nosa od centrum oczu (+ = obrót w lewo)
+        yaw = _compute_yaw(nose, left_eye, right_eye, eye_width)
 
-        if eye_width > 1e-6:
-            # Смещение носа от центра глаз
-            nose_offset = nose[0] - eye_center[0]
-            yaw = math.degrees(math.atan2(nose_offset, eye_width))
-        else:
-            yaw = 0.0
+        # PITCH: nachylenie góra/dół (nos względem centrum oczu)
+        pitch = _compute_pitch(nose, left_eye, right_eye, eye_width)
 
-        # Вычислить PITCH (наклон вверх/вниз)
-        ear_center = (left_ear + right_ear) / 2
-        head_height = self._distance(forehead, nose)
+        # ROLL: przechylenie na bok (oczy względem poziomej osi)
+        roll = _compute_roll(left_eye, right_eye)
 
-        if head_height > 1e-6:
-            # Вертикальное смещение носа
-            vertical_offset = nose[1] - ear_center[1]
-            pitch = math.degrees(math.atan2(vertical_offset, head_height))
-        else:
-            pitch = 0.0
-
-        # Вычислить ROLL (наклон набок)
-        ear_dx = right_ear[0] - left_ear[0]
-        ear_dy = right_ear[1] - left_ear[1]
-        roll = math.degrees(math.atan2(ear_dy, ear_dx))
-
-        # Определить is_frontal
         is_frontal = (
-            abs(yaw) < self.frontal_threshold and
-            abs(pitch) < self.frontal_threshold and
-            abs(roll) < self.frontal_threshold
+            abs(yaw) < self.frontal_threshold
+            and abs(pitch) < self.frontal_threshold
+            and abs(roll) < self.frontal_threshold
         )
+
+        # Pewność = średnia widoczność kluczowych punktów
+        key_indices = [
+            KP.LEFT_EYE_INNER, KP.RIGHT_EYE_INNER,
+            KP.NOSE_TIP,
+            KP.LEFT_EAR_BASE_FRONT, KP.RIGHT_EAR_BASE_FRONT,
+        ]
+        confidence = float(np.mean([visibility[i] for i in key_indices]))
 
         return HeadPose(
             yaw=yaw,
@@ -154,21 +136,17 @@ class HeadPoseEstimator:
             confidence=confidence,
         )
 
-    def _distance(self, p1: np.ndarray, p2: np.ndarray) -> float:
-        """Вычисляет евклидово расстояние."""
-        return float(np.sqrt(np.sum((p1 - p2) ** 2)))
-
 
 def estimate_head_pose(
     keypoints_flat: np.ndarray,
     frontal_threshold: float = 30.0,
 ) -> HeadPose:
     """
-    Функция-хелпер для оценки позы головы.
+    Funkcja pomocnicza do estymacji pozy głowy.
 
     Args:
-        keypoints_flat: Array [x0, y0, v0, ...] (60 values)
-        frontal_threshold: Порог для фронтальной позы (градусы)
+        keypoints_flat: Array [x0, y0, v0, ...] (138 wartości)
+        frontal_threshold: Próg dla frontalnej pozy (stopnie)
 
     Returns:
         HeadPose
@@ -183,20 +161,77 @@ def validate_head_pose(
     min_confidence: float = 0.5,
 ) -> bool:
     """
-    Валидирует позу головы для вычисления AU.
+    Waliduje pozę głowy dla obliczania AU.
 
     Args:
-        pose: HeadPose для валидации
-        max_angle: Максимально допустимый угол
-        min_confidence: Минимальная уверенность
+        pose: HeadPose do walidacji
+        max_angle: Maksymalnie dopuszczalny kąt
+        min_confidence: Minimalna pewność
 
     Returns:
-        True если поза валидна для AU
+        True jeśli poza jest prawidłowa dla AU
     """
     return (
-        pose.is_frontal and
-        pose.confidence >= min_confidence and
-        abs(pose.yaw) <= max_angle and
-        abs(pose.pitch) <= max_angle and
-        abs(pose.roll) <= max_angle
+        pose.is_frontal
+        and pose.confidence >= min_confidence
+        and abs(pose.yaw) <= max_angle
+        and abs(pose.pitch) <= max_angle
+        and abs(pose.roll) <= max_angle
     )
+
+
+# =============================================================================
+# Funkcje pomocnicze (prywatne)
+# =============================================================================
+
+def _euclidean_dist(p1: np.ndarray, p2: np.ndarray) -> float:
+    """Odległość euklidesowa między dwoma punktami."""
+    return float(np.sqrt(np.sum((p1 - p2) ** 2)))
+
+
+def _compute_yaw(
+    nose: np.ndarray,
+    left_eye: np.ndarray,
+    right_eye: np.ndarray,
+    eye_width: float,
+) -> float:
+    """
+    Oblicza kąt obrotu lewo/prawo (yaw).
+
+    Konwencja: yaw > 0 = obrót w LEWO (nos przesuwa się w lewo),
+               yaw < 0 = obrót w PRAWO.
+    """
+    if eye_width < 1e-6:
+        return 0.0
+    eye_center_x = (left_eye[0] + right_eye[0]) / 2
+    # Ujemny sign: nos w lewo → offset ujemny → yaw dodatni
+    nose_offset = eye_center_x - nose[0]
+    return float(np.clip(math.degrees(math.atan2(nose_offset, eye_width)), -90, 90))
+
+
+def _compute_pitch(
+    nose: np.ndarray,
+    left_eye: np.ndarray,
+    right_eye: np.ndarray,
+    eye_width: float,
+) -> float:
+    """
+    Oblicza kąt nachylenia góra/dół (pitch).
+
+    Mierzy jak bardzo nos jest poniżej centrum oczu względem szerokości oczu.
+    Konwencja: pitch > 0 = nos poniżej oczu (normalna poza psa).
+    """
+    if eye_width < 1e-6:
+        return 0.0
+    eye_center_y = (left_eye[1] + right_eye[1]) / 2
+    vertical_offset = nose[1] - eye_center_y
+    return float(np.clip(math.degrees(math.atan2(vertical_offset, eye_width)), -90, 90))
+
+
+def _compute_roll(left_eye: np.ndarray, right_eye: np.ndarray) -> float:
+    """Oblicza kąt przechylenia na bok (roll)."""
+    dx = right_eye[0] - left_eye[0]
+    dy = right_eye[1] - left_eye[1]
+    if abs(dx) < 1e-6:
+        return 0.0
+    return float(np.clip(math.degrees(math.atan2(dy, dx)), -90, 90))

@@ -7,8 +7,10 @@ Endpoints:
 - GET /api/health - Health check
 """
 
+import sys
 import tempfile
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +24,13 @@ from pydantic import BaseModel
 
 from packages.pipeline import InferencePipeline, PipelineConfig
 
+# Dodaj katalog backend do PYTHONPATH (session_store i routers nie są pakietem)
+_BACKEND_DIR = Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
+from routers.sessions import router as sessions_router  # noqa: E402  # isort: skip
+from session_store import FrameAnnotation, SessionData, SessionStore  # noqa: E402  # isort: skip
 
 # =============================================================================
 # FastAPI App Configuration
@@ -43,12 +52,16 @@ app.add_middleware(
 )
 
 # Static files dla zapisanych klatek
-STATIC_DIR = Path("apps/webapp/backend/static/frames")
+STATIC_DIR = _BACKEND_DIR / "static" / "frames"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Podłącz router sesji (Sprint 9)
+app.include_router(sessions_router)
+
 # Global pipeline instance
 pipeline: Optional[InferencePipeline] = None
+_session_store = SessionStore()
 
 
 # =============================================================================
@@ -338,7 +351,7 @@ async def process_video(
 
             # Zapisz klatkę z keypoints
             keypoints = peak_data["keypoints"]
-            frame_path = save_frame_to_disk(frame, frame_idx, session_id, keypoints=keypoints)
+            save_frame_to_disk(frame, frame_idx, session_id, keypoints=keypoints)
 
             # URL dla frontend
             image_url = f"/static/{session_id}/frame_{frame_idx:04d}.jpg"
@@ -368,10 +381,40 @@ async def process_video(
         neutral_idx = result["neutral_frame_idx"]
         neutral_frame = frames_list[neutral_idx]
         neutral_keypoints = result["neutral_keypoints"]
-        neutral_path = save_frame_to_disk(
+        save_frame_to_disk(
             neutral_frame, neutral_idx, session_id, keypoints=neutral_keypoints
         )
         neutral_url = f"/static/{session_id}/frame_{neutral_idx:04d}.jpg"
+
+        # Zapisz sesję do SessionStore (Sprint 9)
+        frame_annotations = [
+            FrameAnnotation(
+                frame_idx=pf["frame_idx"],
+                image_url=pf["image_url"],
+                aus=pf["aus"],
+                emotion=pf["emotion"],
+                emotion_confidence=pf["emotion_confidence"],
+                emotion_rule_applied=pf["emotion_rule_applied"],
+                tfm_score=pf["tfm_score"],
+                keypoints=result["peak_frames"][i]["keypoints"].tolist()
+                if result["peak_frames"][i].get("keypoints") is not None
+                else None,
+            )
+            for i, pf in enumerate(peak_frames_data)
+        ]
+        session_data = SessionData(
+            session_id=session_id,
+            video_filename=file.filename,
+            created_at=datetime.now().isoformat(),
+            total_frames=len(frames_list),
+            neutral_frame_idx=neutral_idx,
+            neutral_keypoints=neutral_keypoints.tolist()
+            if neutral_keypoints is not None
+            else None,
+            frames=frame_annotations,
+        )
+        _session_store.save(session_data)
+        print(f"  → Sesja {session_id} zapisana ({len(frame_annotations)} klatek)")
 
         return JSONResponse({
             "session_id": session_id,
@@ -406,7 +449,6 @@ async def export_coco(request: ExportCOCORequest):
     Returns:
         COCO JSON jako FileResponse
     """
-    from packages.data.coco import COCODataset
 
     # TODO: Implementuj generowanie COCO z peak frames
     # Na razie zwróć placeholder

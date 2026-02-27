@@ -8,19 +8,19 @@ Zawiera:
 - TemporalProcessor: Procesor do agregacji czasowej dla wideo
 """
 
+from .downloader import DownloadResult, YouTubeDownloader
 from .inference import (
-    PipelineConfig,
     DogAnnotation,
     FrameResult,
     InferencePipeline,
+    PipelineConfig,
 )
-from .video import VideoProcessor, VideoInfo
-from .downloader import YouTubeDownloader, DownloadResult
 from .temporal_processor import (
     TemporalAUBuffer,
     TemporalAUResult,
     TemporalProcessor,
 )
+from .video import VideoInfo, VideoProcessor
 
 __all__ = [
     # Inference Pipeline

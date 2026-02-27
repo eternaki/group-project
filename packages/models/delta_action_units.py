@@ -1,110 +1,82 @@
 """
-Delta-based Action Units (AU) extractor for DogFACS.
+Ekstraktor Action Units (AU) oparty na deltach dla systemu DogFACS.
 
-Computes Action Units as **delta ratios** relative to a neutral baseline frame.
-This allows for comparative facial expression analysis independent of breed morphology.
+Oblicza Action Units jako **delta ratio** względem bazowej klatki neutralnej.
+Podejście to jest niezależne od morfologii rasy — mierzymy ZMIANY, nie wartości absolutne.
 
-Key Principle: Delta_AU = (distance_target / distance_neutral) - 1.0
+Zasada: Delta_AU = (odległość_cel / odległość_neutral) - 1.0
 
-Official DogFACS codes implemented:
-- AU101: Inner Brow Raiser
-- AU102: Outer Brow Raiser
-- AU12: Lip Corner Puller (smile)
-- AU115: Upper Eyelid Raiser
-- AU116: Lower Eyelid Raiser (squint)
-- AU117: Closure of Eyelids (blink)
-- AU121: Eye Widener
-- EAD102: Ears Forward
-- EAD103: Ears Flattener
-- AD19: Tongue Show
-- AD37: Nose Lick
-- AU26: Jaw Drop
+Oficjalne kody DogFACS (21 AU łącznie):
+  Górna twarz:  AU101, AU143, AU145
+  Dolna twarz:  AU109, AU110, AU12, AU116, AU118, AU25, AU26, AU27
+  Deskryptory:  AD19, AD33, AD35, AD37, AD137
+  Uszy:         EAD101, EAD102, EAD103, EAD104, EAD105
 
-Scientific basis: Mota-Rojas et al. 2021, DogFACS
+Źródło naukowe: Waller et al. 2013 (DogFACS), Mota-Rojas et al. 2021,
+                https://www.animalfacs.com/dogfacs
 """
 
-from dataclasses import dataclass
-from typing import Optional
-import numpy as np
 import math
+from dataclasses import dataclass
 
-from packages.data.schemas import NUM_KEYPOINTS, KEYPOINT_NAMES
+import numpy as np
 
-# Keypoint indices (for readability)
-KP_LEFT_EYE = 0
-KP_RIGHT_EYE = 1
-KP_NOSE = 2
-KP_LEFT_EAR_BASE = 3
-KP_RIGHT_EAR_BASE = 4
-KP_LEFT_EAR_TIP = 5
-KP_RIGHT_EAR_TIP = 6
-KP_LEFT_MOUTH = 7
-KP_RIGHT_MOUTH = 8
-KP_UPPER_LIP = 9
-KP_LOWER_LIP = 10
-KP_CHIN = 11
-KP_LEFT_CHEEK = 12
-KP_RIGHT_CHEEK = 13
-KP_FOREHEAD = 14
-KP_LEFT_BROW = 15
-KP_RIGHT_BROW = 16
-KP_MUZZLE_TOP = 17
-KP_MUZZLE_LEFT = 18
-KP_MUZZLE_RIGHT = 19
+from packages.data.schemas import KP, NUM_KEYPOINTS
 
+# Oficjalne kody AU zgodnie z DogFACS (21 łącznie)
+ACTION_UNIT_NAMES: list[str] = [
+    # --- Górna twarz ---
+    "AU101",   # Inner Brow Raiser — unoszenie wewnętrznej części brwi
+    "AU143",   # Lid Tightener — napięcie powieki
+    "AU145",   # Blink / Eye Closure — mrugnięcie / zamknięcie oka
 
-# Official DogFACS Action Unit names
-ACTION_UNIT_NAMES = [
-    "AU101",   # Inner Brow Raiser
-    "AU102",   # Outer Brow Raiser
-    "AU12",    # Lip Corner Puller (smile)
-    "AU115",   # Upper Eyelid Raiser
-    "AU116",   # Lower Eyelid Raiser (squint)
-    "AU117",   # Closure of Eyelids (blink)
-    "AU121",   # Eye Widener
-    "EAD102",  # Ears Forward
-    "EAD103",  # Ears Flattener
-    "AD19",    # Tongue Show
-    "AD37",    # Nose Lick
-    "AU26",    # Jaw Drop
+    # --- Dolna twarz ---
+    "AU109",   # Nose Wrinkler Left — zmarszczenie nosa (lewa strona)
+    "AU110",   # Nose Wrinkler Right — zmarszczenie nosa (prawa strona)
+    "AU12",    # Lip Corner Puller — ciągnięcie kącika ust (uśmiech)
+    "AU116",   # Lower Lip Depressor — opuszczanie dolnej wargi
+    "AU118",   # Lip Stretcher — rozciąganie wargi
+    "AU25",    # Lips Part — rozwarcie warg
+    "AU26",    # Jaw Drop — opuszczenie żuchwy
+    "AU27",    # Mouth Stretch — szerokie otwarcie pyska
+
+    # --- Action Descriptors ---
+    "AD19",    # Tongue Show — pokazanie języka
+    "AD33",    # Blow — dmuchnięcie / wydech przez usta
+    "AD35",    # Lip Bite — przygryzienie wargi
+    "AD37",    # Lip Wipe — oblizanie warg (nie nosa!)
+    "AD137",   # Nose Lick — lizanie nosa (nie warg!)
+
+    # --- Ear Action Descriptors ---
+    "EAD101",  # Ears Forward — uszy do przodu
+    "EAD102",  # Ears Adductor — uszy przyciągnięte do siebie
+    "EAD103",  # Ears Flattener — uszy przyciśnięte do głowy
+    "EAD104",  # Ears Rotator — obrót uszu
+    "EAD105",  # Ears Apart — uszy rozstawione
 ]
 
-NUM_ACTION_UNITS = len(ACTION_UNIT_NAMES)
+NUM_ACTION_UNITS: int = len(ACTION_UNIT_NAMES)
 
+# Próg aktywacji AU (15% zmiana względem stanu neutralnego)
+DEFAULT_ACTIVATION_THRESHOLD: float = 1.15
 
-# Mapping from AU names to measurement keys
-AU_TO_MEASUREMENT_MAP = {
-    "AU101": "inner_brow_eye_dist",
-    "AU102": "outer_brow_elevation",
-    "AU12": "lip_corner_angle",
-    "AU115": "upper_eyelid_opening",
-    "AU116": "lower_eyelid_squint",
-    "AU117": "eye_closure",
-    "AU121": "eye_region_height",
-    "EAD102": "ear_forward_angle",
-    "EAD103": "ear_flattening_angle",
-    "AD19": "tongue_show_proxy",
-    "AD37": "nose_lick_proxy",
-    "AU26": "jaw_drop_dist",
-}
-
-
-# Universal activation threshold (15% increase)
-DEFAULT_ACTIVATION_THRESHOLD = 1.15
+# Próg dla AU aktywowanych przez ZMNIEJSZENIE (ratio < próg)
+DECREASE_ACTIVATION_THRESHOLD: float = 0.85
 
 
 @dataclass
 class DeltaActionUnit:
     """
-    Single Action Unit with delta-based measurement.
+    Pojedynczy Action Unit z pomiarem opartym na delcie.
 
     Attributes:
-        name: Official DogFACS code (e.g., "AU101", "EAD102")
-        ratio: Target/neutral ratio (1.0 = no change, 1.3 = 30% increase)
-        delta: Ratio - 1.0 (0.0 = no change, 0.3 = 30% increase)
-        is_active: Binary activation based on threshold
-        confidence: Confidence score from keypoint visibility
+        name: Oficjalny kod DogFACS (np. "AU101", "EAD101")
+        ratio: Stosunek cel/neutral (1.0 = brak zmiany, 1.3 = wzrost o 30%)
+        delta: Ratio - 1.0 (0.0 = brak, 0.3 = wzrost o 30%)
+        is_active: Binarna aktywacja na podstawie progu
+        confidence: Pewność pomiaru z widoczności keypoints (0.0-1.0)
     """
+
     name: str
     ratio: float
     delta: float
@@ -112,260 +84,452 @@ class DeltaActionUnit:
     confidence: float
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
+        """Konwertuje do słownika dla serializacji JSON."""
         return {
             "name": self.name,
-            "ratio": self.ratio,
-            "delta": self.delta,
+            "ratio": round(self.ratio, 4),
+            "delta": round(self.delta, 4),
             "is_active": self.is_active,
-            "confidence": self.confidence,
+            "confidence": round(self.confidence, 4),
         }
 
 
 class DeltaActionUnitsExtractor:
     """
-    Extracts delta-based Action Units from keypoints.
+    Ekstraktor Action Units oparty na deltach względem klatki neutralnej.
 
-    Computes AUs as ratios relative to a neutral baseline frame.
-    This ensures breed-invariant emotion recognition.
+    Oblicza AU jako stosunki odległości anatomicznych, co zapewnia
+    niezależność od morfologii rasy psa.
 
-    Example:
-        >>> neutral_kp = np.array([...])  # 60 values from neutral frame
+    Przykład:
+        >>> neutral_kp = np.zeros(NUM_KEYPOINTS * 3)
         >>> extractor = DeltaActionUnitsExtractor(neutral_kp)
-        >>> target_kp = np.array([...])   # 60 values from target frame
+        >>> target_kp = np.zeros(NUM_KEYPOINTS * 3)
         >>> delta_aus = extractor.extract(target_kp)
-        >>> print(delta_aus["AU101"].ratio)  # 1.25 = 25% brow raise
+        >>> print(delta_aus["AU101"].ratio)
     """
 
     def __init__(
         self,
         neutral_keypoints: np.ndarray,
         activation_threshold: float = DEFAULT_ACTIVATION_THRESHOLD,
-    ):
+    ) -> None:
         """
-        Initialize with neutral baseline frame.
+        Inicjalizuje ekstraktor z klatką neutralną jako bazą.
 
         Args:
-            neutral_keypoints: Keypoints from neutral frame [x0,y0,v0,...] (60 values)
-            activation_threshold: Ratio threshold for AU activation (default 1.15 = 15% increase)
+            neutral_keypoints: Keypoints klatki neutralnej [x0,y0,v0,...] (138 wartości)
+            activation_threshold: Próg stosunku dla aktywacji AU (domyślnie 1.15 = +15%)
+
+        Raises:
+            ValueError: Gdy liczba wartości keypoints jest nieprawidłowa
         """
-        if len(neutral_keypoints) != NUM_KEYPOINTS * 3:
+        expected = NUM_KEYPOINTS * 3
+        if len(neutral_keypoints) != expected:
             raise ValueError(
-                f"Expected {NUM_KEYPOINTS * 3} keypoints values, "
-                f"got {len(neutral_keypoints)}"
+                f"Oczekiwano {expected} wartości keypoints (46×3), "
+                f"otrzymano {len(neutral_keypoints)}"
             )
 
-        self.neutral_keypoints = neutral_keypoints.reshape(NUM_KEYPOINTS, 3)
+        self.neutral_kp = neutral_keypoints.reshape(NUM_KEYPOINTS, 3)
         self.activation_threshold = activation_threshold
-
-        # Compute and store neutral reference distances
-        self.neutral_distances = self._compute_normalized_distances(self.neutral_keypoints)
-        self.neutral_eye_distance = self._get_eye_distance(self.neutral_keypoints)
+        self.neutral_distances = self._compute_measurements(self.neutral_kp)
 
     def extract(self, target_keypoints: np.ndarray) -> dict[str, DeltaActionUnit]:
         """
-        Extract delta AUs from target frame.
+        Ekstrahuje delta AU z klatki docelowej.
 
         Args:
-            target_keypoints: Keypoints from target frame [x0,y0,v0,...] (60 values)
+            target_keypoints: Keypoints klatki docelowej [x0,y0,v0,...] (138 wartości)
 
         Returns:
-            Dictionary of AU_name -> DeltaActionUnit
+            Słownik AU_name → DeltaActionUnit
+
+        Raises:
+            ValueError: Gdy liczba wartości keypoints jest nieprawidłowa
         """
-        if len(target_keypoints) != NUM_KEYPOINTS * 3:
+        expected = NUM_KEYPOINTS * 3
+        if len(target_keypoints) != expected:
             raise ValueError(
-                f"Expected {NUM_KEYPOINTS * 3} keypoints values, "
-                f"got {len(target_keypoints)}"
+                f"Oczekiwano {expected} wartości keypoints, "
+                f"otrzymano {len(target_keypoints)}"
             )
 
         target_kp = target_keypoints.reshape(NUM_KEYPOINTS, 3)
-        target_distances = self._compute_normalized_distances(target_kp)
+        target_distances = self._compute_measurements(target_kp)
 
-        delta_aus = {}
-
-        for au_name in ACTION_UNIT_NAMES:
-            measurement_key = AU_TO_MEASUREMENT_MAP[au_name]
-
-            neutral_val = self.neutral_distances[measurement_key]
-            target_val = target_distances[measurement_key]
-
-            # Compute ratio and delta
-            if neutral_val > 1e-6:
-                ratio = target_val / neutral_val
-                delta = ratio - 1.0
-            else:
-                ratio = 1.0
-                delta = 0.0
-
-            # Determine activation
-            is_active = self._is_activated(au_name, ratio, delta)
-
-            # Confidence from keypoint visibility
-            confidence = self._compute_au_confidence(au_name, target_kp)
-
-            delta_aus[au_name] = DeltaActionUnit(
-                name=au_name,
-                ratio=ratio,
-                delta=delta,
-                is_active=is_active,
-                confidence=confidence,
-            )
-
-        return delta_aus
-
-    def _compute_normalized_distances(self, keypoints: np.ndarray) -> dict[str, float]:
-        """
-        Compute all measurements normalized by eye distance.
-
-        This ensures breed-invariant measurements.
-
-        Args:
-            keypoints: Keypoints array (20, 3)
-
-        Returns:
-            Dictionary of measurement_key -> normalized_value
-        """
-        coords = keypoints[:, :2]  # (20, 2)
-        visibility = keypoints[:, 2]  # (20,)
-
-        # Eye distance for normalization
-        eye_distance = self._distance(coords[KP_LEFT_EYE], coords[KP_RIGHT_EYE])
-        if eye_distance < 1e-6:
-            eye_distance = 1.0  # Fallback
-
-        distances = {}
-
-        # AU101: Inner Brow Raiser - distance(brow, eye)
-        left_brow_eye = self._distance(coords[KP_LEFT_BROW], coords[KP_LEFT_EYE])
-        right_brow_eye = self._distance(coords[KP_RIGHT_BROW], coords[KP_RIGHT_EYE])
-        distances["inner_brow_eye_dist"] = (left_brow_eye + right_brow_eye) / (2 * eye_distance)
-
-        # AU102: Outer Brow Raiser - brow elevation angle
-        brow_center_y = (coords[KP_LEFT_BROW][1] + coords[KP_RIGHT_BROW][1]) / 2
-        forehead_y = coords[KP_FOREHEAD][1]
-        brow_elevation = abs(forehead_y - brow_center_y) / eye_distance
-        distances["outer_brow_elevation"] = brow_elevation
-
-        # AU12: Lip Corner Puller (smile) - angle of mouth corners to upper lip
-        left_angle = self._angle(coords[KP_UPPER_LIP], coords[KP_LEFT_MOUTH])
-        right_angle = self._angle(coords[KP_UPPER_LIP], coords[KP_RIGHT_MOUTH])
-        # Normalize angle to [0, 1]
-        smile_indicator = (left_angle - right_angle) / math.pi
-        distances["lip_corner_angle"] = abs(smile_indicator)
-
-        # AU115: Upper Eyelid Raiser - eye opening from visibility
-        upper_eyelid = (visibility[KP_LEFT_EYE] + visibility[KP_RIGHT_EYE]) / 2
-        distances["upper_eyelid_opening"] = upper_eyelid
-
-        # AU116: Lower Eyelid Raiser (squint) - inverse of eye opening
-        distances["lower_eyelid_squint"] = 1.0 - upper_eyelid
-
-        # AU117: Eye Closure (blink) - 1 - eye visibility
-        distances["eye_closure"] = 1.0 - upper_eyelid
-
-        # AU121: Eye Widener - vertical eye region height
-        eye_center_y = (coords[KP_LEFT_EYE][1] + coords[KP_RIGHT_EYE][1]) / 2
-        forehead_to_eye = abs(forehead_y - eye_center_y) / eye_distance
-        distances["eye_region_height"] = forehead_to_eye
-
-        # EAD102: Ears Forward - forward angle of ears
-        left_ear_angle = self._angle(coords[KP_LEFT_EAR_BASE], coords[KP_LEFT_EAR_TIP])
-        right_ear_angle = self._angle(coords[KP_RIGHT_EAR_BASE], coords[KP_RIGHT_EAR_TIP])
-        avg_ear_angle = (abs(left_ear_angle) + abs(right_ear_angle)) / 2
-        # Forward = small angle (close to vertical)
-        distances["ear_forward_angle"] = 1.0 - (avg_ear_angle / math.pi)
-
-        # EAD103: Ears Flattener - flattening angle (inverse of forward)
-        distances["ear_flattening_angle"] = avg_ear_angle / math.pi
-
-        # AD19: Tongue Show - proxy via mouth opening and lip geometry
-        mouth_opening = self._distance(coords[KP_UPPER_LIP], coords[KP_LOWER_LIP])
-        jaw_drop = self._distance(coords[KP_NOSE], coords[KP_CHIN])
-        # Tongue visible when mouth open but jaw not dropped excessively
-        tongue_proxy = (mouth_opening / eye_distance) * (1.0 - min(1.0, jaw_drop / eye_distance))
-        distances["tongue_show_proxy"] = tongue_proxy
-
-        # AD37: Nose Lick - proxy via nose-lip distance
-        nose_lip_dist = self._distance(coords[KP_NOSE], coords[KP_UPPER_LIP])
-        # Licking = small distance
-        distances["nose_lick_proxy"] = 1.0 - min(1.0, nose_lip_dist / eye_distance)
-
-        # AU26: Jaw Drop - vertical nose-chin distance
-        jaw_drop_normalized = jaw_drop / eye_distance
-        distances["jaw_drop_dist"] = jaw_drop_normalized
-
-        return distances
-
-    def _is_activated(self, au_name: str, ratio: float, delta: float) -> bool:
-        """
-        Determine if AU is activated based on ratio threshold.
-
-        Args:
-            au_name: AU code (e.g., "AU101")
-            ratio: Target/neutral ratio
-            delta: Ratio - 1.0
-
-        Returns:
-            True if AU is activated (ratio > threshold)
-        """
-        # Special cases for bidirectional or decrease-based AUs
-        if au_name in ["AU115", "AU121"]:  # Eye opening/widening - increase
-            return ratio > self.activation_threshold
-
-        elif au_name in ["AU116", "AU117"]:  # Squint/blink - can be decrease or increase
-            # Activated if significantly different from neutral (bidirectional)
-            return abs(delta) > (self.activation_threshold - 1.0)
-
-        else:  # Most AUs - activation = increase
-            return ratio > self.activation_threshold
-
-    def _compute_au_confidence(self, au_name: str, keypoints: np.ndarray) -> float:
-        """
-        Compute confidence score for AU based on keypoint visibility.
-
-        Args:
-            au_name: AU code
-            keypoints: Keypoints array (20, 3)
-
-        Returns:
-            Confidence score (0.0-1.0)
-        """
-        # Map AU to relevant keypoints
-        keypoint_groups = {
-            "AU101": [KP_LEFT_BROW, KP_RIGHT_BROW, KP_LEFT_EYE, KP_RIGHT_EYE],
-            "AU102": [KP_LEFT_BROW, KP_RIGHT_BROW, KP_FOREHEAD],
-            "AU12": [KP_LEFT_MOUTH, KP_RIGHT_MOUTH, KP_UPPER_LIP],
-            "AU115": [KP_LEFT_EYE, KP_RIGHT_EYE],
-            "AU116": [KP_LEFT_EYE, KP_RIGHT_EYE],
-            "AU117": [KP_LEFT_EYE, KP_RIGHT_EYE],
-            "AU121": [KP_LEFT_EYE, KP_RIGHT_EYE, KP_FOREHEAD],
-            "EAD102": [KP_LEFT_EAR_BASE, KP_RIGHT_EAR_BASE, KP_LEFT_EAR_TIP, KP_RIGHT_EAR_TIP],
-            "EAD103": [KP_LEFT_EAR_BASE, KP_RIGHT_EAR_BASE, KP_LEFT_EAR_TIP, KP_RIGHT_EAR_TIP],
-            "AD19": [KP_UPPER_LIP, KP_LOWER_LIP, KP_NOSE],
-            "AD37": [KP_NOSE, KP_UPPER_LIP],
-            "AU26": [KP_NOSE, KP_CHIN],
+        return {
+            au_name: self._compute_delta_au(au_name, target_distances, target_kp)
+            for au_name in ACTION_UNIT_NAMES
         }
 
-        relevant_kps = keypoint_groups.get(au_name, list(range(NUM_KEYPOINTS)))
-        visibilities = [keypoints[idx, 2] for idx in relevant_kps]
+    def _compute_delta_au(
+        self,
+        au_name: str,
+        target_distances: dict[str, float],
+        target_kp: np.ndarray,
+    ) -> DeltaActionUnit:
+        """
+        Oblicza delta dla pojedynczego AU.
 
-        return float(np.mean(visibilities))
+        Args:
+            au_name: Kod AU (np. "AU101")
+            target_distances: Pomiary klatki docelowej
+            target_kp: Keypoints klatki docelowej (46, 3)
 
-    def _distance(self, p1: np.ndarray, p2: np.ndarray) -> float:
-        """Euclidean distance between two points."""
-        return float(np.sqrt(np.sum((p1 - p2) ** 2)))
+        Returns:
+            DeltaActionUnit z obliczonymi wartościami
+        """
+        measurement_key = _AU_MEASUREMENT_MAP[au_name]
+        neutral_val = self.neutral_distances[measurement_key]
+        target_val = target_distances[measurement_key]
 
-    def _angle(self, p1: np.ndarray, p2: np.ndarray) -> float:
-        """Angle of line p1->p2 relative to horizontal (radians)."""
-        dx = p2[0] - p1[0]
-        dy = p2[1] - p1[1]
-        return math.atan2(dy, dx)
+        if abs(neutral_val) > 1e-6:
+            ratio = target_val / neutral_val
+        else:
+            ratio = 1.0
+        delta = ratio - 1.0
 
-    def _get_eye_distance(self, keypoints: np.ndarray) -> float:
-        """Get eye distance for normalization."""
-        coords = keypoints[:, :2]
-        return self._distance(coords[KP_LEFT_EYE], coords[KP_RIGHT_EYE])
+        is_active = _is_au_activated(au_name, ratio, self.activation_threshold)
+        confidence = _compute_au_confidence(au_name, target_kp)
 
+        return DeltaActionUnit(
+            name=au_name,
+            ratio=ratio,
+            delta=delta,
+            is_active=is_active,
+            confidence=confidence,
+        )
+
+    def _compute_measurements(self, keypoints: np.ndarray) -> dict[str, float]:
+        """
+        Oblicza wszystkie pomiary anatomiczne znormalizowane przez odległość oczu.
+
+        Normalizacja przez odległość oczu zapewnia niezależność od rozmiaru głowy.
+
+        Args:
+            keypoints: Tablica keypoints (46, 3)
+
+        Returns:
+            Słownik klucz_pomiaru → wartość znormalizowana
+        """
+        coords = keypoints[:, :2]   # (46, 2)
+        vis = keypoints[:, 2]       # (46,)
+
+        eye_dist = _eye_distance(coords)
+
+        return {
+            # AU101: Inner Brow Raiser — odległość wewnętrznej brwi od wewnętrznego kąta oka
+            "au101_brow_eye": (
+                _dist(coords[KP.LEFT_BROW_INNER], coords[KP.LEFT_EYE_INNER])
+                + _dist(coords[KP.RIGHT_BROW_INNER], coords[KP.RIGHT_EYE_INNER])
+            ) / (2 * eye_dist),
+
+            # AU143: Lid Tightener — pionowe otwarcie oka (mała wartość = zmrużenie)
+            "au143_eye_opening": (
+                _dist(coords[KP.LEFT_EYE_TOP], coords[KP.LEFT_EYE_BOTTOM])
+                + _dist(coords[KP.RIGHT_EYE_TOP], coords[KP.RIGHT_EYE_BOTTOM])
+            ) / (2 * eye_dist),
+
+            # AU145: Blink — widoczność oka (mała = zamknięte)
+            "au145_eye_visibility": float(
+                (vis[KP.LEFT_EYE_TOP] + vis[KP.LEFT_EYE_BOTTOM]
+                 + vis[KP.RIGHT_EYE_TOP] + vis[KP.RIGHT_EYE_BOTTOM]) / 4
+            ),
+
+            # AU109/110: Nose Wrinkler — unoszenie skrzydełek nosa ku brwiom
+            "au109_nose_wrinkle_left": (
+                _dist(coords[KP.NOSE_LEFT_WING], coords[KP.LEFT_EYE_BOTTOM])
+                / eye_dist
+            ),
+            "au110_nose_wrinkle_right": (
+                _dist(coords[KP.NOSE_RIGHT_WING], coords[KP.RIGHT_EYE_BOTTOM])
+                / eye_dist
+            ),
+
+            # AU12: Lip Corner Puller — kąt kącika ust (uśmiech)
+            "au12_lip_corner": _lip_corner_ratio(coords, eye_dist),
+
+            # AU116: Lower Lip Depressor — opuszczanie dolnej wargi od nosa
+            "au116_lower_lip": (
+                _dist(coords[KP.LOWER_LIP_CENTER], coords[KP.NOSE_TIP])
+                / eye_dist
+            ),
+
+            # AU118: Lip Stretcher — szerokość ust znormalizowana
+            "au118_lip_width": (
+                _dist(coords[KP.MOUTH_LEFT_CORNER], coords[KP.MOUTH_RIGHT_CORNER])
+                / eye_dist
+            ),
+
+            # AU25: Lips Part — pionowa szczelina między wargami
+            "au25_lips_gap": (
+                _dist(coords[KP.UPPER_LIP_CENTER], coords[KP.LOWER_LIP_CENTER])
+                / eye_dist
+            ),
+
+            # AU26: Jaw Drop — odległość nos-podbródek
+            "au26_jaw_drop": (
+                _dist(coords[KP.NOSE_TIP], coords[KP.CHIN])
+                / eye_dist
+            ),
+
+            # AU27: Mouth Stretch — pełne otwarcie pyska (kąciki do podbródka)
+            "au27_mouth_stretch": (
+                _dist(coords[KP.UPPER_LIP_CENTER], coords[KP.CHIN])
+                / eye_dist
+            ),
+
+            # AD19: Tongue Show — proxy: otwarcie ust + szczelina pionowa
+            "ad19_tongue": _tongue_proxy(coords, eye_dist),
+
+            # AD33: Blow — szczelina mała, wargi zaokrąglone (podobne do AU25)
+            "ad33_blow": (
+                _dist(coords[KP.UPPER_LIP_CENTER], coords[KP.LOWER_LIP_CENTER])
+                / eye_dist
+            ),
+
+            # AD35: Lip Bite — zbliżenie górnej wargi do dolnej (mała szczelina)
+            "ad35_lip_bite": (
+                _dist(coords[KP.UPPER_LIP_CENTER], coords[KP.LOWER_LIP_CENTER])
+                / eye_dist
+            ),
+
+            # AD37: Lip Wipe — odległość języka/wargi od kącika ust
+            "ad37_lip_wipe": (
+                _dist(coords[KP.LOWER_LIP_CENTER], coords[KP.MOUTH_LEFT_CORNER])
+                + _dist(coords[KP.LOWER_LIP_CENTER], coords[KP.MOUTH_RIGHT_CORNER])
+            ) / (2 * eye_dist),
+
+            # AD137: Nose Lick — odległość wargi od nosa (mała = język przy nosie)
+            "ad137_nose_lick": (
+                _dist(coords[KP.UPPER_LIP_CENTER], coords[KP.NOSE_TIP])
+                / eye_dist
+            ),
+
+            # EAD101: Ears Forward — uszy przesunięte do przodu (małe x względem oka)
+            "ead101_ears_forward": _ear_forward_ratio(coords, eye_dist),
+
+            # EAD102: Ears Adductor — uszy zbliżone do siebie
+            "ead102_ears_adduct": (
+                _dist(coords[KP.LEFT_EAR_BASE_FRONT], coords[KP.RIGHT_EAR_BASE_FRONT])
+                / eye_dist
+            ),
+
+            # EAD103: Ears Flattener — czubki uszu blisko głowy (nisko)
+            "ead103_ears_flat": _ear_flatten_ratio(coords, eye_dist),
+
+            # EAD104: Ears Rotator — asymetria uszu (kąt obrotu)
+            "ead104_ears_rotate": _ear_rotation_asymmetry(coords),
+
+            # EAD105: Ears Apart — uszy daleko od siebie
+            "ead105_ears_apart": (
+                _dist(coords[KP.LEFT_EAR_TIP], coords[KP.RIGHT_EAR_TIP])
+                / eye_dist
+            ),
+        }
+
+
+# =============================================================================
+# Mapowanie AU → klucz pomiaru (prywatne)
+# =============================================================================
+
+_AU_MEASUREMENT_MAP: dict[str, str] = {
+    "AU101":  "au101_brow_eye",
+    "AU143":  "au143_eye_opening",
+    "AU145":  "au145_eye_visibility",
+    "AU109":  "au109_nose_wrinkle_left",
+    "AU110":  "au110_nose_wrinkle_right",
+    "AU12":   "au12_lip_corner",
+    "AU116":  "au116_lower_lip",
+    "AU118":  "au118_lip_width",
+    "AU25":   "au25_lips_gap",
+    "AU26":   "au26_jaw_drop",
+    "AU27":   "au27_mouth_stretch",
+    "AD19":   "ad19_tongue",
+    "AD33":   "ad33_blow",
+    "AD35":   "ad35_lip_bite",
+    "AD37":   "ad37_lip_wipe",
+    "AD137":  "ad137_nose_lick",
+    "EAD101": "ead101_ears_forward",
+    "EAD102": "ead102_ears_adduct",
+    "EAD103": "ead103_ears_flat",
+    "EAD104": "ead104_ears_rotate",
+    "EAD105": "ead105_ears_apart",
+}
+
+# AU aktywowane przez ZMNIEJSZENIE (np. zmrużenie = mniejsze otwarcie oka)
+_DECREASE_ACTIVATED_AUS: frozenset[str] = frozenset({
+    "AU143",   # Lid Tightener: mniejsze otwarcie oka
+    "AU145",   # Blink: mniejsza widoczność
+    "AD35",    # Lip Bite: mniejsza szczelina
+    "AD137",   # Nose Lick: wargi bliżej nosa
+    "EAD102",  # Ears Adductor: uszy bliżej siebie
+    "EAD103",  # Ears Flattener: uszy nisko
+})
+
+# AU aktywowane przez znaczną ZMIANĘ w dowolnym kierunku (bidirektywne)
+_BIDIRECTIONAL_AUS: frozenset[str] = frozenset({
+    "EAD104",  # Ears Rotator: asymetria może iść w obu kierunkach
+})
+
+# Grupy keypoints dla obliczania pewności każdego AU
+_AU_KEYPOINT_GROUPS: dict[str, list[int]] = {
+    "AU101":  [KP.LEFT_BROW_INNER, KP.RIGHT_BROW_INNER,
+               KP.LEFT_EYE_INNER, KP.RIGHT_EYE_INNER],
+    "AU143":  [KP.LEFT_EYE_TOP, KP.LEFT_EYE_BOTTOM,
+               KP.RIGHT_EYE_TOP, KP.RIGHT_EYE_BOTTOM],
+    "AU145":  [KP.LEFT_EYE_TOP, KP.LEFT_EYE_BOTTOM,
+               KP.RIGHT_EYE_TOP, KP.RIGHT_EYE_BOTTOM],
+    "AU109":  [KP.NOSE_LEFT_WING, KP.LEFT_EYE_BOTTOM],
+    "AU110":  [KP.NOSE_RIGHT_WING, KP.RIGHT_EYE_BOTTOM],
+    "AU12":   [KP.MOUTH_LEFT_CORNER, KP.MOUTH_RIGHT_CORNER, KP.UPPER_LIP_CENTER],
+    "AU116":  [KP.LOWER_LIP_CENTER, KP.NOSE_TIP],
+    "AU118":  [KP.MOUTH_LEFT_CORNER, KP.MOUTH_RIGHT_CORNER],
+    "AU25":   [KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER],
+    "AU26":   [KP.NOSE_TIP, KP.CHIN],
+    "AU27":   [KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER, KP.CHIN],
+    "AD19":   [KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER, KP.NOSE_TIP],
+    "AD33":   [KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER],
+    "AD35":   [KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER],
+    "AD37":   [KP.LOWER_LIP_CENTER, KP.MOUTH_LEFT_CORNER, KP.MOUTH_RIGHT_CORNER],
+    "AD137":  [KP.UPPER_LIP_CENTER, KP.NOSE_TIP],
+    "EAD101": [KP.LEFT_EAR_BASE_FRONT, KP.RIGHT_EAR_BASE_FRONT,
+               KP.LEFT_EAR_TIP, KP.RIGHT_EAR_TIP],
+    "EAD102": [KP.LEFT_EAR_BASE_FRONT, KP.RIGHT_EAR_BASE_FRONT],
+    "EAD103": [KP.LEFT_EAR_TIP, KP.RIGHT_EAR_TIP,
+               KP.LEFT_EAR_BASE_FRONT, KP.RIGHT_EAR_BASE_FRONT],
+    "EAD104": [KP.LEFT_EAR_TIP, KP.RIGHT_EAR_TIP],
+    "EAD105": [KP.LEFT_EAR_TIP, KP.RIGHT_EAR_TIP],
+}
+
+
+# =============================================================================
+# Funkcje pomocnicze (prywatne)
+# =============================================================================
+
+def _dist(p1: np.ndarray, p2: np.ndarray) -> float:
+    """Odległość euklidesowa między dwoma punktami."""
+    return float(np.sqrt(np.sum((p1 - p2) ** 2)))
+
+
+def _eye_distance(coords: np.ndarray) -> float:
+    """
+    Odległość między centrami oczu używana do normalizacji.
+
+    Centrum oka = średnia wewnętrznego i zewnętrznego kąta.
+    """
+    left_center = (coords[KP.LEFT_EYE_INNER] + coords[KP.LEFT_EYE_OUTER]) / 2
+    right_center = (coords[KP.RIGHT_EYE_INNER] + coords[KP.RIGHT_EYE_OUTER]) / 2
+    dist = _dist(left_center, right_center)
+    return dist if dist > 1e-6 else 1.0  # Zabezpieczenie przed dzieleniem przez zero
+
+
+def _lip_corner_ratio(coords: np.ndarray, eye_dist: float) -> float:
+    """
+    Oblicza ratio kącika ust dla AU12 (Lip Corner Puller).
+
+    Wyższy wynik = bardziej uniesione kąciki (uśmiech).
+    """
+    upper_to_corner_left = _dist(coords[KP.UPPER_LIP_CENTER], coords[KP.MOUTH_LEFT_CORNER])
+    upper_to_corner_right = _dist(coords[KP.UPPER_LIP_CENTER], coords[KP.MOUTH_RIGHT_CORNER])
+    avg_corner_dist = (upper_to_corner_left + upper_to_corner_right) / 2
+    return avg_corner_dist / eye_dist if eye_dist > 1e-6 else 0.0
+
+
+def _tongue_proxy(coords: np.ndarray, eye_dist: float) -> float:
+    """
+    Proxy dla AD19 (Tongue Show).
+
+    Język widoczny gdy: usta otwarte + dolna warga nisko + szczelina pionowa duża.
+    """
+    vertical_gap = _dist(coords[KP.UPPER_LIP_CENTER], coords[KP.LOWER_LIP_CENTER])
+    jaw_drop = _dist(coords[KP.NOSE_TIP], coords[KP.CHIN])
+    return (vertical_gap / eye_dist) * min(1.0, jaw_drop / eye_dist)
+
+
+def _ear_forward_ratio(coords: np.ndarray, eye_dist: float) -> float:
+    """
+    Oblicza ratio przesunięcia uszu do przodu dla EAD101.
+
+    Uszy do przodu = czubki uszu blisko czubka nosa (małe x w profilu).
+    """
+    nose_x = coords[KP.NOSE_TIP][0]
+    left_tip_dx = abs(coords[KP.LEFT_EAR_TIP][0] - nose_x)
+    right_tip_dx = abs(coords[KP.RIGHT_EAR_TIP][0] - nose_x)
+    return (left_tip_dx + right_tip_dx) / (2 * eye_dist)
+
+
+def _ear_flatten_ratio(coords: np.ndarray, eye_dist: float) -> float:
+    """
+    Oblicza ratio przyciśnięcia uszu do głowy dla EAD103.
+
+    Uszy płaskie = czubki uszu nisko (wysokie y) względem podstawy.
+    """
+    left_drop = coords[KP.LEFT_EAR_TIP][1] - coords[KP.LEFT_EAR_BASE_FRONT][1]
+    right_drop = coords[KP.RIGHT_EAR_TIP][1] - coords[KP.RIGHT_EAR_BASE_FRONT][1]
+    return (left_drop + right_drop) / (2 * eye_dist)
+
+
+def _ear_rotation_asymmetry(coords: np.ndarray) -> float:
+    """
+    Oblicza asymetrię rotacji uszu dla EAD104.
+
+    Zwraca wartość bezwzględną różnicy kątów uszu (0 = symetryczne).
+    """
+    left_angle = math.atan2(
+        coords[KP.LEFT_EAR_TIP][1] - coords[KP.LEFT_EAR_BASE_FRONT][1],
+        coords[KP.LEFT_EAR_TIP][0] - coords[KP.LEFT_EAR_BASE_FRONT][0],
+    )
+    right_angle = math.atan2(
+        coords[KP.RIGHT_EAR_TIP][1] - coords[KP.RIGHT_EAR_BASE_FRONT][1],
+        coords[KP.RIGHT_EAR_TIP][0] - coords[KP.RIGHT_EAR_BASE_FRONT][0],
+    )
+    return abs(left_angle - right_angle) / math.pi
+
+
+def _is_au_activated(
+    au_name: str,
+    ratio: float,
+    threshold: float,
+) -> bool:
+    """
+    Określa czy AU jest aktywowany na podstawie stosunku i progu.
+
+    Args:
+        au_name: Kod AU
+        ratio: Stosunek cel/neutral
+        threshold: Próg aktywacji (np. 1.15 = +15%)
+
+    Returns:
+        True jeśli AU jest aktywowany
+    """
+    if au_name in _BIDIRECTIONAL_AUS:
+        return abs(ratio - 1.0) > (threshold - 1.0)
+    if au_name in _DECREASE_ACTIVATED_AUS:
+        return ratio < DECREASE_ACTIVATION_THRESHOLD
+    return ratio > threshold
+
+
+def _compute_au_confidence(au_name: str, keypoints: np.ndarray) -> float:
+    """
+    Oblicza pewność AU na podstawie widoczności keypoints.
+
+    Args:
+        au_name: Kod AU
+        keypoints: Tablica keypoints (46, 3)
+
+    Returns:
+        Pewność (0.0-1.0)
+    """
+    relevant_indices = _AU_KEYPOINT_GROUPS.get(au_name, list(range(NUM_KEYPOINTS)))
+    visibilities = [keypoints[idx, 2] for idx in relevant_indices]
+    return float(np.mean(visibilities)) if visibilities else 0.0
+
+
+# =============================================================================
+# Publiczna funkcja pomocnicza
+# =============================================================================
 
 def extract_delta_action_units(
     neutral_keypoints: np.ndarray,
@@ -373,15 +537,15 @@ def extract_delta_action_units(
     activation_threshold: float = DEFAULT_ACTIVATION_THRESHOLD,
 ) -> dict[str, DeltaActionUnit]:
     """
-    Convenience function to extract delta AUs.
+    Ekstrahuje delta AU z pary klatek (neutral + cel).
 
     Args:
-        neutral_keypoints: Neutral baseline keypoints (60 values)
-        target_keypoints: Target frame keypoints (60 values)
-        activation_threshold: Activation ratio threshold (default 1.15)
+        neutral_keypoints: Keypoints klatki neutralnej (138 wartości)
+        target_keypoints: Keypoints klatki docelowej (138 wartości)
+        activation_threshold: Próg stosunku dla aktywacji (domyślnie 1.15)
 
     Returns:
-        Dictionary of AU_name -> DeltaActionUnit
+        Słownik AU_name → DeltaActionUnit
     """
     extractor = DeltaActionUnitsExtractor(neutral_keypoints, activation_threshold)
     return extractor.extract(target_keypoints)
