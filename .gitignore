@@ -79,6 +79,12 @@ secrets.json
 # Streamlit
 .streamlit/
 
+# Runtime session data
+apps/webapp/backend/sessions/
+
+# University documents (not for public repo)
+docs/Moja_pg/
+
 # DVC (if used later)
 /dvc.lock
 /.dvc/

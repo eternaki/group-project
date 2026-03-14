@@ -17,6 +17,7 @@ import {
   getKeypointColor,
 } from '../types';
 import useStore from '../store/useStore';
+import KeypointEditorModal from './KeypointEditorModal';
 
 interface KeypointEditorProps {
   frameIdx: number;
@@ -55,6 +56,7 @@ export default function KeypointEditor({ frameIdx, imageUrl, keypoints }: Keypoi
   );
   const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
   const [isDirty, setIsDirty] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
 
   // Synchronizuj props → local state gdy zmienia się frame
   useEffect(() => {
@@ -231,7 +233,27 @@ export default function KeypointEditor({ frameIdx, imageUrl, keypoints }: Keypoi
             Brak keypoints dla tej klatki
           </div>
         )}
+        {/* Przycisk fullscreen */}
+        {localKPs.length > 0 && (
+          <button
+            onClick={() => setModalOpen(true)}
+            title="Otwórz edytor pełnoekranowy"
+            className="absolute top-1.5 right-1.5 bg-black/60 hover:bg-black/80 text-white rounded px-1.5 py-0.5 text-xs leading-none transition-colors"
+          >
+            ↗
+          </button>
+        )}
       </div>
+
+      {/* Modal fullscreen */}
+      {modalOpen && localKPs.length > 0 && (
+        <KeypointEditorModal
+          frameIdx={frameIdx}
+          imageUrl={imageUrl}
+          keypoints={flattenKeypoints(localKPs)}
+          onClose={() => setModalOpen(false)}
+        />
+      )}
 
       {/* Legenda */}
       <div className="flex flex-wrap gap-2 text-[10px] text-gray-500">

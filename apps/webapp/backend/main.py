@@ -349,9 +349,9 @@ async def process_video(
             emotion = peak_data["emotion"]
             tfm_score = peak_data["tfm_score"]
 
-            # Zapisz klatkę z keypoints
+            # Zapisz klatkę bez rysowania keypoints (edytor frontend sam je rysuje)
             keypoints = peak_data["keypoints"]
-            save_frame_to_disk(frame, frame_idx, session_id, keypoints=keypoints)
+            save_frame_to_disk(frame, frame_idx, session_id)
 
             # URL dla frontend
             image_url = f"/static/{session_id}/frame_{frame_idx:04d}.jpg"
@@ -381,9 +381,7 @@ async def process_video(
         neutral_idx = result["neutral_frame_idx"]
         neutral_frame = frames_list[neutral_idx]
         neutral_keypoints = result["neutral_keypoints"]
-        save_frame_to_disk(
-            neutral_frame, neutral_idx, session_id, keypoints=neutral_keypoints
-        )
+        save_frame_to_disk(neutral_frame, neutral_idx, session_id)
         neutral_url = f"/static/{session_id}/frame_{neutral_idx:04d}.jpg"
 
         # Zapisz sesję do SessionStore (Sprint 9)
@@ -399,6 +397,13 @@ async def process_video(
                 keypoints=result["peak_frames"][i]["keypoints"].tolist()
                 if result["peak_frames"][i].get("keypoints") is not None
                 else None,
+                bbox=result["peak_frames"][i].get("bbox"),
+                breed=result["peak_frames"][i]["breed"].class_name
+                if result["peak_frames"][i].get("breed") is not None
+                else None,
+                breed_confidence=float(result["peak_frames"][i]["breed"].confidence)
+                if result["peak_frames"][i].get("breed") is not None
+                else 0.0,
             )
             for i, pf in enumerate(peak_frames_data)
         ]

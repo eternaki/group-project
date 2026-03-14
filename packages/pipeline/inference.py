@@ -440,6 +440,7 @@ class InferencePipeline:
         # Step 1: Wykryj keypoints dla wszystkich klatek
         print(f"\n[1/5] Wykrywanie keypoints dla {len(frames_list)} klatek...")
         keypoints_list = []
+        bboxes_list: list[Optional[tuple[int, int, int, int]]] = []
         valid_frame_indices = []
 
         for i, frame in enumerate(frames_list):
@@ -448,6 +449,7 @@ class InferencePipeline:
 
             if not detections:
                 keypoints_list.append(None)
+                bboxes_list.append(None)
                 continue
 
             # Weź pierwszego psa (największy bbox)
@@ -464,7 +466,11 @@ class InferencePipeline:
 
             if cropped.size == 0:
                 keypoints_list.append(None)
+                bboxes_list.append(None)
                 continue
+
+            # Zachowaj bbox do późniejszej klasyfikacji rasy
+            bboxes_list.append((x, y, w, h))
 
             # Wykryj keypoints
             try:
@@ -563,8 +569,8 @@ class InferencePipeline:
 
         print(f"  → Wybrano {len(peak_indices)} peak frames")
 
-        # Step 6: Klasyfikuj emocje dla peak frames
-        print("\n[6/6] Klasyfikacja emocji dla peak frames...")
+        # Step 6: Klasyfikuj emocje i rasę dla peak frames
+        print("\n[6/6] Klasyfikacja emocji i rasy dla peak frames...")
         peak_frames_data = []
 
         for peak_idx in peak_indices:
@@ -574,13 +580,26 @@ class InferencePipeline:
             # Klasyfikuj emocję
             emotion_pred = classify_emotion_from_delta_aus(delta_aus)
 
+            # Klasyfikuj rasę (wymaga cropowania psa z klatki)
+            breed_pred = None
+            if self.breed_model is not None and bboxes_list[peak_idx] is not None:
+                bx, by, bw, bh = bboxes_list[peak_idx]
+                cropped_peak = frames_list[peak_idx][by : by + bh, bx : bx + bw]
+                if cropped_peak.size > 0:
+                    try:
+                        breed_pred = self.breed_model.predict(cropped_peak)
+                    except Exception as e:
+                        print(f"  ! Błąd klasyfikacji rasy dla klatki {peak_idx}: {e}")
+
             peak_frames_data.append(
                 {
                     "frame_idx": peak_idx,
                     "frame": frames_list[peak_idx],
                     "keypoints": keypoints_list[peak_idx],
+                    "bbox": list(bboxes_list[peak_idx]) if bboxes_list[peak_idx] else None,
                     "delta_aus": delta_aus,
                     "emotion": emotion_pred,
+                    "breed": breed_pred,
                     "tfm_score": tfm_score,
                 }
             )

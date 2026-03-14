@@ -20,26 +20,26 @@ export interface Keypoint {
 
 /** Nazwy 46 keypoints według schematu DogFLW */
 export const KEYPOINT_NAMES: string[] = [
-  // Oczy (0-7)
-  'left_eye_inner', 'left_eye_top', 'left_eye_outer', 'left_eye_bottom',
-  'right_eye_inner', 'right_eye_top', 'right_eye_outer', 'right_eye_bottom',
-  // Brwi (8-13)
-  'left_brow_inner', 'left_brow_center', 'left_brow_outer',
-  'right_brow_inner', 'right_brow_center', 'right_brow_outer',
-  // Uszy (14-21)
-  'left_ear_base_front', 'left_ear_base_back', 'left_ear_mid', 'left_ear_tip',
-  'right_ear_base_front', 'right_ear_base_back', 'right_ear_mid', 'right_ear_tip',
-  // Nos (22-25)
-  'nose_tip', 'nose_left_wing', 'nose_right_wing', 'nose_bridge',
-  // Usta (26-33)
-  'mouth_left_corner', 'upper_lip_left', 'upper_lip_center', 'upper_lip_right',
-  'mouth_right_corner', 'lower_lip_right', 'lower_lip_center', 'lower_lip_left',
-  // Pysk (34-37)
-  'muzzle_top', 'muzzle_left', 'muzzle_right', 'chin',
-  // Kontur (38-45)
-  'forehead_center', 'forehead_left', 'forehead_right',
-  'left_cheek_upper', 'left_cheek_lower',
-  'right_cheek_upper', 'right_cheek_lower', 'jaw_center',
+  // Глаза (0-7)
+  'лев. глаз внутри', 'лев. глаз верх', 'лев. глаз снаружи', 'лев. глаз низ',
+  'пр. глаз внутри', 'пр. глаз верх', 'пр. глаз снаружи', 'пр. глаз низ',
+  // Брови (8-13)
+  'лев. бровь внутри', 'лев. бровь центр', 'лев. бровь снаружи',
+  'пр. бровь внутри', 'пр. бровь центр', 'пр. бровь снаружи',
+  // Уши (14-21)
+  'лев. ухо осн. перед', 'лев. ухо осн. зад', 'лев. ухо середина', 'лев. ухо кончик',
+  'пр. ухо осн. перед', 'пр. ухо осн. зад', 'пр. ухо середина', 'пр. ухо кончик',
+  // Нос (22-25)
+  'кончик носа', 'ноздря (лево)', 'ноздря (право)', 'переносица',
+  // Губы (26-33)
+  'уголок рта (лево)', 'верх. губа (лево)', 'верх. губа (центр)', 'верх. губа (право)',
+  'уголок рта (право)', 'ниж. губа (право)', 'ниж. губа (центр)', 'ниж. губа (лево)',
+  // Морда (34-37)
+  'морда верх', 'морда (лево)', 'морда (право)', 'подбородок',
+  // Контур (38-45)
+  'лоб (центр)', 'лоб (лево)', 'лоб (право)',
+  'лев. щека верх', 'лев. щека низ',
+  'пр. щека верх', 'пр. щека низ', 'линия челюсти',
 ];
 
 export const NUM_KEYPOINTS = 46;
@@ -94,49 +94,49 @@ export interface DeltaActionUnit {
 
 /** Oficjalne nazwy 21 AU (DogFACS — Waller et al. 2013) */
 export const AU_NAMES: Record<string, string> = {
-  // Górna twarz
-  AU101:  'Inner Brow Raiser',
-  AU143:  'Lid Tightener',
-  AU145:  'Blink / Eye Closure',
-  // Dolna twarz
-  AU109:  'Nose Wrinkler Left',
-  AU110:  'Nose Wrinkler Right',
-  AU12:   'Lip Corner Puller',
-  AU116:  'Lower Lip Depressor',
-  AU118:  'Lip Stretcher',
-  AU25:   'Lips Part',
-  AU26:   'Jaw Drop',
-  AU27:   'Mouth Stretch',
-  // Action Descriptors
-  AD19:   'Tongue Show',
-  AD33:   'Blow',
-  AD35:   'Lip Bite',
-  AD37:   'Lip Wipe',
-  AD137:  'Nose Lick',
-  // Ear Action Descriptors
-  EAD101: 'Ears Forward',
-  EAD102: 'Ears Adductor',
-  EAD103: 'Ears Flattener',
-  EAD104: 'Ears Rotator',
-  EAD105: 'Ears Apart',
+  // Верхняя часть
+  AU101:  'Поднятие внутренней брови',
+  AU143:  'Сужение века',
+  AU145:  'Моргание / Закрытие глаз',
+  // Нижняя часть
+  AU109:  'Морщина носа (лево)',
+  AU110:  'Морщина носа (право)',
+  AU12:   'Подтягивание уголков губ',
+  AU116:  'Опускание нижней губы',
+  AU118:  'Растяжение губ',
+  AU25:   'Размыкание губ',
+  AU26:   'Опускание челюсти',
+  AU27:   'Растяжение рта',
+  // Дескрипторы
+  AD19:   'Показ языка',
+  AD33:   'Раздувание',
+  AD35:   'Прикусывание губы',
+  AD37:   'Облизывание губы',
+  AD137:  'Облизывание носа',
+  // Уши
+  EAD101: 'Уши вперёд',
+  EAD102: 'Уши сведены',
+  EAD103: 'Уши прижаты',
+  EAD104: 'Вращение ушей',
+  EAD105: 'Уши в стороны',
 };
 
 /** Grupy AU do wyświetlania w panelu */
 export const AU_GROUPS: { label: string; codes: string[] }[] = [
   {
-    label: 'Górna twarz',
+    label: 'Верхняя часть',
     codes: ['AU101', 'AU143', 'AU145'],
   },
   {
-    label: 'Dolna twarz',
+    label: 'Нижняя часть',
     codes: ['AU109', 'AU110', 'AU12', 'AU116', 'AU118', 'AU25', 'AU26', 'AU27'],
   },
   {
-    label: 'Deskryptory',
+    label: 'Дескрипторы',
     codes: ['AD19', 'AD33', 'AD35', 'AD37', 'AD137'],
   },
   {
-    label: 'Uszy',
+    label: 'Уши',
     codes: ['EAD101', 'EAD102', 'EAD103', 'EAD104', 'EAD105'],
   },
 ];
@@ -164,6 +164,19 @@ export const EMOTION_EMOJI: Record<string, string> = {
   submission: '🐾',
 };
 
+/** Русские названия 9 эмоций */
+export const EMOTION_NAMES: Record<string, string> = {
+  happy:      'Радость',
+  sad:        'Грусть',
+  angry:      'Злость',
+  fearful:    'Страх',
+  relaxed:    'Расслабление',
+  neutral:    'Нейтральный',
+  surprise:   'Удивление',
+  pain:       'Боль',
+  submission: 'Покорность',
+};
+
 /** Kluczowe AU charakterystyczne dla każdej emocji (do podpowiedzi w UI) */
 export const EMOTION_AU_HINTS: Record<string, string> = {
   happy:      'AU12 · AD19 · EAD101',
@@ -171,7 +184,7 @@ export const EMOTION_AU_HINTS: Record<string, string> = {
   angry:      'AU101 · AU109 · AU110',
   fearful:    'AU101 · AU143 · EAD103',
   relaxed:    'AU25 · AU26 · EAD101',
-  neutral:    'brak aktywnych AU',
+  neutral:    'нет активных AU',
   surprise:   'AU101 · AU145 · AU27',
   pain:       'AU101 · AU143 · AU116',
   submission: 'AU101 · EAD103 · AD37',

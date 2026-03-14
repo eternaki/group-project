@@ -16,14 +16,14 @@ export default function DogSelector({ dogCount, selectedDogIdx, onSelect }: DogS
     return (
       <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded px-3 py-1.5">
         <span>🐕</span>
-        <span>Pies 1 z {dogCount}</span>
+        <span>Собака 1 из {dogCount}</span>
       </div>
     );
   }
 
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
-      <span className="text-xs text-gray-500 mr-1">Pies:</span>
+      <span className="text-xs text-gray-500 mr-1">Собака:</span>
       {Array.from({ length: dogCount }, (_, i) => (
         <button
           key={i}
