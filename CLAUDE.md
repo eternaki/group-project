@@ -4,7 +4,7 @@ Ten plik zawiera wytyczne dla Claude Code (claude.ai/code) oraz innych agentów 
 
 ## Przegląd Projektu
 
-**Dog FACS Dataset** - Pipeline do automatycznej anotacji emocji psów z wykorzystaniem AI. Tworzy dataset w formacie COCO z bounding boxes, klasyfikacją ras, punktami kluczowymi twarzy i etykietami emocji z filmów YouTube.
+**Dog FACS Dataset** - Pipeline do automatycznej anotacji emocji psów z wykorzystaniem AI. Tworzy dataset w formacie COCO z bounding boxes, klasyfikacją ras, punktami kluczowymi twarzy i etykietami emocji z filmów.
 
 **Projekt grupowy** dla Politechniki Gdańskiej (WETI) - 1 semestr.
 
@@ -173,7 +173,7 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 | U4 | Mariia Volkova | TODO - dodać do zespołu |
 
 **Labels w Linear:**
-- `sprint-1` ... `sprint-12` - sprint labels
+- `sprint-1` ... `sprint-18` - sprint labels
 - `documentation` - zadania dokumentacyjne
 - `model` - zadania związane z AI/ML
 - `pipeline` - zadania pipeline'u
@@ -214,8 +214,11 @@ git push origin main
 pip install -e .
 pip install -e ".[dev,download,notebooks]"
 
-# Uruchomienie demo
-streamlit run apps/demo/app.py
+# Uruchomienie backendu (FastAPI)
+uvicorn apps.webapp.backend.main:app --reload
+
+# Uruchomienie frontendu (React)
+cd apps/webapp/frontend && npm run dev
 
 # Uruchomienie testów
 pytest
@@ -231,8 +234,10 @@ mypy packages/
 ## Architektura
 
 ### Struktura Monorepo
-- `apps/demo/` - Aplikacja demonstracyjna Streamlit
-- `packages/models/` - Modele AI (YOLOv8 bbox, ViT breed, HRNet keypoints, klasyfikator emocji)
+- `apps/webapp/` - Aplikacja webowa do ręcznej anotacji (FastAPI backend + React frontend)
+  - `apps/webapp/backend/` - FastAPI backend (Python, SessionStore, REST API)
+  - `apps/webapp/frontend/` - React + TypeScript (Vite, Zustand, Tailwind CSS)
+- `packages/models/` - Modele AI (YOLOv8 bbox, EfficientNet-B4 breed, ResNet34 keypoints, klasyfikator emocji)
 - `packages/pipeline/` - Zunifikowany pipeline inference orkiestrujący wszystkie modele
 - `packages/data/` - Narzędzia do odczytu/zapisu formatu COCO
 - `scripts/` - Skrypty do treningu, pobierania, batch annotation
@@ -251,10 +256,11 @@ Wyjście: COCO JSON ze wszystkimi anotacjami
 ### Kluczowe Modele
 | Model | Architektura | Cel |
 |-------|--------------|-----|
-| BBox | YOLOv8 | Detekcja psów |
-| Rasa | ViT/EfficientNet | Klasyfikacja rasy |
-| Keypoints | HRNet | Punkty kluczowe twarzy (20+ punktów) |
-| Emocje | Klasyfikator na keypoints | Etykiety emocji DogFACS |
+| BBox | YOLOv8m | Detekcja psów |
+| Rasa | EfficientNet-B4 | Klasyfikacja rasy (120 klas) |
+| Keypoints | ResNet34 | Punkty kluczowe twarzy (46 punktów DogFLW) |
+| AU | DeltaActionUnitsExtractor | Wyodrębnianie 21 AU (DogFACS) |
+| Emocje | Rule-based na AU | Klasyfikacja 9 emocji (DogFACS) |
 
 ---
 
@@ -300,21 +306,27 @@ Po implementacji każdej funkcjonalności, utwórz/zaktualizuj dokument w `docs/
 
 ## Sprinty
 
-Projekt podzielony na 12 sprintów:
+Projekt podzielony na 18 sprintów. Logiczna kolejność: narzędzia i modele → dane → weryfikacja → sieć neuronowa AU.
 
-| Sprint | Nazwa | Opis |
-|--------|-------|------|
-| 1 | Project Setup | Konfiguracja repo, research |
-| 2 | Dog Detection | Model YOLOv8 |
-| 3 | Breed Classification | Klasyfikacja ras |
-| 4 | Keypoint Detection | HRNet keypoints |
-| 5 | Emotion Classification | Klasyfikator emocji |
-| 6 | Inference Pipeline | Zunifikowany pipeline |
-| 7 | Demo Application | Aplikacja Streamlit |
-| 8 | Data Collection | Zbieranie danych |
-| 9 | Batch Annotation | Batch processing |
-| 10 | Manual Verification | Weryfikacja manualna |
-| 11 | Dataset Finalization | Finalizacja datasetu |
-| 12 | Statistics & Reporting | Statystyki i raport |
+| Sprint | Nazwa | Opis | Status |
+|--------|-------|------|--------|
+| 1 | Project Setup | Konfiguracja repo, research | Done |
+| 2 | Dog Detection | Model YOLOv8m — detekcja psów | Done |
+| 3 | Breed Classification | EfficientNet-B4 — klasyfikacja ras | Done |
+| 4 | Keypoint Detection | ResNet34 — 46 punktów DogFLW | Done |
+| 5 | Emotion Classification | Rule-based — 9 emocji DogFACS | Done |
+| 6 | Inference Pipeline | Zunifikowany pipeline inference | Done |
+| 7 | Annotation Webapp | FastAPI + React — aplikacja do ręcznej anotacji | Done |
+| 8 | Dog Detection — Ulepszenie | Architektura, I/O, adaptacja klatek, metryki | To Do |
+| 9 | Breed Classification — Ulepszenie | Architektura, I/O, adaptacja klatek, metryki | To Do |
+| 10 | Keypoint Detection — Ulepszenie | Architektura, I/O, adaptacja klatek, metryki | To Do |
+| 11 | AU Detection — Ulepszenie | DeltaActionUnits, normalizacja, kalibracja | To Do |
+| 12 | Emotion Classification — Ulepszenie | Rule engine, pokrycie AU, dokładność | To Do |
+| 13 | Data Collection | Zbieranie wideo z YouTube (2500 wideo) | To Do |
+| 14 | Batch Annotation | Masowa anotacja 25k klatek przez pipeline | To Do |
+| 15 | Manual Verification | Ręczna weryfikacja próbki przez webapp | To Do |
+| 16 | AU Neural Network | MLP (138 wejść → 21 AU) — trenowanie i integracja | To Do |
+| 17 | Dataset Finalization | Finalizacja datasetu, eksport COCO | To Do |
+| 18 | Statistics & Reporting | Statystyki, raport WETI | To Do |
 
 Szczegóły każdego sprintu w `docs/sprints/`

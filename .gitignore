@@ -97,3 +97,16 @@ docs/Moja_pg/
 _bmad/
 _bmad-output/
 .mcp.json
+
+# IDE rules (not needed in public repo)
+.cursorrules
+.windsurfrules
+
+# Frontend build output
+apps/webapp/frontend/dist/
+
+# Backend static uploads
+apps/webapp/backend/static/frames/
+
+# Вложенная копия репозитория (не часть проекта)
+Dog-Emotion-Classification/
