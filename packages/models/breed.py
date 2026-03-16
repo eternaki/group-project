@@ -12,9 +12,37 @@ from typing import Optional
 
 import numpy as np
 import torch
+from PIL import Image, ImageOps
 from torch import nn
 
 from .base import BaseModel, ModelConfig
+
+
+class SquarePad:
+    """
+    Przekształcenie PIL dodające padding do krótszego wymiaru obrazu.
+
+    Tworzy kwadratowy obraz przez dodanie czarnych krawędzi, zachowując
+    proporcje oryginału. Niezbędne dla nieksadratowych croppów psów.
+    """
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        """
+        Dodaje padding do obrazu.
+
+        Args:
+            image: Obraz PIL
+
+        Returns:
+            Kwadratowy obraz PIL z paddingiem
+        """
+        w, h = image.size
+        max_dim = max(w, h)
+        pad_left = (max_dim - w) // 2
+        pad_top = (max_dim - h) // 2
+        pad_right = max_dim - w - pad_left
+        pad_bottom = max_dim - h - pad_top
+        return ImageOps.expand(image, (pad_left, pad_top, pad_right, pad_bottom), fill=0)
 
 
 @dataclass
@@ -33,7 +61,7 @@ class BreedConfig(ModelConfig):
 
     labels_path: Path | str = Path("packages/models/breeds.json")
     model_name: str = "efficientnet_b4"
-    img_size: int = 224
+    img_size: int = 380
     top_k: int = 5
 
     def __post_init__(self) -> None:
@@ -187,6 +215,7 @@ class BreedModel(BaseModel[np.ndarray, BreedPrediction]):
         # Przygotuj transformacje
         self._transform = transforms.Compose([
             transforms.ToPILImage(),
+            SquarePad(),
             transforms.Resize(int(self.config.img_size * 1.14)),
             transforms.CenterCrop(self.config.img_size),
             transforms.ToTensor(),
@@ -219,10 +248,9 @@ class BreedModel(BaseModel[np.ndarray, BreedPrediction]):
                 f"Obraz musi mieć 3 wymiary (H, W, C), otrzymano: {image.shape}"
             )
 
-        # Konwertuj BGR do RGB jeśli potrzeba (OpenCV używa BGR)
+        # Konwertuj BGR do RGB (OpenCV zwraca BGR, model wymaga RGB)
         if image.shape[2] == 3:
-            # Zakładamy że może być BGR, ale transform i tak to obsłuży
-            pass
+            image = image[:, :, ::-1].copy()
 
         # Zastosuj transformacje
         tensor = self._transform(image)
@@ -288,6 +316,65 @@ class BreedModel(BaseModel[np.ndarray, BreedPrediction]):
             Słownik z wynikami
         """
         return prediction.to_dict()
+
+    def evaluate(
+        self,
+        images: list[np.ndarray],
+        labels: list[int],
+    ) -> dict[str, float]:
+        """
+        Ewaluuje model na zbiorze testowym.
+
+        Args:
+            images: Lista obrazów psów jako numpy arrays (BGR)
+            labels: Lista prawdziwych ID klas (int)
+
+        Returns:
+            Słownik z metrykami:
+            {
+                "top1_accuracy": procent poprawnych Top-1 [0-100],
+                "top5_accuracy": procent poprawnych Top-5 [0-100],
+                "total_samples": liczba próbek,
+                "correct_top1": liczba poprawnych Top-1,
+                "correct_top5": liczba poprawnych Top-5,
+            }
+
+        Raises:
+            RuntimeError: Gdy model nie został załadowany
+            ValueError: Gdy listy mają różne długości lub są puste
+        """
+        if not self._loaded or self._model is None:
+            raise RuntimeError("Model nie został załadowany.")
+
+        if len(images) != len(labels):
+            raise ValueError(
+                f"Liczba obrazów ({len(images)}) musi być równa liczbie etykiet ({len(labels)})"
+            )
+
+        if len(images) == 0:
+            raise ValueError("Lista obrazów nie może być pusta")
+
+        correct_top1 = 0
+        correct_top5 = 0
+        total = len(images)
+
+        for image, true_label in zip(images, labels):
+            prediction = self.predict(image)
+            top_ids = [idx for idx, _, _ in prediction.top_k]
+
+            if prediction.class_id == true_label:
+                correct_top1 += 1
+
+            if true_label in top_ids:
+                correct_top5 += 1
+
+        return {
+            "top1_accuracy": correct_top1 / total * 100,
+            "top5_accuracy": correct_top5 / total * 100,
+            "total_samples": total,
+            "correct_top1": correct_top1,
+            "correct_top5": correct_top5,
+        }
 
     def predict_batch(self, images: list[np.ndarray]) -> list[BreedPrediction]:
         """

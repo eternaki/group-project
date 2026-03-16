@@ -29,10 +29,10 @@ Ten sprint skupia się na analizie i ulepszeniu modelu klasyfikacji ras. Obejmuj
 
 | ID | Title | Status |
 |----|-------|--------|
-| [9.1](stories/9.1-architecture-analysis.md) | Analiza architektury EfficientNet-B4 | To Do |
-| [9.2](stories/9.2-io-analysis.md) | Analiza wejść/wyjść i preprocessing | To Do |
-| [9.3](stories/9.3-crop-adaptation.md) | Adaptacja croppów psów | To Do |
-| [9.4](stories/9.4-metrics-evaluation.md) | Metryki i ewaluacja modelu | To Do |
+| [9.1](stories/9.1-architecture-analysis.md) | Analiza architektury EfficientNet-B4 | Done |
+| [9.2](stories/9.2-io-analysis.md) | Analiza wejść/wyjść i preprocessing | Done |
+| [9.3](stories/9.3-crop-adaptation.md) | Adaptacja croppów psów | Done |
+| [9.4](stories/9.4-metrics-evaluation.md) | Metryki i ewaluacja modelu | Done |
 
 ---
 
@@ -47,10 +47,10 @@ Ten sprint skupia się na analizie i ulepszeniu modelu klasyfikacji ras. Obejmuj
 
 ## Deliverables
 
-- [ ] Dokument analizy architektury
-- [ ] Specyfikacja I/O modelu
-- [ ] Skrypt adaptacji croppów
-- [ ] Raport metryk ewaluacji
+- [x] Dokument analizy architektury
+- [x] Specyfikacja I/O modelu
+- [x] Skrypt adaptacji croppów (SquarePad w breed.py)
+- [x] Raport metryk ewaluacji (metoda evaluate() w BreedModel)
 
 ---
 

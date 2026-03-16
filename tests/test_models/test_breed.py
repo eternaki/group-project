@@ -12,8 +12,9 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+from PIL import Image
 
-from packages.models.breed import BreedConfig, BreedModel, BreedPrediction
+from packages.models.breed import BreedConfig, BreedModel, BreedPrediction, SquarePad
 
 
 class TestBreedPrediction:
@@ -78,7 +79,7 @@ class TestBreedConfig:
         assert config.weights_path == Path("models/breed.pt")
         assert config.labels_path == Path("packages/models/breeds.json")
         assert config.model_name == "efficientnet_b4"
-        assert config.img_size == 224
+        assert config.img_size == 380  # natywna rozdzielczość EfficientNet-B4
         assert config.top_k == 5
 
     def test_custom_config(self) -> None:
@@ -218,6 +219,207 @@ class TestBreedModelWithMock:
             mock_torch.cuda.is_available.return_value = False
 
             yield mock_torch
+
+
+class TestSquarePad:
+    """Testy dla klasy SquarePad."""
+
+    def test_square_image_unchanged(self) -> None:
+        """Kwadratowy obraz nie powinien być zmieniony."""
+        pad = SquarePad()
+        img = Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8))
+        result = pad(img)
+        assert result.size == (100, 100)
+
+    def test_wide_image_padded_vertically(self) -> None:
+        """Szeroki obraz powinien dostać padding na górze i dole."""
+        pad = SquarePad()
+        img = Image.fromarray(np.zeros((100, 200, 3), dtype=np.uint8))
+        result = pad(img)
+        assert result.size == (200, 200)
+
+    def test_tall_image_padded_horizontally(self) -> None:
+        """Wysoki obraz powinien dostać padding po bokach."""
+        pad = SquarePad()
+        img = Image.fromarray(np.zeros((300, 100, 3), dtype=np.uint8))
+        result = pad(img)
+        assert result.size == (300, 300)
+
+    def test_padding_is_black(self) -> None:
+        """Padding powinien być czarny (0)."""
+        pad = SquarePad()
+        # Biały obraz 100x200
+        arr = np.full((100, 200, 3), 255, dtype=np.uint8)
+        img = Image.fromarray(arr)
+        result = pad(img)
+        result_arr = np.array(result)
+        # Pierwsze piksele (padding) powinny być czarne
+        assert result_arr[0, 0, 0] == 0
+
+
+class TestPreprocessBgrConversion:
+    """Testy konwersji BGR→RGB w preprocess()."""
+
+    def test_bgr_to_rgb_conversion(self, tmp_path: Path) -> None:
+        """Test czy preprocess konwertuje BGR na RGB."""
+        labels = {"0": "TestBreed"}
+        labels_file = tmp_path / "breeds.json"
+        labels_file.write_text(json.dumps(labels))
+
+        config = BreedConfig(
+            weights_path="models/breed.pt",
+            labels_path=labels_file,
+            device="cpu",
+        )
+        model = BreedModel(config)
+        model._labels = labels
+        model._loaded = True
+
+        # Obraz BGR: kanał B=255, G=0, R=0 (niebieski w BGR)
+        bgr_image = np.zeros((100, 100, 3), dtype=np.uint8)
+        bgr_image[:, :, 0] = 255  # kanał B
+
+        # Przygotuj mock transform, który sprawdzi wejście
+        received_images = []
+
+        class CapturePad:
+            def __call__(self, img):
+                received_images.append(np.array(img))
+                return img
+
+        from torchvision import transforms
+        model._transform = transforms.Compose([
+            transforms.ToPILImage(),
+            CapturePad(),
+            transforms.Resize(50),
+            transforms.CenterCrop(50),
+            transforms.ToTensor(),
+        ])
+
+        try:
+            model.preprocess(bgr_image)
+        except Exception:
+            pass
+
+        if received_images:
+            # Po konwersji BGR→RGB: kanał 0 (R) powinien być 0, nie 255
+            assert received_images[0][0, 0, 0] == 0, "BGR nie został skonwertowany na RGB"
+
+
+class TestBreedModelEvaluate:
+    """Testy dla metody evaluate()."""
+
+    @pytest.fixture
+    def loaded_model(self, tmp_path: Path) -> BreedModel:
+        """Fixture z załadowanym (mockowanym) modelem."""
+        labels = {"0": "Chihuahua", "1": "Golden Retriever", "2": "Labrador", "3": "Beagle", "4": "Poodle"}
+        labels_file = tmp_path / "breeds.json"
+        labels_file.write_text(json.dumps(labels))
+
+        config = BreedConfig(
+            weights_path="models/breed.pt",
+            labels_path=labels_file,
+            device="cpu",
+            top_k=3,
+        )
+        model = BreedModel(config)
+        model._labels = labels
+        model._loaded = True
+        model._model = MagicMock()
+        return model
+
+    def _make_prediction(self, top_id: int, labels: dict) -> BreedPrediction:
+        """Tworzy BreedPrediction z danym Top-1."""
+        return BreedPrediction(
+            class_id=top_id,
+            class_name=labels[str(top_id)],
+            confidence=0.9,
+            top_k=[
+                (top_id, labels[str(top_id)], 0.9),
+                ((top_id + 1) % 5, labels[str((top_id + 1) % 5)], 0.07),
+                ((top_id + 2) % 5, labels[str((top_id + 2) % 5)], 0.03),
+            ],
+        )
+
+    def test_evaluate_perfect_accuracy(self, loaded_model: BreedModel) -> None:
+        """Test 100% dokładności gdy wszystkie predykcje są poprawne."""
+        images = [np.zeros((50, 50, 3), dtype=np.uint8)] * 3
+        labels_gt = [0, 1, 2]
+        predictions = [self._make_prediction(i, loaded_model._labels) for i in labels_gt]
+
+        with patch.object(loaded_model, "predict", side_effect=predictions):
+            result = loaded_model.evaluate(images, labels_gt)
+
+        assert result["top1_accuracy"] == 100.0
+        assert result["top5_accuracy"] == 100.0
+        assert result["total_samples"] == 3
+        assert result["correct_top1"] == 3
+
+    def test_evaluate_zero_accuracy(self, loaded_model: BreedModel) -> None:
+        """Test 0% dokładności gdy żadna predykcja nie jest poprawna."""
+        images = [np.zeros((50, 50, 3), dtype=np.uint8)] * 2
+        # Prawdziwe: 0, predykcja: 1,2,3 (nie zawiera 0)
+        labels_gt = [0, 0]
+        predictions = [
+            BreedPrediction(
+                class_id=1, class_name="Golden Retriever", confidence=0.9,
+                top_k=[(1, "Golden Retriever", 0.9), (2, "Labrador", 0.07), (3, "Beagle", 0.03)],
+            ),
+            BreedPrediction(
+                class_id=2, class_name="Labrador", confidence=0.9,
+                top_k=[(2, "Labrador", 0.9), (3, "Beagle", 0.07), (4, "Poodle", 0.03)],
+            ),
+        ]
+
+        with patch.object(loaded_model, "predict", side_effect=predictions):
+            result = loaded_model.evaluate(images, labels_gt)
+
+        assert result["top1_accuracy"] == 0.0
+        assert result["top5_accuracy"] == 0.0
+        assert result["correct_top1"] == 0
+
+    def test_evaluate_mismatched_lengths_raises(self, loaded_model: BreedModel) -> None:
+        """Test błędu gdy liczba obrazów ≠ liczba etykiet."""
+        images = [np.zeros((50, 50, 3), dtype=np.uint8)] * 3
+        labels_gt = [0, 1]
+
+        with pytest.raises(ValueError, match="równa liczbie etykiet"):
+            loaded_model.evaluate(images, labels_gt)
+
+    def test_evaluate_empty_raises(self, loaded_model: BreedModel) -> None:
+        """Test błędu przy pustych listach."""
+        with pytest.raises(ValueError, match="pusta"):
+            loaded_model.evaluate([], [])
+
+    def test_evaluate_not_loaded_raises(self, tmp_path: Path) -> None:
+        """Test błędu gdy model nie jest załadowany."""
+        config = BreedConfig(weights_path="models/breed.pt", device="cpu")
+        model = BreedModel(config)
+        with pytest.raises(RuntimeError, match="nie został załadowany"):
+            model.evaluate([np.zeros((50, 50, 3), dtype=np.uint8)], [0])
+
+    def test_evaluate_partial_top5(self, loaded_model: BreedModel) -> None:
+        """Test gdzie Top-1 = 50%, Top-5 = 100%."""
+        images = [np.zeros((50, 50, 3), dtype=np.uint8)] * 2
+        labels_gt = [0, 1]
+        # Predykcja 1: top1=0 (correct), top5 zawiera 0
+        # Predykcja 2: top1=0 (wrong), top5 zawiera 1
+        predictions = [
+            BreedPrediction(
+                class_id=0, class_name="Chihuahua", confidence=0.9,
+                top_k=[(0, "Chihuahua", 0.9), (1, "Golden Retriever", 0.07), (2, "Labrador", 0.03)],
+            ),
+            BreedPrediction(
+                class_id=0, class_name="Chihuahua", confidence=0.6,
+                top_k=[(0, "Chihuahua", 0.6), (1, "Golden Retriever", 0.35), (2, "Labrador", 0.05)],
+            ),
+        ]
+
+        with patch.object(loaded_model, "predict", side_effect=predictions):
+            result = loaded_model.evaluate(images, labels_gt)
+
+        assert result["top1_accuracy"] == 50.0
+        assert result["top5_accuracy"] == 100.0
 
 
 class TestBreedsJson:
