@@ -317,7 +317,7 @@ class InferencePipeline:
         )
 
         # 1. Detekcja psów
-        detections = self.bbox_model.filter_dogs_only(image)
+        detections = self.bbox_model.predict(image)
 
         if not detections:
             return result
@@ -445,7 +445,7 @@ class InferencePipeline:
 
         for i, frame in enumerate(frames_list):
             # Wykryj psa
-            detections = self.bbox_model.filter_dogs_only(frame)
+            detections = self.bbox_model.predict(frame)
 
             if not detections:
                 keypoints_list.append(None)

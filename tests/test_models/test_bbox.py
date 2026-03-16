@@ -70,6 +70,7 @@ class TestBBoxConfig:
         assert config.confidence_threshold == 0.5
         assert config.iou_threshold == 0.45
         assert config.max_detections == 10
+        assert config.dog_class_id == 16  # domyślnie COCO
 
     def test_custom_config(self) -> None:
         """Test niestandardowej konfiguracji."""
@@ -86,6 +87,14 @@ class TestBBoxConfig:
         assert config.confidence_threshold == 0.7
         assert config.iou_threshold == 0.5
         assert config.max_detections == 5
+
+    def test_finetuned_config_dog_class_id(self) -> None:
+        """Test konfiguracji dla fine-tuned modelu (dog_class_id=0)."""
+        config = BBoxConfig(
+            weights_path="models/bbox.pt",
+            dog_class_id=0,
+        )
+        assert config.dog_class_id == 0
 
 
 class TestBBoxModel:
@@ -236,53 +245,149 @@ class TestBBoxModelIntegration:
 class TestBBoxModelMocked:
     """Testy z mockowanym YOLO."""
 
-    @pytest.fixture
-    def mock_yolo(self):
-        """Mock dla klasy YOLO."""
-        with patch("packages.models.bbox.YOLO") as mock:
-            # Przygotuj mock wyników
-            mock_box = MagicMock()
-            mock_box.xyxy = [MagicMock()]
-            mock_box.xyxy[0].cpu.return_value.numpy.return_value = np.array(
-                [100, 200, 150, 260]
-            )
-            mock_box.conf = [MagicMock()]
-            mock_box.conf[0].cpu.return_value.numpy.return_value = 0.95
-            mock_box.cls = [MagicMock()]
-            mock_box.cls[0].cpu.return_value.numpy.return_value = 0
+    def _make_mock_box(self, xyxy: list[float], conf: float, cls_id: int) -> MagicMock:
+        """Pomocnik do tworzenia mock boxa YOLO."""
+        mock_box = MagicMock()
+        mock_box.xyxy = [MagicMock()]
+        mock_box.xyxy[0].cpu.return_value.numpy.return_value = np.array(xyxy)
+        mock_box.conf = [MagicMock()]
+        mock_box.conf[0].cpu.return_value.numpy.return_value = conf
+        mock_box.cls = [MagicMock()]
+        mock_box.cls[0].cpu.return_value.numpy.return_value = cls_id
+        return mock_box
 
-            mock_result = MagicMock()
-            mock_result.boxes = [mock_box]
+    def _make_mock_yolo(self, boxes: list[MagicMock]) -> MagicMock:
+        """Pomocnik do tworzenia mock instancji YOLO."""
+        mock_result = MagicMock()
+        mock_result.boxes = boxes
+        mock_instance = MagicMock()
+        mock_instance.return_value = [mock_result]
+        return mock_instance
 
-            mock_instance = MagicMock()
-            mock_instance.return_value = [mock_result]
-
-            mock.return_value = mock_instance
-
-            yield mock
-
-    def test_predict_with_mock(self, mock_yolo) -> None:
-        """Test predykcji z mockowanym YOLO."""
-        # Utwórz plik tymczasowy dla wag
+    def test_predict_filters_by_dog_class_id(self) -> None:
+        """Test że predict() filtruje tylko psy po dog_class_id."""
         import tempfile
 
-        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
-            weights_path = Path(f.name)
+        with patch("ultralytics.YOLO") as mock_yolo_cls:
+            # Dwa obiekty: pies (cls=16) i człowiek (cls=0)
+            dog_box = self._make_mock_box([100, 200, 150, 260], conf=0.95, cls_id=16)
+            person_box = self._make_mock_box([10, 10, 50, 100], conf=0.90, cls_id=0)
+            mock_yolo_cls.return_value = self._make_mock_yolo([dog_box, person_box])
 
-        try:
-            config = BBoxConfig(
-                weights_path=weights_path,
-                device="cpu",
-            )
-            model = BBoxModel(config)
-            model.load()
+            with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+                weights_path = Path(f.name)
 
-            image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-            detections = model.predict(image)
+            try:
+                config = BBoxConfig(
+                    weights_path=weights_path,
+                    device="cpu",
+                    dog_class_id=16,  # COCO
+                )
+                model = BBoxModel(config)
+                model.load()
 
-            assert len(detections) == 1
-            assert detections[0].bbox == (100, 200, 50, 60)  # x, y, w, h
-            assert detections[0].confidence == 0.95
+                image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+                detections = model.predict(image)
 
-        finally:
-            weights_path.unlink(missing_ok=True)
+                # Tylko pies (cls=16) powinien być zwrócony
+                assert len(detections) == 1
+                assert detections[0].bbox == (100, 200, 50, 60)
+                assert detections[0].confidence == 0.95
+                assert detections[0].class_id == 0  # normalizowane do 0
+                assert detections[0].class_name == "dog"
+            finally:
+                weights_path.unlink(missing_ok=True)
+
+    def test_predict_finetuned_model_class_id_0(self) -> None:
+        """Test predict() dla fine-tuned modelu (dog_class_id=0)."""
+        import tempfile
+
+        with patch("ultralytics.YOLO") as mock_yolo_cls:
+            # Fine-tuned model: pies to klasa 0
+            dog_box = self._make_mock_box([50, 50, 200, 300], conf=0.88, cls_id=0)
+            mock_yolo_cls.return_value = self._make_mock_yolo([dog_box])
+
+            with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+                weights_path = Path(f.name)
+
+            try:
+                config = BBoxConfig(
+                    weights_path=weights_path,
+                    device="cpu",
+                    dog_class_id=0,  # fine-tuned
+                )
+                model = BBoxModel(config)
+                model.load()
+
+                image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+                detections = model.predict(image)
+
+                assert len(detections) == 1
+                assert detections[0].confidence == 0.88
+            finally:
+                weights_path.unlink(missing_ok=True)
+
+    def test_predict_multiple_dogs_sorted_by_confidence(self) -> None:
+        """Test że predict() zwraca wiele psów posortowanych po confidence."""
+        import tempfile
+
+        with patch("ultralytics.YOLO") as mock_yolo_cls:
+            dog1 = self._make_mock_box([0, 0, 100, 100], conf=0.70, cls_id=16)
+            dog2 = self._make_mock_box([200, 200, 300, 300], conf=0.95, cls_id=16)
+            dog3 = self._make_mock_box([400, 400, 500, 500], conf=0.80, cls_id=16)
+            mock_yolo_cls.return_value = self._make_mock_yolo([dog1, dog2, dog3])
+
+            with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+                weights_path = Path(f.name)
+
+            try:
+                config = BBoxConfig(
+                    weights_path=weights_path,
+                    device="cpu",
+                    dog_class_id=16,
+                    max_detections=10,
+                )
+                model = BBoxModel(config)
+                model.load()
+
+                image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+                detections = model.predict(image)
+
+                assert len(detections) == 3
+                # Posortowane malejąco po confidence
+                assert detections[0].confidence == 0.95
+                assert detections[1].confidence == 0.80
+                assert detections[2].confidence == 0.70
+            finally:
+                weights_path.unlink(missing_ok=True)
+
+    def test_predict_respects_max_detections(self) -> None:
+        """Test że predict() zwraca max max_detections psów."""
+        import tempfile
+
+        with patch("ultralytics.YOLO") as mock_yolo_cls:
+            boxes = [
+                self._make_mock_box([i * 10, 0, i * 10 + 10, 10], conf=0.9 - i * 0.1, cls_id=16)
+                for i in range(5)
+            ]
+            mock_yolo_cls.return_value = self._make_mock_yolo(boxes)
+
+            with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+                weights_path = Path(f.name)
+
+            try:
+                config = BBoxConfig(
+                    weights_path=weights_path,
+                    device="cpu",
+                    dog_class_id=16,
+                    max_detections=2,
+                )
+                model = BBoxModel(config)
+                model.load()
+
+                image = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+                detections = model.predict(image)
+
+                assert len(detections) == 2
+            finally:
+                weights_path.unlink(missing_ok=True)

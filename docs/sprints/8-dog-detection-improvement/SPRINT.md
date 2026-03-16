@@ -29,10 +29,10 @@ Ten sprint skupia się na dogłębnej analizie i ulepszeniu modelu detekcji psó
 
 | ID | Title | Status |
 |----|-------|--------|
-| [8.1](stories/8.1-architecture-analysis.md) | Analiza architektury YOLOv8 | To Do |
-| [8.2](stories/8.2-io-analysis.md) | Analiza wejść/wyjść i preprocessing | To Do |
-| [8.3](stories/8.3-frame-adaptation.md) | Adaptacja klatek wideo | To Do |
-| [8.4](stories/8.4-metrics-evaluation.md) | Metryki i ewaluacja modelu | To Do |
+| [8.1](stories/8.1-architecture-analysis.md) | Analiza architektury YOLOv8 | Done |
+| [8.2](stories/8.2-io-analysis.md) | Naprawa predict() — filtrowanie psów | Done |
+| [8.3](stories/8.3-frame-adaptation.md) | Adaptacja klatek wideo | Done |
+| [8.4](stories/8.4-metrics-evaluation.md) | Metryki i ewaluacja modelu | Done |
 
 ---
 

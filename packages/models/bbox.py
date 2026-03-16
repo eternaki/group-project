@@ -24,12 +24,14 @@ class BBoxConfig(ModelConfig):
         iou_threshold: Próg IoU dla Non-Maximum Suppression
         max_detections: Maksymalna liczba detekcji na obraz
         imgsz: Rozmiar obrazu wejściowego (domyślnie 640)
+        dog_class_id: ID klasy psa w modelu (16 dla COCO, 0 dla fine-tuned)
     """
 
     confidence_threshold: float = 0.5
     iou_threshold: float = 0.45
     max_detections: int = 10
     imgsz: int = 640
+    dog_class_id: int = 16  # 16 = COCO pretrained, 0 = fine-tuned dog-only model
 
 
 @dataclass
@@ -179,6 +181,10 @@ class BBoxModel(BaseModel[np.ndarray, list[Detection]]):
         """
         Wykrywa psy na obrazie.
 
+        Filtruje detekcje po dog_class_id z konfiguracji:
+        - 16 dla standardowego modelu COCO (yolov8m.pt)
+        - 0 dla fine-tunowanego modelu tylko na psach
+
         Args:
             image: Obraz jako numpy array (BGR)
 
@@ -193,45 +199,42 @@ class BBoxModel(BaseModel[np.ndarray, list[Detection]]):
                 "Model nie został załadowany. Wywołaj load() przed predict()."
             )
 
-        # Wywołaj YOLO
+        # Wywołaj YOLO z większym max_det (filtrujemy po klasie)
         results = self._model(
             image,
             conf=self.config.confidence_threshold,
             iou=self.config.iou_threshold,
-            max_det=self.config.max_detections,
+            max_det=self.config.max_detections * 5,
             device=self.config.device,
             verbose=False,
             imgsz=self.config.imgsz,
         )[0]
 
-        # Konwertuj wyniki do Detection
         detections = []
 
         if results.boxes is not None:
             for box in results.boxes:
-                # Pobierz współrzędne (xyxy -> xywh)
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                w = x2 - x1
-                h = y2 - y1
-
-                # Confidence
-                conf = float(box.conf[0].cpu().numpy())
-
-                # Class ID (filtrujemy tylko psy jeśli model ma wiele klas)
                 cls_id = int(box.cls[0].cpu().numpy())
 
-                # Dla modelu fine-tunowanego na psach, class_id = 0
-                # Dla pretrenowanego YOLO COCO, psy to class_id = 16
+                # Filtruj tylko psy po skonfigurowanym dog_class_id
+                if cls_id != self.config.dog_class_id:
+                    continue
+
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                conf = float(box.conf[0].cpu().numpy())
+
                 detections.append(
                     Detection(
-                        bbox=(int(x1), int(y1), int(w), int(h)),
+                        bbox=(int(x1), int(y1), int(x2 - x1), int(y2 - y1)),
                         confidence=conf,
-                        class_id=cls_id,
+                        class_id=0,  # normalizuj do 0 dla spójności
                         class_name="dog",
                     )
                 )
 
-        return detections
+        # Ogranicz do max_detections, sortuj po confidence
+        detections.sort(key=lambda d: d.confidence, reverse=True)
+        return detections[: self.config.max_detections]
 
     def postprocess(self, detections: list[Detection]) -> list[dict]:
         """
@@ -256,87 +259,23 @@ class BBoxModel(BaseModel[np.ndarray, list[Detection]]):
             image: Obraz wejściowy
 
         Returns:
-            Tuple (lista detekcji, obraz z wizualizacją)
+            Tuple (lista detekcji tylko psów, obraz z wizualizacją)
         """
         if not self._loaded or self._model is None:
             raise RuntimeError("Model nie został załadowany.")
 
+        detections = self.predict(image)
+
+        # Uruchom YOLO osobno dla wizualizacji (plot() działa na surowych wynikach)
         results = self._model(
             image,
             conf=self.config.confidence_threshold,
             iou=self.config.iou_threshold,
-            max_det=self.config.max_detections,
+            max_det=self.config.max_detections * 5,
             device=self.config.device,
             verbose=False,
+            imgsz=self.config.imgsz,
         )[0]
-
-        # Detekcje
-        detections = []
-        if results.boxes is not None:
-            for box in results.boxes:
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                detections.append(
-                    Detection(
-                        bbox=(int(x1), int(y1), int(x2 - x1), int(y2 - y1)),
-                        confidence=float(box.conf[0]),
-                    )
-                )
-
-        # Wizualizacja
         annotated = results.plot()
 
         return detections, annotated
-
-    def filter_dogs_only(
-        self,
-        image: np.ndarray,
-        coco_dog_class_id: int = 16,
-    ) -> list[Detection]:
-        """
-        Wykrywa tylko psy używając pretrenowanego modelu COCO.
-
-        Przydatne gdy używamy standardowego yolov8m.pt zamiast
-        fine-tunowanego modelu.
-
-        Args:
-            image: Obraz wejściowy
-            coco_dog_class_id: ID klasy psa w COCO (domyślnie 16)
-
-        Returns:
-            Lista detekcji tylko psów
-        """
-        if not self._loaded or self._model is None:
-            raise RuntimeError("Model nie został załadowany.")
-
-        results = self._model(
-            image,
-            conf=self.config.confidence_threshold,
-            iou=self.config.iou_threshold,
-            max_det=self.config.max_detections * 5,  # Więcej, bo filtrujemy
-            device=self.config.device,
-            verbose=False,
-        )[0]
-
-        detections = []
-        if results.boxes is not None:
-            for box in results.boxes:
-                cls_id = int(box.cls[0].cpu().numpy())
-
-                # Filtruj tylko psy
-                if cls_id == coco_dog_class_id:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    detections.append(
-                        Detection(
-                            bbox=(int(x1), int(y1), int(x2 - x1), int(y2 - y1)),
-                            confidence=float(box.conf[0]),
-                            class_id=0,  # Normalizuj do 0
-                            class_name="dog",
-                        )
-                    )
-
-        # Ogranicz do max_detections
-        detections = sorted(
-            detections, key=lambda d: d.confidence, reverse=True
-        )[: self.config.max_detections]
-
-        return detections
