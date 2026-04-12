@@ -1,4 +1,4 @@
-# Dog FACS Dataset
+# Dog FACS Datаset
 
 AI-powered dog emotion annotation pipeline and dataset creation tool.
 
