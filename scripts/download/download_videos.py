@@ -14,7 +14,6 @@ Użycie:
 import argparse
 import json
 import logging
-import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +25,10 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# YouTube wymaga środowiska JavaScript (node/deno) do ekstrakcji formatów.
+# Bez tego pliki pobierają się puste (SABR/HLS bez prawidłowych URL).
+JS_RUNTIMES = {"node": {"path": None}}
 
 
 @dataclass
@@ -144,7 +147,7 @@ class VideoDownloader:
 
         # Pobierz informacje o wideo
         try:
-            with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+            with yt_dlp.YoutubeDL({"quiet": True, "js_runtimes": JS_RUNTIMES}) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
             logger.error(f"Nie można pobrać informacji o wideo: {e}")
@@ -172,11 +175,18 @@ class VideoDownloader:
 
         # Opcje pobierania
         output_template = str(emotion_dir / "%(id)s.%(ext)s")
+        # Preferuj progresywny mp4 (format 18) — pojedynczy plik audio+wideo,
+        # nie wymaga scalania przez ffmpeg i jest odporny na SABR/HLS.
+        format_selector = (
+            f"best[height<={self.config.max_resolution}][ext=mp4][acodec!=none][vcodec!=none]"
+            "/18/best[ext=mp4]/best"
+        )
         ydl_opts = {
-            "format": f"best[height<={self.config.max_resolution}]",
+            "format": format_selector,
             "outtmpl": output_template,
             "quiet": False,
             "no_warnings": True,
+            "js_runtimes": JS_RUNTIMES,
             "progress_hooks": [self._progress_hook],
         }
 
@@ -196,6 +206,12 @@ class VideoDownloader:
 
         file_path = downloaded_files[0]
         file_size_mb = file_path.stat().st_size / (1024 * 1024)
+
+        # Walidacja: odrzuć puste/uszkodzone pliki (np. nieudane HLS/SABR)
+        if file_size_mb < 0.01:
+            logger.error(f"Pobrany plik jest pusty: {video_id}, usuwam")
+            file_path.unlink(missing_ok=True)
+            return None
 
         # Utwórz metadane
         metadata = VideoMetadata(
@@ -248,16 +264,18 @@ class VideoDownloader:
 
         logger.info(f"Wyszukiwanie: '{query}' (limit: {limit})")
 
-        # Wyszukaj wideo
+        # Wyszukaj wideo (jawny prefiks ytsearchN: — default_search nie działa
+        # niezawodnie w nowszych wersjach yt-dlp)
         search_opts = {
             "quiet": True,
             "extract_flat": True,
-            "default_search": f"ytsearch{limit * 2}",
+            "js_runtimes": JS_RUNTIMES,
         }
+        search_query = f"ytsearch{limit * 2}:{query}"
 
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
-                results = ydl.extract_info(query, download=False)
+                results = ydl.extract_info(search_query, download=False)
         except Exception as e:
             logger.error(f"Błąd wyszukiwania: {e}")
             return []
