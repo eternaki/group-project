@@ -1,4 +1,4 @@
-# Dog FACS Dataset
+# Dog FACS Datаset
 
 AI-powered dog emotion annotation pipeline and dataset creation tool.
 
@@ -154,4 +154,4 @@ ruff check .
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](LICENSE) for details..
