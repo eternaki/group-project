@@ -164,53 +164,18 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
 
     # Mapping dla flip TTA (zamiana lewych i prawych keypoints po odbiciu poziomym)
     # Format: idx -> flipped_idx (symetryczne pary lewo/prawa)
+    # Pary lewo/prawo w KANONICZNEJ kolejności DogFLW (do odbicia poziomego w TTA).
+    # Punkty centralne (24,25,32,35,38,41,42,45) mapują się na siebie (domyślnie).
+    _FLIP_PAIRS: list[tuple[int, int]] = [
+        (0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13),  # uszy
+        (14, 15),                                                     # brwi
+        (16, 17), (18, 19), (20, 21), (22, 23),                       # oczy
+        (26, 27), (28, 29), (30, 31), (33, 34), (36, 37),             # nos/pysk/policzki
+        (39, 40), (43, 44),                                           # wargi
+    ]
     FLIP_MAPPING: dict[int, int] = {
-        # Oczy (0-7)
-        KP.LEFT_EYE_INNER: KP.RIGHT_EYE_INNER,
-        KP.LEFT_EYE_TOP: KP.RIGHT_EYE_TOP,
-        KP.LEFT_EYE_OUTER: KP.RIGHT_EYE_OUTER,
-        KP.LEFT_EYE_BOTTOM: KP.RIGHT_EYE_BOTTOM,
-        KP.RIGHT_EYE_INNER: KP.LEFT_EYE_INNER,
-        KP.RIGHT_EYE_TOP: KP.LEFT_EYE_TOP,
-        KP.RIGHT_EYE_OUTER: KP.LEFT_EYE_OUTER,
-        KP.RIGHT_EYE_BOTTOM: KP.LEFT_EYE_BOTTOM,
-        # Brwi (8-13)
-        KP.LEFT_BROW_INNER: KP.RIGHT_BROW_INNER,
-        KP.LEFT_BROW_CENTER: KP.RIGHT_BROW_CENTER,
-        KP.LEFT_BROW_OUTER: KP.RIGHT_BROW_OUTER,
-        KP.RIGHT_BROW_INNER: KP.LEFT_BROW_INNER,
-        KP.RIGHT_BROW_CENTER: KP.LEFT_BROW_CENTER,
-        KP.RIGHT_BROW_OUTER: KP.LEFT_BROW_OUTER,
-        # Uszy (14-21)
-        KP.LEFT_EAR_BASE_FRONT: KP.RIGHT_EAR_BASE_FRONT,
-        KP.LEFT_EAR_BASE_BACK: KP.RIGHT_EAR_BASE_BACK,
-        KP.LEFT_EAR_MID: KP.RIGHT_EAR_MID,
-        KP.LEFT_EAR_TIP: KP.RIGHT_EAR_TIP,
-        KP.RIGHT_EAR_BASE_FRONT: KP.LEFT_EAR_BASE_FRONT,
-        KP.RIGHT_EAR_BASE_BACK: KP.LEFT_EAR_BASE_BACK,
-        KP.RIGHT_EAR_MID: KP.LEFT_EAR_MID,
-        KP.RIGHT_EAR_TIP: KP.LEFT_EAR_TIP,
-        # Nos — skrzydła (23 ↔ 24)
-        KP.NOSE_LEFT_WING: KP.NOSE_RIGHT_WING,
-        KP.NOSE_RIGHT_WING: KP.NOSE_LEFT_WING,
-        # Usta (26-33)
-        KP.MOUTH_LEFT_CORNER: KP.MOUTH_RIGHT_CORNER,
-        KP.UPPER_LIP_LEFT: KP.UPPER_LIP_RIGHT,
-        KP.UPPER_LIP_RIGHT: KP.UPPER_LIP_LEFT,
-        KP.MOUTH_RIGHT_CORNER: KP.MOUTH_LEFT_CORNER,
-        KP.LOWER_LIP_RIGHT: KP.LOWER_LIP_LEFT,
-        KP.LOWER_LIP_LEFT: KP.LOWER_LIP_RIGHT,
-        # Pysk boczny (35 ↔ 36)
-        KP.MUZZLE_LEFT: KP.MUZZLE_RIGHT,
-        KP.MUZZLE_RIGHT: KP.MUZZLE_LEFT,
-        # Czoło (39 ↔ 40)
-        KP.FOREHEAD_LEFT: KP.FOREHEAD_RIGHT,
-        KP.FOREHEAD_RIGHT: KP.FOREHEAD_LEFT,
-        # Policzki (41 ↔ 43, 42 ↔ 44)
-        KP.LEFT_CHEEK_UPPER: KP.RIGHT_CHEEK_UPPER,
-        KP.LEFT_CHEEK_LOWER: KP.RIGHT_CHEEK_LOWER,
-        KP.RIGHT_CHEEK_UPPER: KP.LEFT_CHEEK_UPPER,
-        KP.RIGHT_CHEEK_LOWER: KP.LEFT_CHEEK_LOWER,
+        **{a: b for a, b in _FLIP_PAIRS},
+        **{b: a for a, b in _FLIP_PAIRS},
     }
 
     def predict(self, image: np.ndarray) -> KeypointsPrediction:

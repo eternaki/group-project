@@ -29,7 +29,7 @@ const CANVAS_MAX_WIDTH = 520;
 const POINT_RADIUS = 5;
 const HIT_RADIUS = 10;
 
-/** Парсит flat array [x0,y0,v0,...] в массив {x,y,v}[46] */
+/** Parsuje flat array [x0,y0,v0,...] do tablicy {x,y,v}[46] */
 function parseKeypoints(flat: number[]): { x: number; y: number; v: number }[] {
   const result = [];
   for (let i = 0; i < NUM_KEYPOINTS; i++) {
@@ -88,7 +88,7 @@ export default function KeypointEditor({ frameIdx, imageUrl, keypoints }: Keypoi
     for (const [a, b] of SKELETON_CONNECTIONS) {
       const kpA = localKPs[a];
       const kpB = localKPs[b];
-      if (kpA.v > 0.3 && kpB.v > 0.3) {
+      if (kpA.v > 0.15 && kpB.v > 0.15) {
         ctx.beginPath();
         ctx.moveTo(kpA.x * sx + offsetX, kpA.y * sy + offsetY);
         ctx.lineTo(kpB.x * sx + offsetX, kpB.y * sy + offsetY);
@@ -102,7 +102,8 @@ export default function KeypointEditor({ frameIdx, imageUrl, keypoints }: Keypoi
       const cx = kp.x * sx + offsetX;
       const cy = kp.y * sy + offsetY;
       const color = getKeypointColor(i);
-      const alpha = kp.v < 0.3 ? 0.25 : 1;
+      // Punkty o niskiej pewności pokazujemy półprzezroczyście (ale widocznie)
+      const alpha = kp.v < 0.3 ? 0.55 : 1;
 
       ctx.globalAlpha = alpha;
       ctx.beginPath();
@@ -258,13 +259,11 @@ export default function KeypointEditor({ frameIdx, imageUrl, keypoints }: Keypoi
       {/* Legenda */}
       <div className="flex flex-wrap gap-2 text-[10px] text-gray-500">
         {[
-          { label: 'Oczy', color: '#00ff00' },
+          { label: 'Uszy', color: '#ffa500' },
           { label: 'Brwi', color: '#ff0080' },
-          { label: 'Uszy', color: '#00a5ff' },
-          { label: 'Nos', color: '#ff3030' },
-          { label: 'Usta', color: '#00ffff' },
-          { label: 'Pysk', color: '#ff00ff' },
-          { label: 'Kontur', color: '#4488ff' },
+          { label: 'Oczy', color: '#00ff00' },
+          { label: 'Nos/pysk', color: '#ff3030' },
+          { label: 'Pysk', color: '#00ffff' },
         ].map(({ label, color }) => (
           <span key={label} className="flex items-center gap-1">
             <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />

@@ -54,6 +54,14 @@ data/annotations/*
 !data/raw/.gitkeep
 !data/frames/.gitkeep
 !data/annotations/.gitkeep
+# Pliki robocze / podglądy generowane lokalnie
+data/*.jpg
+data/*.jpeg
+data/*.png
+data/*.mp4
+data/tmpl/
+data/rec/
+data/probe/
 
 # Model weights (large files NOT tracked - keep in models/ directory)
 # *.pt  # Разрешаем .pt файлы для моделей

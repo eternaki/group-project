@@ -129,41 +129,49 @@ class PeakFrameSelector:
             from packages.pipeline.neutral_frame import estimate_head_pose
             head_poses = [estimate_head_pose(kp) for kp in keypoints_list]
 
-        # Step 1: Compute TFM for each frame and filter valid candidates
-        tfm_scores = []
+        # Step 1: Compute TFM for valid candidates.
+        # Zbieramy WSZYSTKIE poprawne kadry (z TFM). Kadry powyżej progu min_tfm
+        # są preferowane, ale jeśli jest ich za mało (np. spokojny pies), dobieramy
+        # z pozostałych poprawnych — żeby uszanować żądaną liczbę peaków.
+        strong: list[tuple[int, float]] = []
+        valid_all: list[tuple[int, float]] = []
         for i, delta_aus in enumerate(delta_aus_list):
-            # Skip neutral frame itself
-            if i == neutral_idx:
+            if i == neutral_idx or delta_aus is None:
                 continue
-
-            # Skip frames without delta AUs (None)
-            if delta_aus is None:
-                continue
-
-            # Check if valid peak candidate
             if not self._is_valid_peak(keypoints_list[i], head_poses[i]):
                 continue
-
-            # Compute TFM
             tfm = compute_tfm(delta_aus)
-
-            # Filter by minimum TFM threshold
+            valid_all.append((i, tfm))
             if tfm >= self.min_tfm:
-                tfm_scores.append((i, tfm))
+                strong.append((i, tfm))
+
+        tfm_scores = strong if len(strong) >= num_peaks else valid_all
 
         # Step 2: Sort by TFM (descending)
         tfm_scores.sort(key=lambda x: x[1], reverse=True)
 
-        # Step 3: Non-maximum suppression - enforce temporal separation
-        selected_indices = []
-        for idx, tfm in tfm_scores:
-            # Check separation from already selected frames
-            if self._is_separated(idx, selected_indices):
-                selected_indices.append(idx)
+        # Step 3: Non-maximum suppression z ADAPTACYJNĄ separacją.
+        # Najpierw próbujemy z pełną separacją; jeśli zebraliśmy mniej niż num_peaks,
+        # a są jeszcze kandydaci, stopniowo zmniejszamy separację — żeby uszanować
+        # żądaną liczbę peaków na krótkich filmach (zamiast zwracać 1 kadr).
+        def _nms(separation: int) -> list[int]:
+            sel: list[int] = []
+            for idx, _ in tfm_scores:
+                if all(abs(idx - s) >= separation for s in sel):
+                    sel.append(idx)
+                if len(sel) >= num_peaks:
+                    break
+            return sel
 
-            # Stop when we have enough peaks
-            if len(selected_indices) >= num_peaks:
-                break
+        selected_indices = _nms(self.min_separation)
+        separation = self.min_separation
+        while (
+            len(selected_indices) < num_peaks
+            and len(tfm_scores) > len(selected_indices)
+            and separation > 1
+        ):
+            separation = max(1, separation // 2)
+            selected_indices = _nms(separation)
 
         return selected_indices
 

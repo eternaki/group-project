@@ -63,6 +63,15 @@ DEFAULT_ACTIVATION_THRESHOLD: float = 1.15
 # Próg dla AU aktywowanych przez ZMNIEJSZENIE (ratio < próg)
 DECREASE_ACTIVATION_THRESHOLD: float = 0.85
 
+# Minimalna pewność keypoints, by AU mógł być uznany za aktywny.
+# Chroni przed fałszywymi AU z szumu (np. uszy, które model lokalizuje niepewnie).
+MIN_AU_CONFIDENCE: float = 0.30
+
+# Zakres przycięcia stosunku — zapobiega "wybuchowi" przy małym mianowniku
+# (gdy w klatce neutralnej punkty się prawie pokrywają → ogromne ratio → wszystkie AU).
+RATIO_CLAMP_MIN: float = 0.2
+RATIO_CLAMP_MAX: float = 3.0
+
 
 @dataclass
 class DeltaActionUnit:
@@ -188,10 +197,16 @@ class DeltaActionUnitsExtractor:
             ratio = target_val / neutral_val
         else:
             ratio = 1.0
+        # Przytnij stosunek, by szum/mały mianownik nie "wysadzał" AU do maksimum
+        ratio = float(np.clip(ratio, RATIO_CLAMP_MIN, RATIO_CLAMP_MAX))
         delta = ratio - 1.0
 
-        is_active = _is_au_activated(au_name, ratio, self.activation_threshold)
         confidence = _compute_au_confidence(au_name, target_kp)
+        is_active = _is_au_activated(au_name, ratio, self.activation_threshold)
+        # AU uznajemy za aktywny tylko gdy keypointy są wystarczająco pewne —
+        # inaczej "pokazywalibyśmy" ruchy, których nie ma (np. szum uszu).
+        if confidence < MIN_AU_CONFIDENCE:
+            is_active = False
 
         return DeltaActionUnit(
             name=au_name,

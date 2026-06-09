@@ -68,16 +68,16 @@ export default function EmotionSelector({
           <div className="flex-1 min-w-0">
             <div className="text-sm font-bold text-gray-800">{EMOTION_NAMES[currentEmotion] ?? currentEmotion}</div>
             <div className="text-xs text-gray-500">
-              {confidence > 0 ? `Уверенность: ${(confidence * 100).toFixed(0)}%` : ''}
+              {confidence > 0 ? `Pewność: ${(confidence * 100).toFixed(0)}%` : ''}
               {ruleApplied && ruleApplied !== 'manual' ? ` · ${ruleApplied}` : ''}
             </div>
           </div>
           <button
             onClick={() => setShowDiag((v) => !v)}
             className="text-[10px] text-blue-500 hover:text-blue-700 whitespace-nowrap"
-            title="Показать диагностику AU"
+            title="Pokaż diagnostykę AU"
           >
-            {showDiag ? 'скрыть' : 'почему?'}
+            {showDiag ? 'ukryj' : 'dlaczego?'}
           </button>
         </div>
       )}
@@ -87,25 +87,25 @@ export default function EmotionSelector({
         <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg space-y-2 text-[11px]">
           {/* Aktywne AU */}
           <div>
-            <span className="font-semibold text-gray-700">Активные AU ({activeAUs.length}/21): </span>
+            <span className="font-semibold text-gray-700">Aktywne AU ({activeAUs.length}/21): </span>
             {activeAUs.length > 0
               ? activeAUs.map((name) => (
                   <span key={name} className="inline-block bg-green-100 text-green-800 rounded px-1 mr-1 mb-0.5">
                     {name}
                   </span>
                 ))
-              : <span className="text-gray-400">нет</span>
+              : <span className="text-gray-400">brak</span>
             }
           </div>
 
-          {/* Требования к текущей эмоции */}
+          {/* Wymagania dla aktualnej emocji */}
           {currentEmotion && currentEmotion !== 'neutral' && (
             <div>
               <span className="font-semibold text-gray-700">
-                Нужно для «{EMOTION_NAMES[currentEmotion] ?? currentEmotion}»:{' '}
+                Wymagane dla «{EMOTION_NAMES[currentEmotion] ?? currentEmotion}»:{' '}
               </span>
               {checkRequiredAUs(currentEmotion).length === 0
-                ? <span className="text-gray-400">нет требований (всегда активна)</span>
+                ? <span className="text-gray-400">brak wymagań (zawsze aktywna)</span>
                 : checkRequiredAUs(currentEmotion).map(({ au, active }) => (
                     <span
                       key={au}
@@ -120,11 +120,11 @@ export default function EmotionSelector({
             </div>
           )}
 
-          {/* Если neutral — объясняем */}
+          {/* Jeśli neutral — wyjaśniamy */}
           {currentEmotion === 'neutral' && (
             <div className="text-gray-600">
-              Ни одно правило не совпало — «neutral» это fallback.
-              <br />Проверьте: точность кейпоинтов и корректность нейтрального кадра.
+              Żadna reguła nie pasowała — «neutral» to wartość domyślna (fallback).
+              <br />Sprawdź: dokładność punktów kluczowych i poprawność klatki neutralnej.
             </div>
           )}
         </div>
@@ -157,7 +157,7 @@ export default function EmotionSelector({
       </div>
 
       {saving && (
-        <p className="text-xs text-center text-gray-400">Сохранение…</p>
+        <p className="text-xs text-center text-gray-400">Zapisywanie…</p>
       )}
     </div>
   );

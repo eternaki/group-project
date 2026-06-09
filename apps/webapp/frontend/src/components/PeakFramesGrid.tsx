@@ -16,7 +16,7 @@ export default function PeakFramesGrid() {
   return (
     <div className="mt-8">
       <h2 className="text-2xl font-bold mb-1">
-        Peak Frames ({sessionData.frames.length})
+        Klatki szczytowe ({sessionData.frames.length})
       </h2>
       <p className="text-sm text-gray-500 mb-4">
         Sesja: <code className="bg-gray-100 px-1 rounded">{sessionData.session_id}</code>

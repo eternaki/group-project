@@ -1,9 +1,9 @@
 /**
- * PeakFrameCard — карточка аннотации одного кадра.
+ * PeakFrameCard — karta anotacji pojedynczej klatki.
  *
- * Превью: полный кадр с наложенными кейпоинтами и скелетом (canvas).
- * Вкладки: Кейпоинты (инфо), AU (слайдеры), Эмоция, Порода.
- * Полноэкранный редактор — FullEditorModal.
+ * Podgląd: pełna klatka z nałożonymi punktami kluczowymi i szkieletem (canvas).
+ * Zakładki: Punkty kluczowe (info), AU (suwaki), Emocja, Rasa.
+ * Pełnoekranowy edytor — FullEditorModal.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -29,13 +29,13 @@ interface PeakFrameCardProps {
 type TabId = 'keypoints' | 'au' | 'emotion' | 'breed';
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: 'keypoints', label: 'Кейпоинты' },
+  { id: 'keypoints', label: 'Punkty kluczowe' },
   { id: 'au',        label: 'AU' },
-  { id: 'emotion',   label: 'Эмоция' },
-  { id: 'breed',     label: 'Порода' },
+  { id: 'emotion',   label: 'Emocja' },
+  { id: 'breed',     label: 'Rasa' },
 ];
 
-/** Превью кадра: полный кадр с кейпоинтами и скелетом */
+/** Podgląd klatki: pełna klatka z punktami kluczowymi i szkieletem */
 function KeypointPreview({ imageUrl, keypoints }: { imageUrl: string; keypoints: number[] | null }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -58,7 +58,7 @@ function KeypointPreview({ imageUrl, keypoints }: { imageUrl: string; keypoints:
 
       if (!keypoints) return;
 
-      // Скелет — тонкие белые линии
+      // Szkielet — cienkie białe linie
       ctx.lineWidth = 0.8;
       ctx.strokeStyle = 'rgba(255,255,255,0.45)';
       for (const [a, b] of SKELETON_CONNECTIONS) {
@@ -75,7 +75,7 @@ function KeypointPreview({ imageUrl, keypoints }: { imageUrl: string; keypoints:
         ctx.stroke();
       }
 
-      // Точки
+      // Punkty
       for (let i = 0; i < NUM_KEYPOINTS; i++) {
         const x = keypoints[i * 3] * scale;
         const y = keypoints[i * 3 + 1] * scale;
@@ -109,14 +109,14 @@ export default function PeakFrameCard({ frame }: PeakFrameCardProps) {
   return (
     <>
       <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col">
-        {/* Превью кадра с кейпоинтами и кнопкой раскрытия */}
+        {/* Podgląd klatki z punktami kluczowymi i przyciskiem rozwinięcia */}
         <div
           className="relative bg-gray-900 cursor-pointer group"
           onClick={() => setEditorOpen(true)}
         >
           <KeypointPreview imageUrl={frame.image_url} keypoints={frame.keypoints ?? null} />
 
-          {/* Бейджи */}
+          {/* Plakietki */}
           <div className="absolute top-2 left-2">
             <AnnotationStatusBadge status={frame.annotation_status} />
           </div>
@@ -124,12 +124,12 @@ export default function PeakFrameCard({ frame }: PeakFrameCardProps) {
             #{frame.frame_idx}
           </div>
 
-          {/* Кнопка раскрытия (видна при наведении) */}
+          {/* Przycisk rozwinięcia (widoczny po najechaniu) */}
           <div className="absolute top-2 right-11 opacity-0 group-hover:opacity-100 transition-opacity">
             <span className="bg-blue-600/80 text-white rounded px-1.5 py-0.5 text-xs">↗</span>
           </div>
 
-          {/* Эмоция + TFM */}
+          {/* Emocja + TFM */}
           <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 to-transparent px-3 py-2 flex items-end justify-between">
             <div className="flex items-center gap-1.5">
               {frame.emotion && (
@@ -150,7 +150,7 @@ export default function PeakFrameCard({ frame }: PeakFrameCardProps) {
           </div>
         </div>
 
-        {/* Селектор собаки + счётчик AU */}
+        {/* Selektor psa + licznik AU */}
         <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between gap-2 flex-wrap">
           <DogSelector dogCount={1} selectedDogIdx={selectedDogIdx} onSelect={setSelectedDogIdx} />
           <span className="text-xs text-gray-400">
@@ -159,7 +159,7 @@ export default function PeakFrameCard({ frame }: PeakFrameCardProps) {
           </span>
         </div>
 
-        {/* Вкладки */}
+        {/* Zakładki */}
         <div className="flex border-b border-gray-200 bg-gray-50">
           {TABS.map((tab) => (
             <button
@@ -176,22 +176,22 @@ export default function PeakFrameCard({ frame }: PeakFrameCardProps) {
           ))}
         </div>
 
-        {/* Содержимое вкладки */}
+        {/* Zawartość zakładki */}
         <div className="p-3 flex-1 overflow-y-auto max-h-80">
           {activeTab === 'keypoints' && (
             <div className="space-y-2">
               <div className="text-xs text-gray-500">
-                Видимых точек: <strong className="text-gray-800">{visibleKPs}</strong> / 46
+                Widocznych punktów: <strong className="text-gray-800">{visibleKPs}</strong> / 46
               </div>
               {frame.keypoints ? (
                 <button
                   onClick={() => setEditorOpen(true)}
                   className="w-full py-2 text-sm border border-dashed border-blue-300 text-blue-600 rounded-lg hover:bg-blue-50 transition-colors"
                 >
-                  ↗ Открыть редактор кейпоинтов
+                  ↗ Otwórz edytor punktów kluczowych
                 </button>
               ) : (
-                <p className="text-xs text-gray-400">Кейпоинты отсутствуют</p>
+                <p className="text-xs text-gray-400">Brak punktów kluczowych</p>
               )}
             </div>
           )}
@@ -220,7 +220,7 @@ export default function PeakFrameCard({ frame }: PeakFrameCardProps) {
         </div>
       </div>
 
-      {/* Полноэкранный редактор */}
+      {/* Pełnoekranowy edytor */}
       {editorOpen && (
         <FullEditorModal frame={frame} onClose={() => setEditorOpen(false)} />
       )}

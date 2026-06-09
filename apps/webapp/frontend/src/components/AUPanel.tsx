@@ -34,7 +34,9 @@ interface AURowProps {
 }
 
 function AURow({ code, au, onIntensityChange }: AURowProps) {
-  const intensity = au ? deltaToIntensity(au.delta) : 0;
+  // Pokazujemy intensywność tylko dla AU faktycznie aktywnych (i pewnych) —
+  // nieaktywne pozostają na 0, by panel odzwierciedlał ruchy, które naprawdę zaszły.
+  const intensity = au && au.is_active ? Math.max(1, deltaToIntensity(au.delta)) : 0;
   const isActive = intensity > 0;
 
   return (
@@ -102,14 +104,14 @@ export default function AUPanel({ frameIdx, aus }: AUPanelProps) {
       {/* Nagłówek z licznikiem aktywnych AU */}
       <div className="flex items-center justify-between">
         <span className="text-xs text-gray-500">
-          Активных AU: <strong className="text-amber-700">{activeCount}</strong> / 21
+          Aktywne AU: <strong className="text-amber-700">{activeCount}</strong> / 21
         </span>
         <button
           onClick={handleRecomputeEmotion}
           disabled={saving}
           className="text-xs px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 transition-colors"
         >
-          {saving ? 'Сохранение…' : 'Пересчитать эмоцию →'}
+          {saving ? 'Zapisywanie…' : 'Przelicz emocję →'}
         </button>
       </div>
 

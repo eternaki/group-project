@@ -56,6 +56,7 @@ class PipelineConfig:
     confidence_threshold: float = 0.3
     max_dogs: int = 10
     use_rule_based_emotion: bool = True  # Rule-based emotion (nie wymaga treningu)
+    keypoints_two_pass: bool = True  # Dwuprzebiegowa detekcja keypoints (zoom na mordę)
 
     def __post_init__(self) -> None:
         """Konwertuje ścieżki do Path."""
@@ -321,6 +322,85 @@ class InferencePipeline:
         y1 = int(min(img_h, cy + side / 2))
         return image[y0:y1, x0:x1], x0, y0
 
+    @staticmethod
+    def _keypoints_face_region(
+        keypoints: list,
+        conf_min: float = 0.2,
+    ) -> tuple[float, float, float, float]:
+        """
+        Wyznacza bounding box regionu mordy na podstawie pewnych keypoints.
+
+        Args:
+            keypoints: Lista keypoints (układ wejścia 1. przebiegu)
+            conf_min: Minimalna pewność punktu, by uwzględnić go w regionie
+
+        Returns:
+            (x, y, w, h) regionu mordy w układzie wejścia keypoints
+        """
+        pts = [(kp.x, kp.y) for kp in keypoints if kp.visibility >= conf_min]
+        if len(pts) < 5:
+            pts = [(kp.x, kp.y) for kp in keypoints]
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+
+    def _predict_keypoints_two_pass(
+        self,
+        image: np.ndarray,
+        x: int,
+        y: int,
+        w: int,
+        h: int,
+    ) -> KeypointsPrediction:
+        """
+        Dwuprzebiegowa detekcja keypoints ze współrzędnymi w układzie pełnego obrazu.
+
+        Model DogFLW oczekuje ciasnego cropa mordy. Bbox psa z detektora obejmuje
+        całe ciało, przez co morda zajmuje mały, przesunięty fragment kadru i punkty
+        rozjeżdżają się. Dlatego:
+        1. przebieg zgrubny na kwadratowym cropie bboxa psa,
+        2. wyznaczenie regionu mordy z pewnych keypoints,
+        3. przebieg dokładny na zawężonym kwadratowym cropie mordy.
+
+        Args:
+            image: Pełny obraz
+            x, y, w, h: Bounding box psa
+
+        Returns:
+            KeypointsPrediction we współrzędnych pełnego obrazu
+        """
+        # Przebieg 1: kwadratowy crop całego bboxa psa
+        crop1, ox1, oy1 = self._square_crop(image, x, y, w, h, expand=1.1)
+        pred1 = self.keypoints_model.predict(crop1)
+
+        if not self.config.keypoints_two_pass:
+            for kp in pred1.keypoints:
+                kp.x += ox1
+                kp.y += oy1
+            return pred1
+
+        # Region mordy z pewnych keypoints → układ pełnego obrazu
+        fx, fy, fw, fh = self._keypoints_face_region(pred1.keypoints)
+        fx += ox1
+        fy += oy1
+
+        # Przebieg 2: kwadratowy crop wokół mordy (margines 1.6×)
+        crop2, ox2, oy2 = self._square_crop(
+            image, int(fx), int(fy), int(fw), int(fh), expand=1.6
+        )
+        if crop2.size == 0 or min(crop2.shape[:2]) <= 10:
+            # Fallback: wynik 1. przebiegu
+            for kp in pred1.keypoints:
+                kp.x += ox1
+                kp.y += oy1
+            return pred1
+
+        pred2 = self.keypoints_model.predict(crop2)
+        for kp in pred2.keypoints:
+            kp.x += ox2
+            kp.y += oy2
+        return pred2
+
     def process_frame(
         self,
         image: np.ndarray,
@@ -385,16 +465,13 @@ class InferencePipeline:
                 except Exception as e:
                     print(f"  ! Błąd klasyfikacji rasy: {e}")
 
-            # Detekcja keypoints — na kwadratowym cropie (bez zniekształcenia),
-            # ze współrzędnymi przeliczonymi na układ pełnego obrazu.
+            # Detekcja keypoints — dwuprzebiegowa (zoom na mordę),
+            # ze współrzędnymi w układzie pełnego obrazu.
             if self.keypoints_model is not None:
                 try:
-                    sq_crop, sx, sy = self._square_crop(image, x, y, w, h)
-                    kp_pred = self.keypoints_model.predict(sq_crop)
-                    for kp in kp_pred.keypoints:
-                        kp.x += sx
-                        kp.y += sy
-                    annotation.keypoints = kp_pred
+                    annotation.keypoints = self._predict_keypoints_two_pass(
+                        image, x, y, w, h
+                    )
                 except Exception as e:
                     print(f"  ! Błąd detekcji keypoints: {e}")
 
@@ -522,16 +599,11 @@ class InferencePipeline:
             # Zachowaj bbox do późniejszej klasyfikacji rasy
             bboxes_list.append((x, y, w, h))
 
-            # Wykryj keypoints na kwadratowym cropie (bez zniekształcenia proporcji)
+            # Wykryj keypoints dwuprzebiegowo (zoom na mordę) — współrzędne już
+            # w układzie pełnego obrazu. Format COCO: [x0, y0, v0, x1, y1, v1, ...]
             try:
-                sq_crop, sx, sy = self._square_crop(frame, x, y, w, h)
-                kp_pred = self.keypoints_model.predict(sq_crop)
+                kp_pred = self._predict_keypoints_two_pass(frame, x, y, w, h)
                 keypoints_flat = np.array(kp_pred.to_coco_format(), dtype=np.float32)
-
-                # Transformuj współrzędne z kwadratowego cropa na pełny obraz
-                # Format: [x0, y0, v0, x1, y1, v1, ...]
-                keypoints_flat[0::3] += sx  # Wszystkie x: indeksy 0, 3, 6, ...
-                keypoints_flat[1::3] += sy  # Wszystkie y: indeksy 1, 4, 7, ...
 
                 keypoints_list.append(keypoints_flat)
                 valid_frame_indices.append(i)

@@ -15,66 +15,65 @@ NUM_KEYPOINTS: int = 46
 
 # Nazwy 46 keypoints według schematu DogFLW
 # Grupowanie anatomiczne: oczy, brwi, uszy, nos, usta, pysk, kontur
+# Kolejność ZGODNA z oficjalnym schematem DogFLW (martvelge/DogFLW, arXiv:2405.11501).
+# To jest kolejność kanałów wyjściowych modelu keypoints_dogflw.pt — zweryfikowana
+# empirycznie (uśrednienie pozycji kanałów po 66 frontalnych mordach).
 KEYPOINT_NAMES: list[str] = [
-    # === Oczy (0-7) ===
-    "left_eye_inner",        # 0  - wewnętrzny kąt lewego oka
-    "left_eye_top",          # 1  - górna powieka lewego oka
-    "left_eye_outer",        # 2  - zewnętrzny kąt lewego oka
-    "left_eye_bottom",       # 3  - dolna powieka lewego oka
-    "right_eye_inner",       # 4  - wewnętrzny kąt prawego oka
-    "right_eye_top",         # 5  - górna powieka prawego oka
-    "right_eye_outer",       # 6  - zewnętrzny kąt prawego oka
-    "right_eye_bottom",      # 7  - dolna powieka prawego oka
+    # === Uszy (0-13) ===
+    "ear_left_top_base",     # 0  - górna (medialna) podstawa lewego ucha
+    "ear_right_top_base",    # 1  - górna (medialna) podstawa prawego ucha
+    "ear_left_upper_bend",   # 2  - górne zagięcie lewego ucha
+    "ear_right_upper_bend",  # 3  - górne zagięcie prawego ucha
+    "ear_left_upper_mid",    # 4  - środek górnej krawędzi lewego ucha
+    "ear_right_upper_mid",   # 5  - środek górnej krawędzi prawego ucha
+    "ear_left_tip",          # 6  - czubek lewego ucha
+    "ear_right_tip",         # 7  - czubek prawego ucha
+    "ear_left_lower_mid",    # 8  - środek dolnej krawędzi lewego ucha
+    "ear_right_lower_mid",   # 9  - środek dolnej krawędzi prawego ucha
+    "ear_left_lower_23",     # 10 - dolne 2/3 lewego ucha
+    "ear_right_lower_23",    # 11 - dolne 2/3 prawego ucha
+    "ear_left_bottom_base",  # 12 - dolna (lateralna) podstawa lewego ucha
+    "ear_right_bottom_base", # 13 - dolna (lateralna) podstawa prawego ucha
 
-    # === Brwi (8-13) ===
-    "left_brow_inner",       # 8  - wewnętrzny punkt lewej brwi
-    "left_brow_center",      # 9  - środek lewej brwi
-    "left_brow_outer",       # 10 - zewnętrzny punkt lewej brwi
-    "right_brow_inner",      # 11 - wewnętrzny punkt prawej brwi
-    "right_brow_center",     # 12 - środek prawej brwi
-    "right_brow_outer",      # 13 - zewnętrzny punkt prawej brwi
+    # === Brwi (14-15) ===
+    "brow_left",             # 14 - lewa brew (poduszka wąsów brwi)
+    "brow_right",            # 15 - prawa brew
 
-    # === Uszy (14-21) ===
-    "left_ear_base_front",   # 14 - przednia podstawa lewego ucha
-    "left_ear_base_back",    # 15 - tylna podstawa lewego ucha
-    "left_ear_mid",          # 16 - środek lewego ucha
-    "left_ear_tip",          # 17 - czubek lewego ucha
-    "right_ear_base_front",  # 18 - przednia podstawa prawego ucha
-    "right_ear_base_back",   # 19 - tylna podstawa prawego ucha
-    "right_ear_mid",         # 20 - środek prawego ucha
-    "right_ear_tip",         # 21 - czubek prawego ucha
+    # === Oczy (16-23) ===
+    "eye_left_inner",        # 16 - wewnętrzny kąt lewego oka
+    "eye_right_inner",       # 17 - wewnętrzny kąt prawego oka
+    "eye_left_outer",        # 18 - zewnętrzny kąt lewego oka
+    "eye_right_outer",       # 19 - zewnętrzny kąt prawego oka
+    "eye_left_upper",        # 20 - środek górnej powieki lewego oka
+    "eye_right_upper",       # 21 - środek górnej powieki prawego oka
+    "eye_left_lower",        # 22 - środek dolnej powieki lewego oka
+    "eye_right_lower",       # 23 - środek dolnej powieki prawego oka
 
-    # === Nos (22-25) ===
-    "nose_tip",              # 22 - czubek nosa
-    "nose_left_wing",        # 23 - lewe skrzydło nosa
-    "nose_right_wing",       # 24 - prawe skrzydło nosa
-    "nose_bridge",           # 25 - grzbiet nosa
+    # === Nos / pysk (24-37) ===
+    "nose_pad_mid",          # 24 - środek między stopem a noskiem
+    "nose_upper",            # 25 - górny środek nosa
+    "nose_left_upper_edge",  # 26 - lewa górna krawędź nosa
+    "nose_right_upper_edge", # 27 - prawa górna krawędź nosa
+    "snout_left",            # 28 - lewa strona pyska
+    "snout_right",           # 29 - prawa strona pyska
+    "zygoma_left",           # 30 - lewa kość jarzmowa (policzek)
+    "zygoma_right",          # 31 - prawa kość jarzmowa (policzek)
+    "nostril_mid",           # 32 - między nozdrzami
+    "nostril_left_outer",    # 33 - zewnętrzny kąt lewego nozdrza
+    "nostril_right_outer",   # 34 - zewnętrzny kąt prawego nozdrza
+    "nose_bottom",           # 35 - dolny środek nosa (czubek)
+    "whisker_pad_left",      # 36 - środek lewej poduszki wąsów
+    "whisker_pad_right",     # 37 - środek prawej poduszki wąsów
 
-    # === Usta i wargi (26-33) ===
-    "mouth_left_corner",     # 26 - lewy kącik ust
-    "upper_lip_left",        # 27 - górna warga lewa
-    "upper_lip_center",      # 28 - środek górnej wargi
-    "upper_lip_right",       # 29 - górna warga prawa
-    "mouth_right_corner",    # 30 - prawy kącik ust
-    "lower_lip_right",       # 31 - dolna warga prawa
-    "lower_lip_center",      # 32 - środek dolnej wargi
-    "lower_lip_left",        # 33 - dolna warga lewa
-
-    # === Pysk / muzzle (34-37) ===
-    "muzzle_top",            # 34 - góra pyska
-    "muzzle_left",           # 35 - lewa strona pyska
-    "muzzle_right",          # 36 - prawa strona pyska
-    "chin",                  # 37 - podbródek
-
-    # === Kontur twarzy (38-45) ===
-    "forehead_center",       # 38 - środek czoła
-    "forehead_left",         # 39 - lewe czoło
-    "forehead_right",        # 40 - prawe czoło
-    "left_cheek_upper",      # 41 - górny lewy policzek
-    "left_cheek_lower",      # 42 - dolny lewy policzek
-    "right_cheek_upper",     # 43 - górny prawy policzek
-    "right_cheek_lower",     # 44 - dolny prawy policzek
-    "jaw_center",            # 45 - środek żuchwy
+    # === Pasek / wargi / podbródek / język (38-45) ===
+    "lip_upper_mid",         # 38 - środek górnej wargi (pod nosem)
+    "lip_left_corner",       # 39 - lewy kącik ust
+    "lip_right_corner",      # 40 - prawy kącik ust
+    "lip_lower_mid",         # 41 - środek dolnej wargi
+    "chin",                  # 42 - środek podbródka
+    "lip_left_upper_mid",    # 43 - lewy punkt między podbródkiem a kącikiem
+    "lip_right_upper_mid",   # 44 - prawy punkt między podbródkiem a kącikiem
+    "tongue_tip",            # 45 - czubek języka
 ]
 
 assert len(KEYPOINT_NAMES) == NUM_KEYPOINTS, (
@@ -86,67 +85,73 @@ assert len(KEYPOINT_NAMES) == NUM_KEYPOINTS, (
 # Indeksy kluczowych punktów dla czytelności kodu
 # Używane przez DeltaActionUnitsExtractor
 class KP:
-    """Indeksy keypoints dla łatwego dostępu w obliczeniach AU."""
+    """Indeksy keypoints dla obliczeń AU.
 
-    # Oczy — centrum (dla AU)
-    LEFT_EYE_INNER: int = 0
-    LEFT_EYE_TOP: int = 1
-    LEFT_EYE_OUTER: int = 2
-    LEFT_EYE_BOTTOM: int = 3
-    RIGHT_EYE_INNER: int = 4
-    RIGHT_EYE_TOP: int = 5
-    RIGHT_EYE_OUTER: int = 6
-    RIGHT_EYE_BOTTOM: int = 7
+    UWAGA: wartości odpowiadają KANONICZNEJ kolejności DogFLW (kolejność kanałów
+    modelu). Nazwy atrybutów są zachowane dla zgodności z kodem AU, a wskazują
+    najbliższy anatomicznie punkt DogFLW. Niektóre nazwy (np. brwi inner/center/
+    outer) wskazują ten sam punkt, bo DogFLW ma jeden punkt brwi na stronę.
+    """
 
-    # Brwi
-    LEFT_BROW_INNER: int = 8
-    LEFT_BROW_CENTER: int = 9
-    LEFT_BROW_OUTER: int = 10
-    RIGHT_BROW_INNER: int = 11
-    RIGHT_BROW_CENTER: int = 12
-    RIGHT_BROW_OUTER: int = 13
+    # Oczy (DogFLW 16-23)
+    LEFT_EYE_INNER: int = 16
+    LEFT_EYE_TOP: int = 20
+    LEFT_EYE_OUTER: int = 18
+    LEFT_EYE_BOTTOM: int = 22
+    RIGHT_EYE_INNER: int = 17
+    RIGHT_EYE_TOP: int = 21
+    RIGHT_EYE_OUTER: int = 19
+    RIGHT_EYE_BOTTOM: int = 23
 
-    # Uszy
-    LEFT_EAR_BASE_FRONT: int = 14
-    LEFT_EAR_BASE_BACK: int = 15
-    LEFT_EAR_MID: int = 16
-    LEFT_EAR_TIP: int = 17
-    RIGHT_EAR_BASE_FRONT: int = 18
-    RIGHT_EAR_BASE_BACK: int = 19
-    RIGHT_EAR_MID: int = 20
-    RIGHT_EAR_TIP: int = 21
+    # Brwi (DogFLW 14-15 — jeden punkt na stronę)
+    LEFT_BROW_INNER: int = 14
+    LEFT_BROW_CENTER: int = 14
+    LEFT_BROW_OUTER: int = 14
+    RIGHT_BROW_INNER: int = 15
+    RIGHT_BROW_CENTER: int = 15
+    RIGHT_BROW_OUTER: int = 15
 
-    # Nos
-    NOSE_TIP: int = 22
-    NOSE_LEFT_WING: int = 23
-    NOSE_RIGHT_WING: int = 24
+    # Uszy (DogFLW 0-13)
+    LEFT_EAR_BASE_FRONT: int = 0
+    LEFT_EAR_BASE_BACK: int = 12
+    LEFT_EAR_MID: int = 4
+    LEFT_EAR_TIP: int = 6
+    RIGHT_EAR_BASE_FRONT: int = 1
+    RIGHT_EAR_BASE_BACK: int = 13
+    RIGHT_EAR_MID: int = 5
+    RIGHT_EAR_TIP: int = 7
+
+    # Nos (DogFLW): czubek = nose_bottom(35), skrzydła = nozdrza(33/34), grzbiet = nose_upper(25)
+    NOSE_TIP: int = 35
+    NOSE_LEFT_WING: int = 33
+    NOSE_RIGHT_WING: int = 34
     NOSE_BRIDGE: int = 25
 
-    # Usta
-    MOUTH_LEFT_CORNER: int = 26
-    UPPER_LIP_LEFT: int = 27
-    UPPER_LIP_CENTER: int = 28
-    UPPER_LIP_RIGHT: int = 29
-    MOUTH_RIGHT_CORNER: int = 30
-    LOWER_LIP_RIGHT: int = 31
-    LOWER_LIP_CENTER: int = 32
-    LOWER_LIP_LEFT: int = 33
+    # Usta (DogFLW 38-44)
+    MOUTH_LEFT_CORNER: int = 39
+    UPPER_LIP_LEFT: int = 43
+    UPPER_LIP_CENTER: int = 38
+    UPPER_LIP_RIGHT: int = 44
+    MOUTH_RIGHT_CORNER: int = 40
+    LOWER_LIP_RIGHT: int = 44
+    LOWER_LIP_CENTER: int = 41
+    LOWER_LIP_LEFT: int = 43
 
-    # Pysk
-    MUZZLE_TOP: int = 34
-    MUZZLE_LEFT: int = 35
-    MUZZLE_RIGHT: int = 36
-    CHIN: int = 37
+    # Pysk (DogFLW): górny stop = nose_pad_mid(24), boki = snout(28/29), podbródek = chin(42)
+    MUZZLE_TOP: int = 24
+    MUZZLE_LEFT: int = 28
+    MUZZLE_RIGHT: int = 29
+    CHIN: int = 42
 
-    # Kontur
-    FOREHEAD_CENTER: int = 38
-    FOREHEAD_LEFT: int = 39
-    FOREHEAD_RIGHT: int = 40
-    LEFT_CHEEK_UPPER: int = 41
-    LEFT_CHEEK_LOWER: int = 42
-    RIGHT_CHEEK_UPPER: int = 43
-    RIGHT_CHEEK_LOWER: int = 44
-    JAW_CENTER: int = 45
+    # Kontur (DogFLW): policzki = zygoma(30/31), czoło proxy = nose_pad_mid/brwi
+    FOREHEAD_CENTER: int = 24
+    FOREHEAD_LEFT: int = 14
+    FOREHEAD_RIGHT: int = 15
+    LEFT_CHEEK_UPPER: int = 30
+    LEFT_CHEEK_LOWER: int = 30
+    RIGHT_CHEEK_UPPER: int = 31
+    RIGHT_CHEEK_LOWER: int = 31
+    JAW_CENTER: int = 42
 
 
 # Połączenia szkieletu do wizualizacji
@@ -273,20 +278,17 @@ def get_keypoint_color(index: int) -> tuple[int, int, int]:
     Returns:
         Kolor w formacie BGR (Blue, Green, Red)
     """
-    if 0 <= index <= 7:    # Oczy
-        return (0, 255, 0)
-    elif 8 <= index <= 13:  # Brwi
-        return (128, 0, 255)
-    elif 14 <= index <= 21: # Uszy
-        return (255, 165, 0)
-    elif 22 <= index <= 25: # Nos
-        return (0, 0, 255)
-    elif 26 <= index <= 33: # Usta
-        return (255, 255, 0)
-    elif 34 <= index <= 37: # Pysk
-        return (255, 0, 255)
-    elif 38 <= index <= 45: # Kontur
-        return (255, 0, 0)
+    # Grupy zgodne z kolejnością DogFLW (zwracane jako RGB; konsumenci konwertują na BGR)
+    if 0 <= index <= 13:    # Uszy
+        return (255, 165, 0)    # pomarańczowy
+    elif 14 <= index <= 15:  # Brwi
+        return (255, 0, 128)    # różowy
+    elif 16 <= index <= 23:  # Oczy
+        return (0, 255, 0)      # zielony
+    elif 24 <= index <= 37:  # Nos / pysk / policzki
+        return (255, 48, 48)    # czerwony
+    elif 38 <= index <= 45:  # Pasek / wargi / podbródek / język
+        return (0, 255, 255)    # cyjan
     return (128, 128, 128)  # Domyślny szary
 
 

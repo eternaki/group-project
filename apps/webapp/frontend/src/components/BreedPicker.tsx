@@ -34,7 +34,7 @@ export default function BreedPicker({ frameIdx, currentBreed, confidence }: Bree
 
   return (
     <div className="space-y-3">
-      {/* Текущая порода */}
+      {/* Aktualna rasa */}
       {currentBreed && (
         <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
           <div className="flex items-center justify-between">
@@ -42,7 +42,7 @@ export default function BreedPicker({ frameIdx, currentBreed, confidence }: Bree
               <p className="text-sm font-semibold text-indigo-800">{currentBreed}</p>
               {confidence > 0 && (
                 <p className="text-xs text-indigo-500">
-                  Уверенность: {(confidence * 100).toFixed(0)}%
+                  Pewność: {(confidence * 100).toFixed(0)}%
                 </p>
               )}
             </div>
@@ -50,13 +50,13 @@ export default function BreedPicker({ frameIdx, currentBreed, confidence }: Bree
               onClick={() => updateFrameBreed(frameIdx, '')}
               className="text-xs text-indigo-400 hover:text-indigo-600"
             >
-              ✕ очистить
+              ✕ wyczyść
             </button>
           </div>
         </div>
       )}
 
-      {/* Поиск породы */}
+      {/* Szukaj rasy */}
       <div className="relative">
         <input
           type="text"
@@ -64,13 +64,13 @@ export default function BreedPicker({ frameIdx, currentBreed, confidence }: Bree
           onChange={(e) => { setQuery(e.target.value); setShowDropdown(true); }}
           onFocus={() => setShowDropdown(true)}
           onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
-          placeholder="Поиск породы собаки…"
+          placeholder="Szukaj rasy psa…"
           disabled={saving}
           className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
                      focus:outline-none focus:ring-2 focus:ring-indigo-300 disabled:opacity-50"
         />
 
-        {/* Выпадающий список */}
+        {/* Lista rozwijana */}
         {showDropdown && filtered.length > 0 && (
           <ul className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
             {filtered.map((breed) => (
@@ -90,13 +90,13 @@ export default function BreedPicker({ frameIdx, currentBreed, confidence }: Bree
 
         {showDropdown && query.length > 0 && filtered.length === 0 && (
           <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow p-3 text-sm text-gray-400">
-            Порода «{query}» не найдена
+            Nie znaleziono rasy «{query}»
           </div>
         )}
       </div>
 
       <p className="text-xs text-gray-400 text-center">
-        {DOG_BREEDS.length} пород в базе
+        {DOG_BREEDS.length} ras w bazie
       </p>
     </div>
   );

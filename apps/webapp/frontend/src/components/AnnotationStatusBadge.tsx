@@ -14,9 +14,9 @@ interface AnnotationStatusBadgeProps {
 }
 
 const STATUS_CONFIG: Record<AnnotationStatus, { label: string; className: string }> = {
-  auto:     { label: 'AI auto',     className: 'bg-blue-100 text-blue-700 border border-blue-300' },
-  reviewed: { label: 'Reviewed',    className: 'bg-yellow-100 text-yellow-700 border border-yellow-300' },
-  verified: { label: '✓ Verified',  className: 'bg-green-100 text-green-700 border border-green-300' },
+  auto:     { label: 'AI auto',      className: 'bg-blue-100 text-blue-700 border border-blue-300' },
+  reviewed: { label: 'Zmienione',    className: 'bg-yellow-100 text-yellow-700 border border-yellow-300' },
+  verified: { label: '✓ Zweryfikowane',  className: 'bg-green-100 text-green-700 border border-green-300' },
 };
 
 export default function AnnotationStatusBadge({ status }: AnnotationStatusBadgeProps) {

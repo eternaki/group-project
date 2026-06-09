@@ -21,31 +21,31 @@ export default function ExportPanel() {
 
   return (
     <div className="mt-8 bg-white rounded-lg shadow-md p-6">
-      <h2 className="text-2xl font-bold mb-4">Export Dataset</h2>
+      <h2 className="text-2xl font-bold mb-4">Eksport datasetu</h2>
 
       <div className="space-y-4">
         {/* Dataset Info */}
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <span className="font-semibold">Video:</span> {videoData.video_filename}
+            <span className="font-semibold">Wideo:</span> {videoData.video_filename}
           </div>
           <div>
-            <span className="font-semibold">Total Frames:</span> {videoData.total_frames}
+            <span className="font-semibold">Liczba klatek:</span> {videoData.total_frames}
           </div>
           <div>
-            <span className="font-semibold">Neutral Frame:</span> {videoData.neutral_frame_idx}
+            <span className="font-semibold">Klatka neutralna:</span> {videoData.neutral_frame_idx}
           </div>
           <div>
-            <span className="font-semibold">Peak Frames:</span> {videoData.peak_frames.length}
+            <span className="font-semibold">Klatki szczytowe:</span> {videoData.peak_frames.length}
           </div>
         </div>
 
         {/* Neutral Frame Preview */}
         <div className="border-t pt-4">
-          <h3 className="font-semibold text-sm mb-2">Neutral Frame</h3>
+          <h3 className="font-semibold text-sm mb-2">Klatka neutralna</h3>
           <img
             src={videoData.neutral_frame_url}
-            alt="Neutral frame"
+            alt="Klatka neutralna"
             className="w-48 h-32 object-cover rounded border"
           />
         </div>
@@ -58,7 +58,7 @@ export default function ExportPanel() {
               className="w-full bg-green-600 text-white px-6 py-3 rounded-md
                 font-semibold hover:bg-green-700 transition-colors"
             >
-              Export COCO JSON (z keypoints + AU)
+              Eksport COCO JSON (z keypoints + AU)
             </button>
           )}
           <button
@@ -66,7 +66,7 @@ export default function ExportPanel() {
             className="w-full bg-gray-500 text-white px-6 py-3 rounded-md
               font-semibold hover:bg-gray-600 transition-colors text-sm"
           >
-            Export uproszczony (bez keypoints)
+            Eksport uproszczony (bez keypoints)
           </button>
         </div>
       </div>

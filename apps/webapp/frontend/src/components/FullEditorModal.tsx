@@ -1,12 +1,12 @@
 /**
- * FullEditorModal — полноэкранный редактор аннотаций кадра.
+ * FullEditorModal — pełnoekranowy edytor anotacji klatki.
  *
- * Левая часть: canvas с изображением собаки, обрезанным по bbox.
- * Правая часть: вкладки — Кейпоинты, AU, Эмоция, Порода.
+ * Lewa część: canvas z obrazem psa, przycięty do bbox.
+ * Prawa część: zakładki — Punkty kluczowe, AU, Emocja, Rasa.
  *
- * Координатное преобразование:
- *   Кейпоинты хранятся в координатах полного кадра.
- *   На canvas отображается только область bbox → offsetX = -bboxX * scale.
+ * Przekształcenie współrzędnych:
+ *   Punkty kluczowe przechowywane są we współrzędnych pełnej klatki.
+ *   Na canvas wyświetlany jest tylko obszar bbox → offsetX = -bboxX * scale.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -31,10 +31,10 @@ interface FullEditorModalProps {
 type TabId = 'keypoints' | 'au' | 'emotion' | 'breed';
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: 'keypoints', label: 'Кейпоинты' },
+  { id: 'keypoints', label: 'Punkty kluczowe' },
   { id: 'au',        label: 'AU' },
-  { id: 'emotion',   label: 'Эмоция' },
-  { id: 'breed',     label: 'Порода' },
+  { id: 'emotion',   label: 'Emocja' },
+  { id: 'breed',     label: 'Rasa' },
 ];
 
 const POINT_RADIUS = 3;
@@ -69,20 +69,20 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
 
   const bbox = frame.bbox;
 
-  // Esc = закрыть
+  // Esc = zamknij
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  // Блокировка скролла
+  // Blokada przewijania
   useEffect(() => {
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = ''; };
   }, []);
 
-  // Рисование canvas
+  // Rysowanie canvas
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     const img = imageRef.current;
@@ -93,7 +93,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Рисуем обрезанную область bbox
+    // Rysujemy przyciety obszar bbox
     const bboxX = bbox ? bbox[0] : 0;
     const bboxY = bbox ? bbox[1] : 0;
     const bboxW = bbox ? bbox[2] : img.naturalWidth;
@@ -104,7 +104,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
 
     const { x: sx, y: sy, offsetX, offsetY } = scaleRef.current;
 
-    // Скелет
+    // Szkielet
     ctx.lineWidth = 1;
     ctx.strokeStyle = 'rgba(255,255,255,0.35)';
     for (const [a, b] of SKELETON_CONNECTIONS) {
@@ -118,7 +118,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
       }
     }
 
-    // Точки
+    // Punkty
     for (let i = 0; i < localKPs.length; i++) {
       const kp = localKPs[i];
       const cx = kp.x * sx + offsetX;
@@ -138,7 +138,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
       ctx.globalAlpha = 1;
     }
 
-    // Подпись при наведении
+    // Etykieta przy najechaniu
     if (hoveredIdx !== null && localKPs[hoveredIdx]) {
       const kp = localKPs[hoveredIdx];
       const cx = kp.x * sx + offsetX;
@@ -153,7 +153,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
     }
   }, [localKPs, hoveredIdx, bbox]);
 
-  // Загрузка изображения и настройка canvas
+  // Ladowanie obrazu i konfiguracja canvas
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -169,7 +169,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
       const bboxW = bbox ? bbox[2] : img.naturalWidth;
       const bboxH = bbox ? bbox[3] : img.naturalHeight;
 
-      // Левая часть занимает ~65% ширины, высота — почти весь экран
+      // Lewa czesc zajmuje ~65% szerokosci, wysokosc — prawie caly ekran
       const maxW = Math.floor((window.innerWidth - 320) * 0.97);
       const maxH = Math.floor(window.innerHeight * 0.84);
       const scale = Math.min(maxW / bboxW, maxH / bboxH, 4);
@@ -177,7 +177,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
       canvas.width = Math.round(bboxW * scale);
       canvas.height = Math.round(bboxH * scale);
 
-      // offsetX = -bboxX * scale → формулы остаются прежними
+      // offsetX = -bboxX * scale → formuly pozostaja bez zmian
       scaleRef.current = {
         x: scale,
         y: scale,
@@ -267,18 +267,18 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex bg-black/90">
-      {/* Левая часть: canvas */}
+      {/* Lewa czesc: canvas */}
       <div className="flex flex-col flex-1 min-w-0">
-        {/* Шапка */}
+        {/* Naglowek */}
         <div className="flex items-center justify-between px-4 py-2 bg-gray-800 flex-shrink-0">
-          <span className="text-white text-sm font-medium">Кадр #{frame.frame_idx}</span>
-          <span className="text-gray-400 text-xs">ПКМ = скрыть/показать · Esc = закрыть</span>
+          <span className="text-white text-sm font-medium">Klatka #{frame.frame_idx}</span>
+          <span className="text-gray-400 text-xs">PPM = przełącz widoczność · Esc = zamknij</span>
         </div>
 
         {/* Canvas */}
         <div className="flex-1 bg-gray-900 overflow-auto flex items-center justify-center p-3">
           {localKPs.length === 0 ? (
-            <p className="text-gray-500">Нет кейпоинтов для этого кадра</p>
+            <p className="text-gray-500">Brak punktów kluczowych dla tej klatki</p>
           ) : (
             <canvas
               ref={canvasRef}
@@ -292,24 +292,24 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
           )}
         </div>
 
-        {/* Подвал */}
+        {/* Stopka */}
         <div className="flex items-center gap-3 px-4 py-2.5 bg-gray-800 flex-shrink-0">
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-gray-400 flex-1">
             {[
-              { label: 'Глаза', color: '#00ff00' },
-              { label: 'Брови', color: '#ff0080' },
-              { label: 'Уши', color: '#00a5ff' },
-              { label: 'Нос', color: '#ff3030' },
-              { label: 'Губы', color: '#00ffff' },
-              { label: 'Морда', color: '#ff00ff' },
-              { label: 'Контур', color: '#4488ff' },
+              { label: 'Oczy', color: '#00ff00' },
+              { label: 'Brwi', color: '#ff0080' },
+              { label: 'Uszy', color: '#00a5ff' },
+              { label: 'Nos', color: '#ff3030' },
+              { label: 'Usta', color: '#00ffff' },
+              { label: 'Pysk', color: '#ff00ff' },
+              { label: 'Kontur', color: '#4488ff' },
             ].map(({ label, color }) => (
               <span key={label} className="flex items-center gap-1">
                 <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
                 {label}
               </span>
             ))}
-            <span className="text-gray-500">· Видимых: {visibleCount}/{NUM_KEYPOINTS}</span>
+            <span className="text-gray-500">· Widocznych: {visibleCount}/{NUM_KEYPOINTS}</span>
           </div>
           <div className="flex gap-2 flex-shrink-0">
             <button
@@ -317,22 +317,22 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
               disabled={saving || localKPs.length === 0}
               className="px-3 py-1.5 text-sm bg-amber-500 text-white rounded hover:bg-amber-600 disabled:opacity-40 transition-colors"
             >
-              {saving ? '…' : 'Пересчитать AU'}
+              {saving ? '…' : 'Przelicz AU'}
             </button>
             <button
               onClick={handleClose}
               disabled={saving}
               className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 transition-colors"
             >
-              {saving ? 'Сохранение…' : isDirty ? 'Сохранить и закрыть *' : 'Закрыть'}
+              {saving ? 'Zapisuję…' : isDirty ? 'Zapisz i zamknij *' : 'Zamknij'}
             </button>
           </div>
         </div>
       </div>
 
-      {/* Правая панель: вкладки */}
+      {/* Prawy panel: zakladki */}
       <div className="w-80 bg-white flex flex-col flex-shrink-0 border-l border-gray-200">
-        {/* Вкладки + кнопка закрытия */}
+        {/* Zakladki + przycisk zamkniecia */}
         <div className="flex items-stretch border-b border-gray-200 bg-gray-50 flex-shrink-0">
           {TABS.map((tab) => (
             <button
@@ -350,19 +350,19 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
           <button
             onClick={handleClose}
             className="px-3 text-gray-400 hover:text-gray-700 text-lg leading-none border-l border-gray-200"
-            title="Закрыть"
+            title="Zamknij"
           >
             ✕
           </button>
         </div>
 
-        {/* Содержимое вкладки */}
+        {/* Zawartosc zakladki */}
         <div className="flex-1 overflow-y-auto p-3">
           {activeTab === 'keypoints' && (
             <div className="space-y-3 text-sm">
               <p className="text-gray-500 text-xs">
-                Перетаскивайте точки на изображении слева.<br />
-                ПКМ = скрыть/показать точку.
+                Przeciągaj punkty na obrazie po lewej stronie.<br />
+                PPM = przełącz widoczność punktu.
               </p>
               {isDirty && (
                 <button
@@ -370,7 +370,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
                   disabled={saving}
                   className="w-full py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40"
                 >
-                  {saving ? 'Сохранение…' : 'Сохранить кейпоинты *'}
+                  {saving ? 'Zapisuję…' : 'Zapisz punkty kluczowe *'}
                 </button>
               )}
             </div>

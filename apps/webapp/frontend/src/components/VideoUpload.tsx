@@ -91,7 +91,7 @@ export default function VideoUpload() {
 
   return (
     <div className="bg-white rounded-lg shadow-md p-6">
-      <h2 className="text-2xl font-bold mb-4">Upload Video</h2>
+      <h2 className="text-2xl font-bold mb-4">Wgraj wideo</h2>
 
       <div className="space-y-6">
         {/* File input */}
@@ -100,7 +100,7 @@ export default function VideoUpload() {
             htmlFor="video-upload"
             className="block text-sm font-medium text-gray-700 mb-2"
           >
-            Select dog video (max 60s recommended)
+            Wybierz wideo psa (zalecane maks. 60s)
           </label>
           <input
             ref={inputRef}
@@ -120,7 +120,7 @@ export default function VideoUpload() {
         {/* Video Preview */}
         {videoUrl && (
           <div className="border rounded-lg p-4 bg-gray-50">
-            <h3 className="font-semibold text-gray-700 mb-3">Video Preview</h3>
+            <h3 className="font-semibold text-gray-700 mb-3">Podgląd wideo</h3>
             <video
               ref={videoRef}
               src={videoUrl}
@@ -131,7 +131,7 @@ export default function VideoUpload() {
             />
             {videoDuration > 0 && (
               <p className="text-sm text-gray-600 mt-2 text-center">
-                Duration: {videoDuration.toFixed(1)}s | Estimated frames: ~{estimatedFrames}
+                Czas trwania: {videoDuration.toFixed(1)}s | Szac. klatek: ~{estimatedFrames}
               </p>
             )}
           </div>
@@ -140,15 +140,15 @@ export default function VideoUpload() {
         {/* Settings Panel */}
         {video && videoDuration > 0 && (
           <div className="border rounded-lg p-4 bg-gray-50 space-y-5">
-            <h3 className="font-semibold text-gray-700">Processing Settings</h3>
+            <h3 className="font-semibold text-gray-700">Ustawienia przetwarzania</h3>
 
             {/* FPS Slider */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                FPS for processing:{' '}
+                FPS przetwarzania:{' '}
                 <span className="text-primary-600 font-bold">{settings.fps_sample}</span> fps
                 <span className="text-gray-500 text-xs ml-2">
-                  (~{estimatedFrames} frames)
+                  (~{estimatedFrames} klatek)
                 </span>
               </label>
               <input
@@ -160,15 +160,15 @@ export default function VideoUpload() {
                 className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary-600"
               />
               <div className="flex justify-between text-xs text-gray-500 mt-1">
-                <span>1 fps (faster)</span>
-                <span>30 fps (more frames)</span>
+                <span>1 fps (szybciej)</span>
+                <span>30 fps (więcej klatek)</span>
               </div>
             </div>
 
             {/* Number of Peaks Slider */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Number of peak frames:{' '}
+                Liczba klatek szczytowych:{' '}
                 <span className="text-primary-600 font-bold">{settings.num_peaks}</span>
               </label>
               <input
@@ -180,15 +180,15 @@ export default function VideoUpload() {
                 className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary-600"
               />
               <div className="flex justify-between text-xs text-gray-500 mt-1">
-                <span>5 peaks</span>
-                <span>20 peaks</span>
+                <span>5 szczytów</span>
+                <span>20 szczytów</span>
               </div>
             </div>
 
             {/* Neutral Frame Mode Toggle */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Neutral frame selection mode
+                Tryb wyboru klatki neutralnej
               </label>
               <div className="flex gap-2">
                 <button
@@ -209,13 +209,13 @@ export default function VideoUpload() {
                       : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                   }`}
                 >
-                  Manual
+                  Ręczny
                 </button>
               </div>
               <p className="text-xs text-gray-500 mt-1">
                 {settings.neutral_mode === 'auto'
-                  ? 'Pipeline will automatically detect the best neutral (relaxed) frame'
-                  : 'Manually select a frame where the dog has a neutral expression'}
+                  ? 'Pipeline automatycznie wykryje najlepszą klatkę neutralną (zrelaksowaną)'
+                  : 'Ręcznie wybierz klatkę, w której pies ma neutralny wyraz pyska'}
               </p>
             </div>
 
@@ -223,12 +223,12 @@ export default function VideoUpload() {
             {settings.neutral_mode === 'manual' && (
               <div className="border-t pt-4">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Select neutral frame:{' '}
+                  Wybierz klatkę neutralną:{' '}
                   <span className="text-green-600 font-bold">
                     {settings.manual_neutral_idx ?? 0}
                   </span>
                   <span className="text-gray-500 text-xs ml-2">
-                    (time: {((settings.manual_neutral_idx ?? 0) / settings.fps_sample).toFixed(2)}s)
+                    (czas: {((settings.manual_neutral_idx ?? 0) / settings.fps_sample).toFixed(2)}s)
                   </span>
                 </label>
                 <input
@@ -240,7 +240,7 @@ export default function VideoUpload() {
                   className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-green-600"
                 />
                 <div className="mt-3">
-                  <p className="text-sm text-gray-600 mb-2">Frame preview:</p>
+                  <p className="text-sm text-gray-600 mb-2">Podgląd klatki:</p>
                   <canvas
                     ref={canvasRef}
                     className="max-w-md mx-auto border-2 border-green-500 rounded-lg"
@@ -255,10 +255,10 @@ export default function VideoUpload() {
         {video && (
           <div className="text-sm text-gray-600 flex gap-4">
             <p>
-              <span className="font-semibold">File:</span> {video.name}
+              <span className="font-semibold">Plik:</span> {video.name}
             </p>
             <p>
-              <span className="font-semibold">Size:</span>{' '}
+              <span className="font-semibold">Rozmiar:</span>{' '}
               {(video.size / 1024 / 1024).toFixed(2)} MB
             </p>
           </div>
@@ -295,10 +295,10 @@ export default function VideoUpload() {
                     d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                   ></path>
                 </svg>
-                Processing...
+                Przetwarzanie...
               </span>
             ) : (
-              'Process Video'
+              'Przetwórz wideo'
             )}
           </button>
 
