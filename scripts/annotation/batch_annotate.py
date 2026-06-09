@@ -50,6 +50,12 @@ class BatchConfig:
     fps: float = 1.0  # klatki na sekundę do ekstrakcji
     max_frames_per_video: int = 30  # maksymalna liczba klatek z wideo
 
+    # Parametry generowania datasetu (peak frames + emocje/AU)
+    num_peaks: int = 10  # liczba peak frames na wideo do anotacji emocji
+    peak_min_separation: int = 3  # min. separacja peak frames (w klatkach ekstrakcji)
+    min_keypoint_conf: float = 0.3  # min. pewność keypoints dla peak frame
+    max_head_angle: float = 40.0  # maks. kąt głowy (yaw/pitch) dla peak frame
+
     # Parametry przetwarzania
     batch_size: int = 4  # rozmiar batcha dla GPU
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -158,9 +164,11 @@ class BatchAnnotator:
             True jeśli sukces
         """
         try:
-            from packages.pipeline import InferencePipeline
+            from packages.pipeline import InferencePipeline, PipelineConfig
 
-            self.pipeline = InferencePipeline(device=self.config.device)
+            pipeline_config = PipelineConfig(device=self.config.device)
+            self.pipeline = InferencePipeline(pipeline_config)
+            self.pipeline.load()  # Załaduj wagi wszystkich modeli
             logger.info(f"Pipeline zainicjalizowany na urządzeniu: {self.config.device}")
             return True
 
@@ -174,15 +182,16 @@ class BatchAnnotator:
     def _init_coco_dataset(self) -> None:
         """Inicjalizuje lub wczytuje dataset COCO."""
         from packages.data import COCODataset
+        from packages.data.coco import COCOInfo
 
         coco_path = self.config.output_dir / "annotations.json"
 
         if coco_path.exists():
             self.coco_dataset = COCODataset.load(coco_path)
-            logger.info(f"Wczytano istniejący dataset COCO: {len(self.coco_dataset.images)} obrazów")
+            logger.info(f"Wczytano istniejący dataset COCO: {self.coco_dataset.num_images} obrazów")
         else:
             self.coco_dataset = COCODataset(
-                description="Dog FACS Dataset - Automatyczne anotacje",
+                COCOInfo(description="Dog FACS Dataset - Automatyczne anotacje"),
             )
             logger.info("Utworzono nowy dataset COCO")
 
@@ -224,7 +233,6 @@ class BatchAnnotator:
             return
 
         video_fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         if video_fps <= 0:
             video_fps = 30.0
@@ -282,7 +290,12 @@ class BatchAnnotator:
 
     def process_video(self, video_path: Path) -> dict:
         """
-        Przetwarza pojedyncze wideo.
+        Przetwarza pojedyncze wideo przez pełny pipeline datasetu.
+
+        Wykorzystuje process_video_for_dataset(): auto-detekcja neutral frame,
+        obliczenie delta Action Units względem niej, wybór peak frames i
+        klasyfikacja emocji + rasy. Do COCO trafiają tylko peak frames z pełną
+        anotacją (bbox, keypoints, rasa, emocja, AU).
 
         Args:
             video_path: Ścieżka do pliku wideo
@@ -303,51 +316,106 @@ class BatchAnnotator:
 
         logger.info(f"Przetwarzanie: {video_path.name} (emocja: {emotion})")
 
-        # Katalog na klatki
         frames_video_dir = self.config.frames_dir / emotion / video_id
         frames_video_dir.mkdir(parents=True, exist_ok=True)
 
-        for frame_num, frame in self.extract_frames(video_path):
-            frame_id = f"{video_id}_{frame_num:06d}"
+        # Zbierz klatki (ekstrakcja wg fps, limit max_frames_per_video)
+        frame_items = list(self.extract_frames(video_path))
+        if len(frame_items) < 2:
+            logger.warning(f"Za mało klatek ({len(frame_items)}) w {video_path.name}, pomijam")
+            return stats
 
-            # Przetwórz klatkę
-            result = self.process_frame(frame, frame_id)
+        frame_numbers = [fn for fn, _ in frame_items]
+        frames = [f for _, f in frame_items]
 
-            if result is None:
-                stats["errors"] += 1
+        # Pełny pipeline datasetu (neutral frame -> delta AU -> emocje na peak frames)
+        try:
+            num_peaks = min(self.config.num_peaks, len(frames))
+            dataset_result = self.pipeline.process_video_for_dataset(
+                frames,
+                num_peaks=num_peaks,
+                min_separation_frames=self.config.peak_min_separation,
+                min_keypoint_conf=self.config.min_keypoint_conf,
+                max_head_angle=self.config.max_head_angle,
+            )
+        except ValueError as e:
+            # Za mało klatek z keypoints / brak neutral frame
+            logger.warning(f"Pominięto {video_path.name}: {e}")
+            return stats
+
+        # Zapisz peak frames do COCO z pełną anotacją
+        for peak in dataset_result["peak_frames"]:
+            if peak["bbox"] is None:
                 continue
 
-            stats["frames_processed"] += 1
+            frame_idx = peak["frame_idx"]
+            frame_num = frame_numbers[frame_idx]
+            frame_id = f"{video_id}_{frame_num:06d}"
+            frame_img = peak["frame"]
+            h, w = frame_img.shape[:2]
 
             # Zapisz klatkę
             frame_path = frames_video_dir / f"{frame_id}.jpg"
-            cv2.imwrite(str(frame_path), frame)
+            cv2.imwrite(str(frame_path), frame_img)
 
-            # Dodaj do COCO
-            if self.coco_dataset is not None and hasattr(result, "dogs"):
-                h, w = frame.shape[:2]
+            stats["frames_processed"] += 1
 
-                image_id = self.coco_dataset.add_image(
-                    file_name=str(frame_path.relative_to(self.config.frames_dir)),
-                    width=w,
-                    height=h,
-                    video_id=video_id,
-                    frame_number=frame_num,
-                    emotion_label=emotion,
-                )
+            if self.coco_dataset is None:
+                continue
 
-                for dog in result.dogs:
-                    self.coco_dataset.add_annotation_from_dog(image_id, dog)
-                    stats["detections"] += 1
+            image_id = self.coco_dataset.add_image(
+                file_name=str(frame_path.relative_to(self.config.frames_dir)),
+                width=w,
+                height=h,
+                source_video=video_id,
+                frame_number=frame_num,
+                emotion_label=emotion,
+            )
 
-                    # Sprawdź confidence
-                    if hasattr(dog, "confidence") and dog.confidence < self.config.flag_low_confidence:
-                        stats["low_confidence"] += 1
-                        self.progress.low_confidence_frames.append(frame_id)
+            # Keypoints (już w układzie pełnego obrazu, format [x, y, v, ...])
+            kp = peak["keypoints"]
+            keypoints = [float(v) for v in kp] if kp is not None else None
+            num_kp = int(sum(1 for v in (kp[2::3] if kp is not None else []) if v > 0))
+
+            bbox = [int(v) for v in peak["bbox"]]
+            emotion_pred = peak["emotion"]
+            breed_pred = peak["breed"]
+
+            # Confidence (bbox conf nie jest zwracany przez peak selector)
+            confidence = {"emotion": float(emotion_pred.confidence)}
+            breed_id = breed_name = None
+            if breed_pred is not None:
+                breed_id = int(breed_pred.class_id)
+                breed_name = breed_pred.class_name
+                confidence["breed"] = float(breed_pred.confidence)
+
+            au_analysis = {
+                k: float(v) for k, v in emotion_pred.action_units.items()
+            } or None
+
+            self.coco_dataset.add_annotation(
+                image_id=image_id,
+                bbox=bbox,
+                keypoints=keypoints,
+                num_keypoints=num_kp,
+                breed_id=breed_id,
+                breed_name=breed_name,
+                emotion_id=int(emotion_pred.emotion_id),
+                emotion_name=emotion_pred.emotion,
+                confidence=confidence,
+                au_analysis=au_analysis,
+                emotion_rule_applied=emotion_pred.rule_applied,
+                tfm_score=float(peak["tfm_score"]),
+            )
+            stats["detections"] += 1
+
+            # Flaguj niską pewność emocji
+            if emotion_pred.confidence < self.config.flag_low_confidence:
+                stats["low_confidence"] += 1
+                self.progress.low_confidence_frames.append(frame_id)
 
             self.progress.total_frames += 1
 
-            # Okresowe zapisywanie
             if self.progress.total_frames % self.config.save_interval == 0:
                 self._save_intermediate()
 
