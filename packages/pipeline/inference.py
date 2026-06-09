@@ -288,6 +288,39 @@ class InferencePipeline:
         print("PIPELINE ZAŁADOWANY")
         print("=" * 60)
 
+    @staticmethod
+    def _square_crop(
+        image: np.ndarray,
+        x: int,
+        y: int,
+        w: int,
+        h: int,
+        expand: float = 1.1,
+    ) -> tuple[np.ndarray, int, int]:
+        """
+        Wycina kwadratowy region wokół bboxa (z zachowaniem proporcji).
+
+        Model keypoints (DogFLW) skaluje wejście do 256x256. Podanie
+        niekwadratowego cropa powoduje zniekształcenie proporcji twarzy
+        (a przez to błędną geometrię i delta AU). Kwadratowy crop to eliminuje.
+
+        Args:
+            image: Pełny obraz
+            x, y, w, h: Bounding box psa
+            expand: Współczynnik powiększenia boku kwadratu
+
+        Returns:
+            (kwadratowy_crop, x0, y0) — crop oraz offset jego lewego górnego rogu
+        """
+        img_h, img_w = image.shape[:2]
+        cx, cy = x + w / 2, y + h / 2
+        side = max(w, h) * expand
+        x0 = int(max(0, cx - side / 2))
+        y0 = int(max(0, cy - side / 2))
+        x1 = int(min(img_w, cx + side / 2))
+        y1 = int(min(img_h, cy + side / 2))
+        return image[y0:y1, x0:x1], x0, y0
+
     def process_frame(
         self,
         image: np.ndarray,
@@ -352,10 +385,15 @@ class InferencePipeline:
                 except Exception as e:
                     print(f"  ! Błąd klasyfikacji rasy: {e}")
 
-            # Detekcja keypoints
+            # Detekcja keypoints — na kwadratowym cropie (bez zniekształcenia),
+            # ze współrzędnymi przeliczonymi na układ pełnego obrazu.
             if self.keypoints_model is not None:
                 try:
-                    kp_pred = self.keypoints_model.predict(cropped)
+                    sq_crop, sx, sy = self._square_crop(image, x, y, w, h)
+                    kp_pred = self.keypoints_model.predict(sq_crop)
+                    for kp in kp_pred.keypoints:
+                        kp.x += sx
+                        kp.y += sy
                     annotation.keypoints = kp_pred
                 except Exception as e:
                     print(f"  ! Błąd detekcji keypoints: {e}")
@@ -374,6 +412,9 @@ class InferencePipeline:
         num_peaks: int = 10,
         neutral_idx: Optional[int] = None,
         min_separation_frames: int = 30,
+        min_keypoint_conf: float = 0.3,
+        max_head_angle: float = 40.0,
+        progress_callback: Optional[object] = None,
     ) -> dict:
         """
         Przetwarza sekwencję wideo do generowania datasetu.
@@ -390,6 +431,8 @@ class InferencePipeline:
             num_peaks: Liczba peak frames do wybrania
             neutral_idx: Opcjonalny indeks neutral frame (auto-detect jeśli None)
             min_separation_frames: Minimalna separacja czasowa między peaks
+            min_keypoint_conf: Minimalna pewność keypoints dla peak frame
+            max_head_angle: Maksymalny kąt głowy (yaw/pitch) dla peak frame
 
         Returns:
             Słownik z wynikami:
@@ -437,11 +480,18 @@ class InferencePipeline:
         print("DATASET GENERATION PIPELINE")
         print("=" * 60)
 
+        def _cb(pct: int, stage: str) -> None:
+            if progress_callback is not None:
+                progress_callback(pct, stage)
+
+        _cb(3, "Extracting keypoints...")
+
         # Step 1: Wykryj keypoints dla wszystkich klatek
         print(f"\n[1/5] Wykrywanie keypoints dla {len(frames_list)} klatek...")
         keypoints_list = []
         bboxes_list: list[Optional[tuple[int, int, int, int]]] = []
         valid_frame_indices = []
+        _total_frames = max(len(frames_list), 1)
 
         for i, frame in enumerate(frames_list):
             # Wykryj psa
@@ -472,22 +522,25 @@ class InferencePipeline:
             # Zachowaj bbox do późniejszej klasyfikacji rasy
             bboxes_list.append((x, y, w, h))
 
-            # Wykryj keypoints
+            # Wykryj keypoints na kwadratowym cropie (bez zniekształcenia proporcji)
             try:
-                kp_pred = self.keypoints_model.predict(cropped)
+                sq_crop, sx, sy = self._square_crop(frame, x, y, w, h)
+                kp_pred = self.keypoints_model.predict(sq_crop)
                 keypoints_flat = np.array(kp_pred.to_coco_format(), dtype=np.float32)
 
-                # Transformuj współrzędne z cropa na pełny obraz
+                # Transformuj współrzędne z kwadratowego cropa na pełny obraz
                 # Format: [x0, y0, v0, x1, y1, v1, ...]
-                # Dodaj offset bbox do wszystkich x i y
-                keypoints_flat[0::3] += x  # Wszystkie x-y: indeksy 0, 3, 6, ...
-                keypoints_flat[1::3] += y  # Wszystkie y-ki: indeksy 1, 4, 7, ...
+                keypoints_flat[0::3] += sx  # Wszystkie x: indeksy 0, 3, 6, ...
+                keypoints_flat[1::3] += sy  # Wszystkie y: indeksy 1, 4, 7, ...
 
                 keypoints_list.append(keypoints_flat)
                 valid_frame_indices.append(i)
             except Exception as e:
                 print(f"  ! Błąd keypoints dla klatki {i}: {e}")
                 keypoints_list.append(None)
+
+            # Raportuj postęp per-klatka: etap 1 zajmuje 3% → 72%
+            _cb(3 + int((i + 1) / _total_frames * 69), "Detecting keypoints...")
 
         # Filtruj tylko klatki z keypoints
         valid_keypoints = [kp for kp in keypoints_list if kp is not None]
@@ -498,6 +551,8 @@ class InferencePipeline:
             )
 
         print(f"  → Wykryto keypoints w {len(valid_keypoints)}/{len(frames_list)} klatkach")
+
+        _cb(73, "Estimating head pose...")
 
         # Step 2: Estymacja head pose dla wszystkich klatek
         print("\n[2/5] Estymacja head pose...")
@@ -512,6 +567,8 @@ class InferencePipeline:
         valid_head_poses = [hp for hp in head_poses if hp is not None]
         frontal_count = sum(1 for hp in valid_head_poses if hp.is_frontal)
         print(f"  → Frontal poses: {frontal_count}/{len(valid_head_poses)}")
+
+        _cb(80, "Detecting neutral frame...")
 
         # Step 3: Auto-detekcja neutral frame (jeśli nie podano)
         print("\n[3/5] Detekcja neutral frame...")
@@ -534,6 +591,8 @@ class InferencePipeline:
         if neutral_keypoints is None:
             raise ValueError(f"Neutral frame {neutral_idx} nie ma keypoints!")
 
+        _cb(86, "Computing delta AUs...")
+
         # Step 4: Oblicz delta AU dla wszystkich klatek
         print("\n[4/5] Obliczanie delta Action Units...")
         delta_extractor = DeltaActionUnitsExtractor(neutral_keypoints)
@@ -549,13 +608,15 @@ class InferencePipeline:
         valid_delta_aus = [d for d in delta_aus_list if d is not None]
         print(f"  → Obliczono delta AU dla {len(valid_delta_aus)} klatek")
 
+        _cb(92, "Selecting peak frames...")
+
         # Step 5: Wybierz peak frames
         print(f"\n[5/5] Wybór {num_peaks} peak frames (TFM-based)...")
         selector = PeakFrameSelector(
             min_separation_frames=min_separation_frames,
             frontal_only=False,  # Nie wymagamy ścisłego frontal (zbyt restrykcyjne)
-            min_keypoint_conf=0.5,  # Zmniejszony próg
-            max_head_angle=40.0,  # Maksymalny kąt yaw/pitch
+            min_keypoint_conf=min_keypoint_conf,  # Próg pewności keypoints
+            max_head_angle=max_head_angle,  # Maksymalny kąt yaw/pitch
         )
 
         peak_indices = selector.select(
@@ -568,6 +629,8 @@ class InferencePipeline:
         )
 
         print(f"  → Wybrano {len(peak_indices)} peak frames")
+
+        _cb(95, "Classifying emotions & breeds...")
 
         # Step 6: Klasyfikuj emocje i rasę dla peak frames
         print("\n[6/6] Klasyfikacja emocji i rasy dla peak frames...")
@@ -620,6 +683,8 @@ class InferencePipeline:
                     "delta_aus": delta_aus_list[i],
                 }
             )
+
+        _cb(99, "Finalizing...")
 
         print("\n" + "=" * 60)
         print("DATASET GENERATION COMPLETE")
