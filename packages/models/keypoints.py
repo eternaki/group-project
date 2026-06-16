@@ -2,7 +2,7 @@
 Model detekcji keypoints na twarzy psa.
 
 Wykrywa 46 kluczowych punktów na twarzy psa zgodnie ze schematem DogFLW,
-używając architektury SimpleBaseline (ResNet34 + Deconv Head).
+używając heatmap regression na backbone HRNet-W32 (konfigurowalny).
 """
 
 from dataclasses import dataclass
@@ -24,16 +24,33 @@ from packages.data.schemas import (
 )
 from packages.models.base import BaseModel, ModelConfig
 
+# Pary lewo/prawo w KANONICZNEJ kolejności DogFLW (do odbicia poziomego).
+# Używane zarówno w treningu (poprawny flip z przestawieniem par), jak i w
+# inferencji (flip-TTA). Punkty centralne (24,25,32,35,38,41,42,45) mapują się
+# na siebie (domyślnie przez .get(i, i)).
+FLIP_PAIRS: list[tuple[int, int]] = [
+    (0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13),  # uszy
+    (14, 15),                                                     # brwi
+    (16, 17), (18, 19), (20, 21), (22, 23),                       # oczy
+    (26, 27), (28, 29), (30, 31), (33, 34), (36, 37),             # nos/pysk/policzki
+    (39, 40), (43, 44),                                           # wargi
+]
+FLIP_MAPPING: dict[int, int] = {
+    **{a: b for a, b in FLIP_PAIRS},
+    **{b: a for a, b in FLIP_PAIRS},
+}
+
 
 @dataclass
 class KeypointsConfig(ModelConfig):
     """Konfiguracja modelu keypoints."""
 
-    model_name: str = "resnet34"  # ResNet34 zgodny z Kaggle
+    model_name: str = "hrnet_w32"  # HRNet-W32: stride-4 → heatmapy 64×64 bez deconv
     img_size: int = 256
     heatmap_size: int = 64
     confidence_threshold: float = 0.15  # Niższy próg dla lepszej wizualizacji
     use_tta: bool = True  # Test-Time Augmentation (flip + average)
+    use_dark: bool = True  # Subpikselowe dekodowanie heatmap (DARK)
 
 
 @dataclass
@@ -58,47 +75,71 @@ class KeypointsPrediction:
 
 class SimpleBaselineModel(nn.Module):
     """
-    Simple Baseline dla pose estimation.
-    Architektura zgodna z wytrenowanym modelem na Kaggle (DogFLW - 46 keypoints).
+    Model detekcji keypoints (heatmap regression) z konfigurowalnym backbone.
 
-    Używa ResNet34 backbone + Deconv head.
+    Domyślnie HRNet-W32: warstwa stride-4 daje mapy 64×64 bez deconv, co przy
+    wejściu 256² odpowiada rozmiarowi heatmap (najlepsza lokalizacja dla
+    landmarków twarzy). Dla backbone'ów o niskiej rozdzielczości (np. ResNet,
+    stride-32) automatycznie dokładany jest deconv-head do rozmiaru heatmap.
+
+    UWAGA: ta sama klasa musi być użyta w treningu (notebook Kaggle) i w
+    inferencji — inaczej wagi się nie wczytają.
     """
 
-    def __init__(self, num_keypoints: int = NUM_KEYPOINTS, backbone: str = "resnet34"):
+    def __init__(
+        self,
+        num_keypoints: int = NUM_KEYPOINTS,
+        backbone: str = "hrnet_w32",
+        img_size: int = 256,
+        heatmap_size: int = 64,
+        pretrained: bool = False,
+    ) -> None:
         super().__init__()
         import timm
 
-        # Backbone - ResNet34 (512 channels) zgodny z Kaggle
+        # pretrained=True tylko przy treningu (init z ImageNet); w inferencji
+        # False, bo i tak wczytujemy własne wagi z pliku.
         self.backbone = timm.create_model(
-            backbone,
-            pretrained=False,
-            features_only=True,
-            out_indices=[-1],
+            backbone, pretrained=pretrained, features_only=True
         )
+        reductions = self.backbone.feature_info.reduction()
+        channels = self.backbone.feature_info.channels()
 
-        # Określ liczbę kanałów wyjściowych backbone
-        # ResNet34: 512, ResNet50: 2048
-        in_channels = 512 if "34" in backbone or "18" in backbone else 2048
+        # Wybierz warstwę o reduction == img_size/heatmap_size (np. stride-4
+        # dla 256→64). Jeśli brak — bierz najgłębszą i dołóż deconv.
+        target_reduction = img_size // heatmap_size
+        if target_reduction in reductions:
+            self.feat_idx = reductions.index(target_reduction)
+            in_channels = channels[self.feat_idx]
+            self.deconv: nn.Module = nn.Identity()
+            head_in = in_channels
+        else:
+            self.feat_idx = len(reductions) - 1
+            in_channels = channels[self.feat_idx]
+            self.deconv = nn.Sequential(
+                nn.ConvTranspose2d(in_channels, 256, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(256),
+                nn.ReLU(True),
+                nn.ConvTranspose2d(256, 256, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(256),
+                nn.ReLU(True),
+                nn.ConvTranspose2d(256, 256, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(256),
+                nn.ReLU(True),
+            )
+            head_in = 256
 
-        # Deconv head - nazwy zgodne z Kaggle
-        self.deconv = nn.Sequential(
-            nn.ConvTranspose2d(in_channels, 256, 4, 2, 1, bias=False),
+        # Head: conv 3×3 (uściślenie) → conv 1×1 → 46 heatmap
+        self.head = nn.Sequential(
+            nn.Conv2d(head_in, 256, 3, padding=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
-            nn.ConvTranspose2d(256, 256, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(True),
-            nn.ConvTranspose2d(256, 256, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(True),
+            nn.Conv2d(256, num_keypoints, 1),
         )
-
-        # Final conv - 46 keypoints z DogFLW
-        self.head = nn.Conv2d(256, num_keypoints, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass - zwraca heatmapy."""
-        features = self.backbone(x)[-1]
+        """Forward pass - zwraca heatmapy (B, num_keypoints, H, W)."""
+        features = self.backbone(x)[self.feat_idx]
         x = self.deconv(features)
         return self.head(x)
 
@@ -134,15 +175,19 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
 
     def load(self) -> None:
         """Ładuje model z wag."""
-        # Model DogFLW ma 46 keypoints, używa ResNet34
+        # Model DogFLW: 46 keypoints, backbone z konfiguracji (domyślnie HRNet-W32)
         self.model = SimpleBaselineModel(
             num_keypoints=NUM_KEYPOINTS,
             backbone=self.config.model_name,
+            img_size=self.config.img_size,
+            heatmap_size=self.config.heatmap_size,
         )
 
         weights_path = Path(self.config.weights_path)
         if weights_path.exists():
-            state_dict = torch.load(weights_path, map_location=self.device)
+            state_dict = torch.load(
+                weights_path, map_location=self.device, weights_only=True
+            )
             self.model.load_state_dict(state_dict)
             print(f"Wagi załadowane: {weights_path} (backbone: {self.config.model_name})")
         else:
@@ -162,21 +207,8 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
         tensor = self.transform(image)
         return tensor.unsqueeze(0).to(self.device)
 
-    # Mapping dla flip TTA (zamiana lewych i prawych keypoints po odbiciu poziomym)
-    # Format: idx -> flipped_idx (symetryczne pary lewo/prawa)
-    # Pary lewo/prawo w KANONICZNEJ kolejności DogFLW (do odbicia poziomego w TTA).
-    # Punkty centralne (24,25,32,35,38,41,42,45) mapują się na siebie (domyślnie).
-    _FLIP_PAIRS: list[tuple[int, int]] = [
-        (0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13),  # uszy
-        (14, 15),                                                     # brwi
-        (16, 17), (18, 19), (20, 21), (22, 23),                       # oczy
-        (26, 27), (28, 29), (30, 31), (33, 34), (36, 37),             # nos/pysk/policzki
-        (39, 40), (43, 44),                                           # wargi
-    ]
-    FLIP_MAPPING: dict[int, int] = {
-        **{a: b for a, b in _FLIP_PAIRS},
-        **{b: a for a, b in _FLIP_PAIRS},
-    }
+    # Mapping dla flip TTA — wskazuje na stałe modułowe FLIP_PAIRS/FLIP_MAPPING.
+    FLIP_MAPPING: dict[int, int] = FLIP_MAPPING
 
     def predict(self, image: np.ndarray) -> KeypointsPrediction:
         """
@@ -297,29 +329,80 @@ class KeypointsModel(BaseModel[np.ndarray, KeypointsPrediction]):
         target_height: int,
         num_keypoints: int = NUM_KEYPOINTS,
     ) -> list[Keypoint]:
-        """Dekoduje heatmapy do keypoints."""
-        hm_height, hm_width = heatmaps.shape[1], heatmaps.shape[2]
+        """
+        Dekoduje heatmapy do keypoints.
+
+        Gdy ``config.use_dark`` jest włączone, stosuje subpikselowe uściślenie
+        DARK (modulacja Gaussem + rozwinięcie Taylora log-likelihood), co
+        eliminuje kwantyzację argmax na siatce heatmap (krok 4 px przy 64×64).
+        """
+        hm_all = heatmaps.cpu().numpy()
+        hm_height, hm_width = hm_all.shape[1], hm_all.shape[2]
         scale_x = target_width / hm_width
         scale_y = target_height / hm_height
 
         keypoints = []
-
         for k in range(num_keypoints):
-            hm = heatmaps[k].cpu().numpy()
+            hm = hm_all[k]
+            visibility = float(hm.max())
 
-            max_val = hm.max()
-            max_idx = hm.argmax()
-            y_hm = max_idx // hm_width
-            x_hm = max_idx % hm_width
+            if self.config.use_dark:
+                x_hm, y_hm = self._dark_refine(hm)
+            else:
+                max_idx = int(hm.argmax())
+                y_hm = max_idx // hm_width
+                x_hm = max_idx % hm_width
 
-            x = float(x_hm * scale_x)
-            y = float(y_hm * scale_y)
-
-            visibility = float(max_val)
-
-            keypoints.append(Keypoint(x=x, y=y, visibility=visibility))
+            keypoints.append(
+                Keypoint(
+                    x=float(x_hm * scale_x),
+                    y=float(y_hm * scale_y),
+                    visibility=visibility,
+                )
+            )
 
         return keypoints
+
+    @staticmethod
+    def _dark_refine(hm: np.ndarray, blur_sigma: float = 1.0) -> tuple[float, float]:
+        """
+        Subpikselowe uściślenie pozycji piku heatmapy metodą DARK.
+
+        Args:
+            hm: Pojedyncza heatmapa (H, W)
+            blur_sigma: Sigma rozmycia Gaussa stabilizującego pochodne
+
+        Returns:
+            (x, y) — współrzędne piku w układzie heatmapy (subpikselowo)
+        """
+        import cv2
+
+        h, w = hm.shape
+        hm_b = cv2.GaussianBlur(hm, (0, 0), blur_sigma)
+        hm_b = np.clip(hm_b, 1e-10, None)
+        lp = np.log(hm_b)
+
+        idx = int(hm_b.argmax())
+        py, px = idx // w, idx % w
+        x, y = float(px), float(py)
+
+        if 1 <= px < w - 1 and 1 <= py < h - 1:
+            dx = 0.5 * (lp[py, px + 1] - lp[py, px - 1])
+            dy = 0.5 * (lp[py + 1, px] - lp[py - 1, px])
+            dxx = lp[py, px + 1] - 2 * lp[py, px] + lp[py, px - 1]
+            dyy = lp[py + 1, px] - 2 * lp[py, px] + lp[py - 1, px]
+            dxy = 0.25 * (
+                lp[py + 1, px + 1] - lp[py + 1, px - 1]
+                - lp[py - 1, px + 1] + lp[py - 1, px - 1]
+            )
+            det = dxx * dyy - dxy * dxy
+            if abs(det) > 1e-6:
+                ox = -(dyy * dx - dxy * dy) / det
+                oy = -(-dxy * dx + dxx * dy) / det
+                if abs(ox) < 1.0 and abs(oy) < 1.0:
+                    x, y = px + ox, py + oy
+
+        return x, y
 
     def draw_keypoints(
         self,
