@@ -1,332 +1,129 @@
 # CLAUDE.md
 
-Ten plik zawiera wytyczne dla Claude Code (claude.ai/code) oraz innych agentów AI podczas pracy z kodem w tym repozytorium.
+Wytyczne dla Claude Code i innych agentów AI pracujących w tym repozytorium.
 
 ## Przegląd Projektu
 
-**Dog FACS Dataset** - Pipeline do automatycznej anotacji emocji psów z wykorzystaniem AI. Tworzy dataset w formacie COCO z bounding boxes, klasyfikacją ras, punktami kluczowymi twarzy i etykietami emocji z filmów.
+**Dog FACS Dataset** — pipeline do automatycznej anotacji emocji psów (AI). Tworzy dataset w formacie COCO: bounding boxes, klasyfikacja ras, punkty kluczowe twarzy i etykiety emocji z filmów.
 
-**Projekt grupowy** dla Politechniki Gdańskiej (WETI) - 1 semestr.
+**Projekt grupowy** — Politechnika Gdańska (WETI), 1. semestr.
 
 ---
 
-## ZASADY OBOWIĄZKOWE DLA WSZYSTKICH AGENTÓW
+## Zasady obowiązkowe
 
 ### Język
+- **Dokumentacja i komentarze**: po polsku
+- **Nazwy zmiennych/funkcji**: po angielsku (standard)
+- **Commit messages**: po polsku
 
-- **Dokumentacja**: Wszystkie dokumenty MUSZĄ być napisane po polsku
-- **Komentarze w kodzie**: Po polsku
-- **Nazwy zmiennych/funkcji**: Po angielsku (standard programistyczny)
-- **Commit messages**: Po polsku z prefiksem typu zadania
-
-### Czysty Kod (Best Practices)
-
-**Zasady podstawowe:**
-- Przestrzegaj zasad SOLID i DRY (Don't Repeat Yourself)
-- KISS - Keep It Simple, Stupid
-- YAGNI - You Aren't Gonna Need It (nie dodawaj funkcji "na zapas")
-- Każda funkcja robi JEDNĄ rzecz
-- Nazwy zmiennych i funkcji muszą być opisowe i znaczące
-- Maksymalna długość funkcji: 50 linii
-- Maksymalna złożoność cyklomatyczna: 10
-- Dokumentuj publiczne API (docstrings po polsku)
-
-**Python Best Practices:**
-- Używaj type hints ZAWSZE
-- Formatuj kod zgodnie z PEP 8 (ruff)
-- Używaj f-strings zamiast .format() lub %
-- Unikaj mutable default arguments
-- Używaj context managers (with) dla zasobów
-- Preferuj list comprehensions nad pętle gdzie to czytelne
-- Obsługuj wyjątki specyficznie, nie używaj bare except
-
-**Struktura kodu:**
-```python
-# Przykład poprawnej funkcji
-def detect_dogs(image: np.ndarray, confidence_threshold: float = 0.5) -> list[Detection]:
-    """
-    Wykrywa psy na obrazie.
-
-    Args:
-        image: Obraz w formacie numpy array (BGR)
-        confidence_threshold: Próg pewności detekcji
-
-    Returns:
-        Lista wykrytych psów z bounding boxes
-
-    Raises:
-        ValueError: Gdy obraz jest pusty
-    """
-    if image.size == 0:
-        raise ValueError("Obraz nie może być pusty")
-
-    # Implementacja...
-    return detections
-```
-
-**Czego UNIKAĆ:**
-- Kopiowania kodu (extract to function/class)
-- Magic numbers (używaj stałych z opisowymi nazwami)
-- Zbyt długich funkcji
-- Zbyt wielu parametrów funkcji (max 5-6)
-- Zagnieżdżonych if/else powyżej 3 poziomów
-- Globalnych zmiennych
-- Hardcodowanych ścieżek i wartości
+### Styl kodu
+- Type hints zawsze; format `ruff` (PEP 8); f-strings
+- Funkcja robi jedną rzecz (≤50 linii, złożoność ≤10), max 5-6 parametrów
+- Bez mutable default args, bez bare `except`, bez hardcodowanych ścieżek/magic numbers
+- Docstringi publicznego API po polsku
+- Zasady: SOLID, DRY, KISS, YAGNI
 
 ### Git Workflow
 
 ```
-main (produkcja)
-  ↑ merge po zakończeniu semestru
-develop (integracja)
-  ↑ merge po zakończeniu sprintu
-sprint-X (np. sprint-1, sprint-2)
-  ↑ commity podczas pracy
+feature/<nazwa>  →  develop (integracja)  →  main (aktualna baza)
 ```
 
-**Zasady:**
-1. NIGDY nie pushuj bezpośrednio do `main` lub `develop`
-2. Pracuj na gałęzi sprintu: `sprint-1`, `sprint-2`, itd.
-3. Po zakończeniu sprintu → merge do `develop`
-4. Po zakończeniu semestru → merge `develop` do `main`
-5. Przed rozpoczęciem nowego sprintu → pull z `develop`
+1. Nowa praca → gałąź `feature/<nazwa>` od `develop`
+2. Gotowa funkcja → merge do `develop`
+3. Stabilna integracja → merge `develop` do `main`
+4. **Nie commituj bezpośrednio do `main`/`develop`** — używaj gałęzi `feature/*` i merge
+5. `main` jest aktualną bazą odniesienia
 
 ### Commity
+Format: `[PREFIX] Krótki opis po polsku`, gdzie PREFIX to `[SPRINT-X][STORY-Y.Z]`, `[SPRINT-X][TASK]` lub `[TASK]`.
 
-**Format commit message:**
+Stopka co-author:
 ```
-[SPRINT-X][STORY-Y.Z] Krótki opis zmiany
-
-Szczegółowy opis (opcjonalnie)
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ```
 
-**Przykłady:**
-- `[SPRINT-1][STORY-1.1] Konfiguracja repozytorium i struktury projektu`
-- `[SPRINT-2][STORY-2.2] Fine-tuning modelu YOLOv8 do detekcji psów`
-- `[SPRINT-1][TASK] Aktualizacja dokumentacji`
+Commity atomowe (jedna zmiana = jeden commit). Po ukończeniu zadania: testy (`pytest`), linter (`ruff check .`), aktualizacja statusu w `docs/sprints/` i Linear.
 
-**Zasady commitów:**
-1. Commit po każdej ukończonej story/task
-2. Najpierw commity lokalne
-3. Push do remote po zakończeniu logicznego bloku pracy
-4. Atomowe commity - jedna zmiana = jeden commit
-
-### Workflow po ukończeniu zadania (OBOWIĄZKOWE)
-
-Po zakończeniu każdej story/task MUSISZ wykonać następujące kroki:
-
-**1. Aktualizacja dokumentacji w repozytorium:**
-```bash
-# Zaktualizuj status w pliku SPRINT.md
-docs/sprints/X-nazwa/SPRINT.md
-# Zmień status story z "To Do" na "Done"
-
-# Zaktualizuj status w pliku story
-docs/sprints/X-nazwa/stories/X.Y-nazwa.md
-# Dodaj datę ukończenia i notatki
-```
-
-**2. Aktualizacja Linear (przez API lub UI):**
-- Zmień status zadania na **Done**
-- Dodaj komentarz z podsumowaniem zmian (jeśli potrzebne)
-- Sprawdź czy wszystkie subtaski są ukończone
-
-**3. Commit z aktualizacją dokumentacji:**
-```bash
-git add docs/sprints/
-git commit -m "[SPRINT-X][STORY-Y.Z] Aktualizacja statusu - Done
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
-```
-
-**Przykład aktualizacji SPRINT.md:**
-```markdown
-## Stories
-
-| ID | Title | Status |
-|----|-------|--------|
-| [1.1](stories/1.1-repository-setup.md) | Repository Setup | Done |  ← zmień z "To Do"
-| [1.2](stories/1.2-dogfacs-coco-research.md) | DogFACS & COCO Research | To Do |
-```
-
-**Checklist po ukończeniu zadania:**
-- [ ] Kod napisany i przetestowany
-- [ ] Testy przechodzą (`pytest`)
-- [ ] Linter bez błędów (`ruff check .`)
-- [ ] Dokumentacja zaktualizowana (docs/sprints/)
-- [ ] Linear zaktualizowany (status: Done)
-- [ ] Commit wykonany z odpowiednim prefixem
-
-### Linear Integration
-
-**Zespół:** Dogs-ai (DOG)
-**URL:** https://linear.app/team/DOG
-
-**Członkowie zespołu w Linear:**
-| Rola | Imię | Linear ID |
-|------|------|-----------|
-| U1 | Danylo Lohachov | eternaki (owner) |
-| U2 | Anton Shkrebela | TODO - dodać do zespołu |
-| U3 | Danylo Zherzdiev | Mafin |
-| U4 | Mariia Volkova | TODO - dodać do zespołu |
-
-**Labels w Linear:**
-- `sprint-1` ... `sprint-18` - sprint labels
-- `documentation` - zadania dokumentacyjne
-- `model` - zadania związane z AI/ML
-- `pipeline` - zadania pipeline'u
-- `data` - zadania związane z danymi
-- `demo` - aplikacja demo
-- `research` - badania
-
-### Konto GitHub
-
-- **Użytkownik eternaki**: Zawsze używaj `gh auth switch --user eternaki` przed operacjami git
-- Sprawdź aktywne konto: `gh auth status`
-
-### Struktura Gałęzi
-
-```bash
-# Tworzenie nowej gałęzi sprintu
-git checkout develop
-git pull origin develop
-git checkout -b sprint-X
-
-# Merge po zakończeniu sprintu
-git checkout develop
-git merge sprint-X
-git push origin develop
-
-# Finalna wersja na main
-git checkout main
-git merge develop
-git push origin main
-```
+### GitHub / Linear
+- Repo origin: `eternaki/group-project`. Aktywne konto sprawdź: `gh auth status`
+- Linear: zespół **Dogs-ai (DOG)** — https://linear.app/team/DOG. Aktualny status zadań żyje w Linear, nie w tym pliku.
 
 ---
 
 ## Komendy Deweloperskie
 
 ```bash
-# Instalacja zależności
-pip install -e .
+# Instalacja (po zmianach w strukturze pakietów uruchom ponownie — patrz Gotchas)
 pip install -e ".[dev,download,notebooks]"
 
-# Uruchomienie backendu (FastAPI)
-uvicorn apps.webapp.backend.main:app --reload
+uvicorn apps.webapp.backend.main:app --reload   # backend (FastAPI)
+cd apps/webapp/frontend && npm run dev           # frontend (React + Vite)
 
-# Uruchomienie frontendu (React)
-cd apps/webapp/frontend && npm run dev
-
-# Uruchomienie testów
-pytest
-
-# Linter
-ruff check .
-ruff check . --fix
-
-# Sprawdzanie typów
-mypy packages/
+pytest                                           # testy
+ruff check . --fix                               # linter
+mypy packages/                                    # typy
 ```
+
+---
 
 ## Architektura
 
-### Struktura Monorepo
-- `apps/webapp/` - Aplikacja webowa do ręcznej anotacji (FastAPI backend + React frontend)
-  - `apps/webapp/backend/` - FastAPI backend (Python, SessionStore, REST API)
-  - `apps/webapp/frontend/` - React + TypeScript (Vite, Zustand, Tailwind CSS)
-- `packages/models/` - Modele AI (YOLOv8 bbox, EfficientNet-B4 breed, ResNet34 keypoints, klasyfikator emocji)
-- `packages/pipeline/` - Zunifikowany pipeline inference orkiestrujący wszystkie modele
-- `packages/data/` - Narzędzia do odczytu/zapisu formatu COCO
-- `scripts/` - Skrypty do treningu, pobierania, batch annotation
-- `notebooks/` - Statystyki i analiza datasetu
-- `docs/plans/` - Dokumenty projektowe dla każdej fazy implementacji
-- `docs/sprints/` - Definicje sprintów i stories
+### Monorepo
+- `apps/webapp/backend/` — FastAPI (SessionStore, REST API)
+- `apps/webapp/frontend/` — React + TypeScript (Vite, Zustand, Tailwind)
+- `packages/models/` — modele AI (bbox, breed, keypoints, AU, emocje)
+- `packages/pipeline/` — zunifikowany pipeline inference (`inference.py`)
+- `packages/data/` — odczyt/zapis COCO (`schemas.py`: 46 keypoints DogFLW + klasy emocji)
+- `scripts/` — trening, pobieranie, batch annotation (`scripts/annotation/`, `scripts/debug/`)
+- `notebooks/`, `docs/plans/`, `docs/sprints/`
 
 ### Pipeline AI
 ```
-Obraz/Klatka → Detekcja BBox → Crop → Klasyfikacja Rasy
-                                    → Detekcja Keypoints → Klasyfikacja Emocji
-
-Wyjście: COCO JSON ze wszystkimi anotacjami
+Obraz/Klatka → BBox (YOLOv8) → Crop → Rasa
+                                     → Keypoints → AU → Emocje
+→ COCO JSON
 ```
 
-### Kluczowe Modele
+### Modele
 | Model | Architektura | Cel |
 |-------|--------------|-----|
 | BBox | YOLOv8m | Detekcja psów |
 | Rasa | EfficientNet-B4 | Klasyfikacja rasy (120 klas) |
-| Keypoints | ResNet34 | Punkty kluczowe twarzy (46 punktów DogFLW) |
-| AU | DeltaActionUnitsExtractor | Wyodrębnianie 21 AU (DogFACS) |
-| Emocje | Rule-based na AU | Klasyfikacja 9 emocji (DogFACS) |
+| Keypoints | ResNet34 | 46 punktów twarzy (DogFLW) |
+| AU | DeltaActionUnitsExtractor | 21 AU (DogFACS) |
+| Emocje | Rule-based na AU | 9 emocji (DogFACS) |
+
+### Katalogi danych
+`data/raw/`, `data/frames/`, `data/annotations/` — w `.gitignore` (duże pliki lokalne). Tymczasowe podglądy w korzeniu `data/` też ignorowane.
 
 ---
 
-## Deliverables 1. Semestr
+## Gotchas (niełatwe do odgadnięcia)
 
-### DPP (Dokumentacja Procesu Projektowania)
-- Informacja o projekcie (temat, cel, zakres, zespół)
-- Podział zadań i ról
-- Specyfikacja wymagań
-- Harmonogram prac
-
-### Specyfikacja Oprogramowania
-- Charakterystyka funkcjonalna
-- Opis interfejsu
-- Opis oprogramowania (kod, algorytmy, API)
-- Wyniki (metryki, przykłady działania)
-
-### Raport Roczny
-- Wykonawcy
-- Główne zadania
-- Osiągnięte wyniki
-- Format według szablonu WETI
-
-### Prezentacja
-- Demonstracja przed komisją
-- Produkt + proces + dokumentacja
+- **Import shadowing**: zagnieżdżona kopia `Dog-Emotion-Classification/` może przechwytywać import `packages` w skryptach. Po zmianach w strukturze pakietów: `pip install -e .` ponownie.
+- **pyproject**: `pythonpath = [".", "apps/webapp/backend"]` — testy importują backend.
+- **Testy API**: `starlette.testclient.TestClient` niekompatybilny z httpx ≥0.28. Używaj `httpx.AsyncClient(transport=ASGITransport(app=app))` + `@pytest.mark.anyio`.
+- **Środowisko uruchomienia**: `.venv` (Python 3.12), `node` dla yt-dlp, `ffmpeg` w PATH.
+- **Keypoints**: pipeline robi square-crop przed Resize (fix zniekształceń); model wciąż słaby (~0.37).
 
 ---
 
-## Konwencja Dokumentacji
-
-Po implementacji każdej funkcjonalności, utwórz/zaktualizuj dokument w `docs/plans/` według wzorca:
-`YYYY-MM-DD-<nazwa-funkcjonalności>.md`
-
-## Katalogi Danych
-
-`data/` jest w .gitignore. Struktura:
-- `data/raw/` - Pobrane filmy
-- `data/frames/` - Wyekstrahowane klatki
-- `data/annotations/` - Wyjścia COCO JSON
+## Deliverables (1. semestr)
+DPP (proces projektowania), Specyfikacja Oprogramowania (funkcje, interfejs, kod, wyniki), Raport Roczny (szablon WETI), Prezentacja przed komisją. Dokumenty po polsku w `docs/`.
 
 ---
 
 ## Sprinty
 
-Projekt podzielony na 18 sprintów. Logiczna kolejność: narzędzia i modele → dane → weryfikacja → sieć neuronowa AU.
+18 sprintów: narzędzia i modele → dane → weryfikacja → sieć neuronowa AU. Szczegóły i aktualny status w `docs/sprints/` oraz Linear.
 
-| Sprint | Nazwa | Opis | Status |
-|--------|-------|------|--------|
-| 1 | Project Setup | Konfiguracja repo, research | Done |
-| 2 | Dog Detection | Model YOLOv8m — detekcja psów | Done |
-| 3 | Breed Classification | EfficientNet-B4 — klasyfikacja ras | Done |
-| 4 | Keypoint Detection | ResNet34 — 46 punktów DogFLW | Done |
-| 5 | Emotion Classification | Rule-based — 9 emocji DogFACS | Done |
-| 6 | Inference Pipeline | Zunifikowany pipeline inference | Done |
-| 7 | Annotation Webapp | FastAPI + React — aplikacja do ręcznej anotacji | Done |
-| 8 | Dog Detection — Ulepszenie | Architektura, I/O, adaptacja klatek, metryki | To Do |
-| 9 | Breed Classification — Ulepszenie | Architektura, I/O, adaptacja klatek, metryki | To Do |
-| 10 | Keypoint Detection — Ulepszenie | Architektura, I/O, adaptacja klatek, metryki | To Do |
-| 11 | AU Detection — Ulepszenie | DeltaActionUnits, normalizacja, kalibracja | To Do |
-| 12 | Emotion Classification — Ulepszenie | Rule engine, pokrycie AU, dokładność | To Do |
-| 13 | Data Collection | Zbieranie wideo z YouTube (2500 wideo) | To Do |
-| 14 | Batch Annotation | Masowa anotacja 25k klatek przez pipeline | To Do |
-| 15 | Manual Verification | Ręczna weryfikacja próbki przez webapp | To Do |
-| 16 | AU Neural Network | MLP (138 wejść → 21 AU) — trenowanie i integracja | To Do |
-| 17 | Dataset Finalization | Finalizacja datasetu, eksport COCO | To Do |
-| 18 | Statistics & Reporting | Statystyki, raport WETI | To Do |
-
-Szczegóły każdego sprintu w `docs/sprints/`
+| # | Sprint | Status |
+|---|--------|--------|
+| 1-7 | Setup, Detection, Breed, Keypoints, Emotion, Pipeline, Webapp | Done |
+| 8-12 | Ulepszenia modeli (Detection/Breed/Keypoints/AU/Emotion) | W toku |
+| 13-14 | Data Collection (YouTube), Batch Annotation | W toku |
+| 15 | Manual Verification (webapp) | Planowane |
+| 16 | AU Neural Network (MLP 138→21 AU) | Planowane |
+| 17-18 | Dataset Finalization, Statistics & Reporting | Planowane |
