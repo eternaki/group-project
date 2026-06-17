@@ -63,6 +63,10 @@ class BreedConfig(ModelConfig):
     model_name: str = "efficientnet_b4"
     img_size: int = 380
     top_k: int = 5
+    # Temperatura softmax (kalibracja). Model trenowano z MixUp + label smoothing,
+    # przez co jest niedopewny (płaski softmax). T < 1 wyostrza prawdopodobieństwa.
+    # NIE zmienia rankingu ani dokładności — tylko czytelność pewności.
+    temperature: float = 0.45
 
     def __post_init__(self) -> None:
         """Konwertuje ścieżki do Path."""
@@ -285,7 +289,7 @@ class BreedModel(BaseModel[np.ndarray, BreedPrediction]):
         # Inference
         with torch.no_grad():
             logits = self._model(tensor)
-            probs = torch.softmax(logits, dim=1)[0]
+            probs = torch.softmax(logits / self.config.temperature, dim=1)[0]
 
         # Top-K
         top_k_probs, top_k_indices = probs.topk(self.config.top_k)
@@ -398,7 +402,7 @@ class BreedModel(BaseModel[np.ndarray, BreedPrediction]):
         # Inference
         with torch.no_grad():
             logits = self._model(tensors)
-            probs = torch.softmax(logits, dim=1)
+            probs = torch.softmax(logits / self.config.temperature, dim=1)
 
         # Wyniki
         predictions = []
