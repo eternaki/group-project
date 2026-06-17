@@ -106,10 +106,15 @@ class STARLoss(nn.Module):
     (np. uszy), zmniejszając wpływ niejednoznacznej anotacji.
     """
 
-    def __init__(self, eps: float = 1e-3, reg: float = 1.0) -> None:
+    def __init__(
+        self, eps: float = 1e-3, reg: float = 1.0, min_var: float = 1.0
+    ) -> None:
         super().__init__()
         self.eps = eps
         self.reg = reg
+        # dolny próg wariancji (px²) — chroni przed eksplozją p/sqrt(λ) przy
+        # ostrym piku heatmapy; przy sigma~1.5 realna wariancja ~2.25.
+        self.min_var = min_var
 
     def _mean_cov(self, hm: torch.Tensor):
         b, k, h, w = hm.shape
@@ -137,17 +142,29 @@ class STARLoss(nn.Module):
         weight: torch.Tensor | None = None,
     ) -> torch.Tensor:
         mean, cov = self._mean_cov(pred_hm)
-        eye = torch.eye(2, device=pred_hm.device, dtype=pred_hm.dtype)
-        cov = cov + self.eps * eye
-        evals, evecs = torch.linalg.eigh(cov)  # rosnąco; evecs kolumnami
+        # Rozkład własny 2×2 w POSTACI ZAMKNIĘTEJ (bez torch.linalg.eigh —
+        # eigh wywala się na macierzy zdegenerowanej, np. ostry pik → cov≈0).
+        a = cov[..., 0, 0] + self.eps
+        b = cov[..., 0, 1]
+        c = cov[..., 1, 1] + self.eps
+        half = 0.5 * (a + c)
+        disc = torch.sqrt(((a - c) * 0.5) ** 2 + b * b + self.eps)
+        l1 = (half + disc).clamp(min=self.min_var)  # większa wariancja (oś niepewności)
+        l2 = (half - disc).clamp(min=self.min_var)  # mniejsza
+        # wektor własny dla l1: [b, l1-a] (z fallbackiem na [1,0] gdy zdegenerowany)
+        vx = b
+        vy = l1 - a
+        vn = torch.sqrt(vx * vx + vy * vy + self.eps)
+        v1x, v1y = vx / vn, vy / vn  # oś 1 (jednostkowa)
         e = mean - gt_coords_hm  # (B,K,2)
-        # projekcja błędu na osie własne kowariancji
-        proj = torch.einsum("bkji,bkj->bki", evecs, e)
-        evals = evals.clamp(min=self.eps)
-        # anizotropowa kara + regularyzacja wartości (by sieć nie "rozdmuchała" wariancji)
-        per_kp = (proj.abs() / torch.sqrt(evals)).sum(-1) + self.reg * torch.log(
-            evals
-        ).sum(-1)
+        ex, ey = e[..., 0], e[..., 1]
+        p1 = ex * v1x + ey * v1y  # projekcja na oś 1
+        p2 = -ex * v1y + ey * v1x  # projekcja na oś 2 (prostopadła)
+        per_kp = (
+            p1.abs() / torch.sqrt(l1)
+            + p2.abs() / torch.sqrt(l2)
+            + self.reg * (torch.log(l1) + torch.log(l2))
+        )
         if weight is not None:
             per_kp = per_kp * weight.view(1, -1)
         return per_kp.mean()
