@@ -69,7 +69,12 @@ class AdaptiveWingLoss(nn.Module):
         self.epsilon = epsilon
         self.alpha = alpha
 
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         delta = (target - pred).abs()
         # współczynniki ciągłości na granicy theta (zależne od wartości target)
         a = (
@@ -88,7 +93,64 @@ class AdaptiveWingLoss(nn.Module):
             * torch.log(1.0 + (delta / self.epsilon) ** (self.alpha - target)),
             a * delta - c,
         )
+        if weight is not None:
+            # weight: (K,) — waga per-keypoint (np. uszy ważniejsze)
+            loss = loss * weight.view(1, -1, 1, 1)
         return loss.mean()
+
+
+class STARLoss(nn.Module):
+    """
+    STAR loss (Zhou et al., CVPR 2023) — anizotropowa kara na współrzędnych
+    z soft-argmax. Tłumi błąd wzdłuż kierunku największej niepewności heatmapy
+    (np. uszy), zmniejszając wpływ niejednoznacznej anotacji.
+    """
+
+    def __init__(self, eps: float = 1e-3, reg: float = 1.0) -> None:
+        super().__init__()
+        self.eps = eps
+        self.reg = reg
+
+    def _mean_cov(self, hm: torch.Tensor):
+        b, k, h, w = hm.shape
+        p = torch.softmax(hm.reshape(b, k, -1), dim=-1).reshape(b, k, h, w)
+        ys = torch.arange(h, device=hm.device, dtype=hm.dtype)
+        xs = torch.arange(w, device=hm.device, dtype=hm.dtype)
+        yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+        mx = (p * xx).sum((-1, -2))
+        my = (p * yy).sum((-1, -2))
+        dx = xx[None, None] - mx[..., None, None]
+        dy = yy[None, None] - my[..., None, None]
+        cxx = (p * dx * dx).sum((-1, -2))
+        cyy = (p * dy * dy).sum((-1, -2))
+        cxy = (p * dx * dy).sum((-1, -2))
+        mean = torch.stack([mx, my], -1)
+        cov = torch.stack(
+            [torch.stack([cxx, cxy], -1), torch.stack([cxy, cyy], -1)], -2
+        )
+        return mean, cov
+
+    def forward(
+        self,
+        pred_hm: torch.Tensor,
+        gt_coords_hm: torch.Tensor,
+        weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        mean, cov = self._mean_cov(pred_hm)
+        eye = torch.eye(2, device=pred_hm.device, dtype=pred_hm.dtype)
+        cov = cov + self.eps * eye
+        evals, evecs = torch.linalg.eigh(cov)  # rosnąco; evecs kolumnami
+        e = mean - gt_coords_hm  # (B,K,2)
+        # projekcja błędu na osie własne kowariancji
+        proj = torch.einsum("bkji,bkj->bki", evecs, e)
+        evals = evals.clamp(min=self.eps)
+        # anizotropowa kara + regularyzacja wartości (by sieć nie "rozdmuchała" wariancji)
+        per_kp = (proj.abs() / torch.sqrt(evals)).sum(-1) + self.reg * torch.log(
+            evals
+        ).sum(-1)
+        if weight is not None:
+            per_kp = per_kp * weight.view(1, -1)
+        return per_kp.mean()
 
 
 # --------------------------------------------------------------------------- #
@@ -228,10 +290,14 @@ def _decode_argmax(heatmaps: np.ndarray, image_size: int) -> np.ndarray:
 def compute_metrics(
     pred_xy: np.ndarray, gt_xy: np.ndarray
 ) -> tuple[float, float]:
-    """Zwraca (NME_iod, PCK@0.1) dla jednej próbki. iod = odległość środków oczu."""
-    left_c = gt_xy[_LEFT_EYE].mean(axis=0)
-    right_c = gt_xy[_RIGHT_EYE].mean(axis=0)
-    iod = float(np.linalg.norm(left_c - right_c))
+    """
+    Zwraca (NME_iod, PCK@0.1) dla jednej próbki.
+
+    iod = odległość między ZEWNĘTRZNYMI kącikami oczu (kp 18/19) — zgodnie z
+    definicją w pracy DogFLW (Martvel 2025), więc NME jest bezpośrednio
+    porównywalne z ich wynikami (ELD 6.52, Hourglass 6.87).
+    """
+    iod = float(np.linalg.norm(gt_xy[KP.LEFT_EYE_OUTER] - gt_xy[KP.RIGHT_EYE_OUTER]))
     if iod < 1e-3:
         return float("nan"), float("nan")
     dists = np.linalg.norm(pred_xy - gt_xy, axis=1)
@@ -300,6 +366,14 @@ def main() -> None:
     p.add_argument("--patience", type=int, default=20, help="early stopping po NME")
     p.add_argument("--output", default="models/keypoints_dogflw.pt")
     p.add_argument("--num_workers", type=int, default=2)
+    p.add_argument(
+        "--ear_weight", type=float, default=1.0,
+        help="waga kanałów uszu (0-13) w loss; >1 = nacisk na uszy (dla AU)",
+    )
+    p.add_argument(
+        "--star_weight", type=float, default=0.0,
+        help="waga członu STAR loss (anizotropia na niepewnych punktach)",
+    )
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -326,6 +400,15 @@ def main() -> None:
     print(f"Parametry: {sum(p.numel() for p in model.parameters())/1e6:.1f}M")
 
     criterion = AdaptiveWingLoss()
+    star = STARLoss()
+    # wagi per-keypoint: uszy (0-13) ważniejsze (ważne dla AU)
+    kp_weight = torch.ones(NUM_KEYPOINTS, device=device)
+    kp_weight[0:14] = args.ear_weight
+    hm_scale = args.heatmap_size / args.img_size  # obraz → heatmapa
+    print(
+        f"ear_weight={args.ear_weight} star_weight={args.star_weight} "
+        f"| metryka NME: iod=zewn. kąciki oczu (jak w pracy)"
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
@@ -338,12 +421,16 @@ def main() -> None:
     for epoch in range(args.epochs):
         model.train()
         run_loss = 0.0
-        for images, heatmaps, _ in tqdm(
+        for images, heatmaps, kp_xy in tqdm(
             train_loader, desc=f"Epoch {epoch+1}/{args.epochs}", leave=False
         ):
             images, heatmaps = images.to(device), heatmaps.to(device)
             optimizer.zero_grad()
-            loss = criterion(model(images), heatmaps)
+            pred = model(images)
+            loss = criterion(pred, heatmaps, weight=kp_weight)
+            if args.star_weight > 0:
+                gt_hm = kp_xy.to(device) * hm_scale  # współrz. w układzie heatmapy
+                loss = loss + args.star_weight * star(pred, gt_hm, weight=kp_weight)
             loss.backward()
             optimizer.step()
             run_loss += loss.item()
