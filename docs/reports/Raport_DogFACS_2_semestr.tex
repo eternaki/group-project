@@ -1,0 +1,326 @@
+% Raport semestralny II — Dog FACS Dataset
+% Kompilacja: tectonic Raport_DogFACS_2_semestr.tex
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{fontspec}
+\setmainfont{lmroman10-regular.otf}[
+  BoldFont = lmroman10-bold.otf,
+  ItalicFont = lmroman10-italic.otf,
+  BoldItalicFont = lmroman10-bolditalic.otf,
+]
+\usepackage{polyglossia}
+\setmainlanguage{polish}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\definecolor{sectionblue}{RGB}{0,90,160}
+\definecolor{okgreen}{RGB}{0,140,60}
+
+\titleformat{\section}{\Large\bfseries\color{sectionblue}}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection.}{0.6em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{Dog FACS Dataset}
+\fancyhead[R]{Raport semestralny II}
+\fancyfoot[C]{\thepage\ / \pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+\newcommand{\done}{\textcolor{okgreen}{Zrealizowane}}
+\newcommand{\uzup}[1]{\textbf{[#1]}}
+
+\begin{document}
+
+% ============================ STRONA TYTUŁOWA ============================
+\begin{titlepage}
+\centering
+\vspace*{2.5cm}
+
+{\Large\textbf{Politechnika Gdańska}}\\[0.35em]
+{\large Wydział Elektroniki, Telekomunikacji i Informatyki}\\[0.3em]
+{\large Katedra Systemów Decyzyjnych i Robotyki}
+
+\vspace{2.2cm}
+
+{\Huge\textbf{Raport Semestralny}}\\[0.5em]
+{\Large Semestr II (letni 2025/2026)}
+
+\vspace{2.2cm}
+
+{\LARGE\textbf{Dog FACS Dataset}}\\[0.5em]
+{\large Utworzenie i Adnotacja Zbioru Danych\\do Analizy Emocji Psów}
+
+\vspace{3cm}
+
+\begin{tabular}{r l}
+\textbf{Zespół projektowy:} & Danylo Lohachov (koordynator)\\
+                            & Anton Shkrebela\\
+                            & Danylo Zherzdiev\\
+                            & Mariia Volkova\\[0.8em]
+\textbf{Opiekun projektu:}  & dr hab. inż. Michał Czubenko\\
+\end{tabular}
+
+\vfill
+Gdańsk, czerwiec 2026
+\end{titlepage}
+
+% ============================ SPIS TREŚCI ============================
+\tableofcontents
+\newpage
+
+% ============================ 1. ZAŁOŻENIA ============================
+\section{Założenia projektu}
+
+\subsection{Cel główny}
+Celem projektu jest stworzenie wysokiej jakości, publicznie dostępnego zbioru danych do
+analizy emocji psów w formacie COCO, wspieranego przez dedykowany pipeline AI zdolny
+do automatycznej adnotacji.
+
+\subsection{Założenia na semestr II}
+Zgodnie z planem przedstawionym w raporcie za semestr I, na semestr II zaplanowano:
+\begin{enumerate}[leftmargin=3.2em]
+  \item \textbf{Zbieranie danych} -- pobranie filmów psów z YouTube
+  \item \textbf{Automatyczna adnotacja} -- przetworzenie klatek wideo przez pipeline AI
+  \item \textbf{Weryfikacja manualna} -- ręczna weryfikacja próbki klatek
+  \item \textbf{Klasyfikator emocji oparty na sieci neuronowej} -- zastąpienie rule-based
+        classifiera modelem ML
+  \item \textbf{Rozwój aplikacji do ręcznej adnotacji} -- pełny interfejs do manualnej
+        adnotacji (bounding boxes, keypoints, emocje) z weryfikacją i korektą
+  \item \textbf{Finalizacja datasetu} -- konwersja do formatu COCO, statystyki, dokumentacja
+\end{enumerate}
+
+% ============================ 2. REALIZACJA ============================
+\section{Zrealizowany zakres prac}
+
+\subsection{Podsumowanie realizacji}
+Poniżej przedstawiono szczegółowy status każdego zadania semestru II:
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{p{8.2cm} l}
+\toprule
+\textbf{Zadanie} & \textbf{Status} \\
+\midrule
+Aplikacja webowa do ręcznej adnotacji (FastAPI + React) & \done \\
+Ulepszenie modelu keypoints (detekcja dwuprzebiegowa) & \done \\
+Korekta schematu keypoints (kanoniczna kolejność DogFLW) & \done \\
+Naprawa klasyfikacji ras (mapowanie klas modelu) & \done \\
+Stabilizacja Action Units (odporność na szum) & \done \\
+Skrypty pobierania wideo (YouTube) i anotacji wsadowej & \done \\
+Polonizacja interfejsu aplikacji & \done \\
+Klasyfikator emocji (sieć neuronowa) & zmiana podejścia -- patrz sekcja 3.3 \\
+\bottomrule
+\end{tabular}
+\caption{Status realizacji zadań semestru II}
+\end{table}
+
+\subsection{Produkty końcowe semestru II}
+\begin{itemize}
+  \item \textbf{Aplikacja webowa} -- pełnoprawne narzędzie do anotacji i weryfikacji
+        (backend FastAPI + SessionStore, frontend React + TypeScript):
+  \begin{itemize}
+    \item przetwarzanie wgranego wideo przez pipeline (klatka neutralna, klatki
+          szczytowe, Action Units, emocje),
+    \item edytor 46 punktów kluczowych (przeciąganie, przełączanie widoczności),
+    \item panel 21 Action Units z ręczną korektą intensywności,
+    \item korekta rasy i emocji, eksport do COCO JSON,
+    \item interfejs w całości w języku polskim.
+  \end{itemize}
+  \item \textbf{Ulepszony pipeline AI} -- istotne poprawki jakości anotacji
+        (szczegóły w sekcji 3).
+  \item \textbf{Narzędzia danych} -- skrypty pobierania wideo z YouTube (yt-dlp),
+        anotacji wsadowej oraz skrypty diagnostyczne pipeline'u.
+  \item \textbf{Repozytorium GitHub} -- kod źródłowy z CI/CD.
+  \item \textbf{Dokumentacja i prezentacja} -- dokumentacja sprintów, prezentacja
+        końcowa projektu (PDF/PPTX).
+\end{itemize}
+
+% ============================ 3. ZMIANY ============================
+\section{Zmiany względem pierwotnego planu}
+
+W trakcie semestru II wprowadzono trzy istotne zmiany:
+
+\subsection{Zmiana 1: Korekta schematu punktów kluczowych (DogFLW)}
+\begin{itemize}
+  \item \textbf{Problem:} wykryto, że przyjęty w semestrze I schemat nazw i kolejności
+        46 punktów kluczowych nie odpowiadał rzeczywistej kolejności kanałów wyjściowych
+        modelu -- punkty były semantycznie błędnie przypisane (np. punkty
+        ,,oczu'' lądowały na policzku), a Action Units liczone były na złych punktach.
+  \item \textbf{Rozwiązanie:} schemat przepisano na kanoniczną kolejność
+        \textbf{DogFLW} (Dog Facial Landmarks in the Wild, arXiv:2405.11501),
+        co potwierdzono empirycznie (uśredniony szablon pozycji kanałów na 66 obrazach).
+        Dodatkowo wprowadzono \textbf{dwuprzebiegową detekcję} (zgrubna na całym psie,
+        dokładna na przyciętym pysku).
+  \item \textbf{Wynik:} punkty trafiają na właściwe cechy anatomiczne, a AU liczone są
+        na poprawnych punktach.
+\end{itemize}
+
+\subsection{Zmiana 2: Naprawa mapowania klas rasy}
+\begin{itemize}
+  \item \textbf{Problem:} model klasyfikacji ras zwracał z wysoką pewnością błędne rasy --
+        plik etykiet miał inną kolejność klas niż ta, w której model był trenowany.
+  \item \textbf{Rozwiązanie:} prawdziwe mapowanie indeks $\rightarrow$ rasa odtworzono
+        empirycznie (test modelu na próbkach wielu ras) i przebudowano plik etykiet.
+  \item \textbf{Wynik:} poprawa z 0/6 do \textbf{6/6} poprawnych ras na próbie testowej.
+\end{itemize}
+
+\subsection{Zmiana 3: Klasyfikator emocji -- stabilizacja zamiast sieci neuronowej}
+\begin{itemize}
+  \item \textbf{Plan:} zastąpienie klasyfikatora rule-based siecią neuronową.
+  \item \textbf{Realizacja:} zachowano klasyfikator regułowy DogFACS, koncentrując się
+        na \textbf{stabilizacji obliczeń Action Units}: przycięcie wartości stosunków
+        (odporność na degenerację klatki neutralnej) oraz bramkowanie aktywacji AU
+        pewnością punktów kluczowych (eliminacja fałszywych aktywacji z szumu).
+  \item \textbf{Powód:} po korekcie schematu DogFLW konieczne było najpierw zapewnienie
+        wiarygodnych wartości AU -- trening sieci na błędnie liczonych AU utrwaliłby
+        wady danych. Stabilny, interpretowalny klasyfikator regułowy stanowi solidną
+        bazę do przyszłego treningu sieci na zweryfikowanych danych.
+\end{itemize}
+
+% ============================ 4. WKŁAD ============================
+\section{Wkład poszczególnych członków zespołu}
+
+\subsection{Danylo Lohachov (U1) -- Koordynator projektu}
+\begin{itemize}
+  \item Koordynacja prac zespołu i harmonogramu
+  \item Rozwój frontendu aplikacji webowej (edytor keypoints, panel AU, eksport)
+  \item Polonizacja interfejsu aplikacji
+  \item Dokumentacja projektowa i prezentacja końcowa
+  \item Zarządzanie repozytorium GitHub i Linear
+\end{itemize}
+\textbf{Główne osiągnięcia:}
+\begin{itemize}
+  \item Działająca aplikacja webowa do anotacji (frontend)
+  \item Kompletna dokumentacja i prezentacja końcowa projektu
+\end{itemize}
+
+\subsection{Anton Shkrebela (U2) -- Specjalista AI/ML}
+\begin{itemize}
+  \item Diagnoza i korekta schematu punktów kluczowych (DogFLW)
+  \item Implementacja dwuprzebiegowej detekcji keypoints
+  \item Stabilizacja obliczeń Action Units (clamp, bramkowanie pewnością)
+  \item Ulepszenie selektora klatek szczytowych (adaptacyjna separacja)
+\end{itemize}
+\textbf{Główne osiągnięcia:}
+\begin{itemize}
+  \item Punkty kluczowe trafiające na właściwe cechy anatomiczne pyska
+  \item Wiarygodne wartości AU (eliminacja fałszywych aktywacji)
+\end{itemize}
+
+\subsection{Danylo Zherzdiev (U3) -- Backend Developer}
+\begin{itemize}
+  \item Backend aplikacji webowej (FastAPI, SessionStore, REST API)
+  \item Naprawa mapowania klas modelu ras (0/6 $\rightarrow$ 6/6)
+  \item Integracja ulepszeń w zunifikowanym pipeline
+  \item Eksport COCO z rozszerzeniami DogFACS
+\end{itemize}
+\textbf{Główne osiągnięcia:}
+\begin{itemize}
+  \item Stabilny backend z obsługą sesji anotacyjnych
+  \item Poprawna klasyfikacja ras (6/6 na próbie testowej)
+\end{itemize}
+
+\subsection{Mariia Volkova (U4) -- Data Engineer}
+\begin{itemize}
+  \item Skrypty pobierania wideo z YouTube (yt-dlp) i ich naprawa
+  \item Anotacja wsadowa klatek przez pipeline
+  \item Ręczna weryfikacja anotacji w aplikacji webowej
+  \item Przygotowanie zapytań wyszukiwania dla zbierania danych
+\end{itemize}
+\textbf{Główne osiągnięcia:}
+\begin{itemize}
+  \item Działający tor pozyskiwania danych (wyszukiwanie--pobranie--anotacja)
+\end{itemize}
+
+\subsection{Podsumowanie wkładu}
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{l p{7.2cm} c}
+\toprule
+\textbf{Osoba} & \textbf{Główny obszar odpowiedzialności} & \textbf{Wkład} \\
+\midrule
+Danylo Lohachov  & Koordynacja, frontend, dokumentacja      & 30\% \\
+Anton Shkrebela  & Keypoints, Action Units, DogFACS         & 30\% \\
+Danylo Zherzdiev & Backend, rasy, pipeline, COCO            & 20\% \\
+Mariia Volkova   & Dane, anotacja wsadowa, weryfikacja      & 20\% \\
+\bottomrule
+\end{tabular}
+\caption{Podział wkładu w projekcie (semestr II)}
+\end{table}
+
+% ============================ 5. OCENY ============================
+\section{Proponowane oceny}
+
+Na podstawie zrealizowanego zakresu prac, osiągniętych wyników i zaangażowania
+poszczególnych członków zespołu, proponujemy następujące oceny:
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{l c p{8cm}}
+\toprule
+\textbf{Osoba} & \textbf{Ocena} & \textbf{Uzasadnienie} \\
+\midrule
+Danylo Lohachov  & 5.0 & Skuteczna koordynacja, frontend aplikacji anotacyjnej,
+                         kompletna dokumentacja i prezentacja końcowa \\[0.5em]
+Anton Shkrebela  & 5.0 & Diagnoza i naprawa krytycznego błędu schematu keypoints,
+                         dwuprzebiegowa detekcja, stabilizacja AU \\[0.5em]
+Danylo Zherzdiev & 4.0 & Backend aplikacji, naprawa klasyfikacji ras,
+                         integracja pipeline'u \\[0.5em]
+Mariia Volkova   & 4.0 & Tor pozyskiwania danych, anotacja wsadowa,
+                         weryfikacja manualna \\
+\bottomrule
+\end{tabular}
+\caption{Proponowane oceny za semestr II}
+\end{table}
+
+\subsection{Uzasadnienie ocen}
+\begin{enumerate}[leftmargin=3.2em]
+  \item \textbf{Jakość anotacji} -- wykryto i naprawiono krytyczne błędy
+        (schemat keypoints, mapowanie ras), które bezpośrednio decydują
+        o wartości naukowej zbioru danych
+  \item \textbf{Kompletny produkt} -- działająca aplikacja webowa obejmująca pełen
+        cykl: przetwarzanie wideo, przegląd, korektę i eksport COCO
+  \item \textbf{Rzetelność inżynierska} -- zmiany potwierdzane empirycznie
+        (testy na próbach, porównania przed/po)
+  \item \textbf{Współpraca zespołowa} -- spójny podział ról kontynuowany
+        z semestru I, wspólne rozwiązywanie problemów
+  \item \textbf{Adaptacja do zmian} -- świadoma decyzja o stabilizacji AU przed
+        treningiem sieci neuronowej, chroniąca jakość przyszłego datasetu
+\end{enumerate}
+
+% ============================ 6. PODSUMOWANIE ============================
+\section{Podsumowanie projektu i możliwości dalszego rozwoju}
+
+Projekt zakończył się dostarczeniem działającego systemu \textbf{end-to-end}:
+pipeline AI (detekcja psa, klasyfikacja rasy, 46 punktów kluczowych DogFLW,
+21 Action Units, klasyfikacja emocji) wraz z aplikacją webową do ręcznej anotacji
+i weryfikacji oraz eksportem do formatu COCO.
+
+Możliwe kierunki dalszego rozwoju:
+\begin{enumerate}[leftmargin=3.2em]
+  \item \textbf{Dokończenie zbioru danych} -- kontynuacja zbierania i weryfikacji danych
+  \item \textbf{Sieć neuronowa AU} -- trening MLP (138 wejść $\rightarrow$ 21 AU)
+        na zweryfikowanych danych, w miejsce klasyfikatora regułowego
+  \item \textbf{Fine-tuning modelu keypoints} -- doszkolenie na trudnych przypadkach
+        (profile, rasy o płaskich pyskach)
+  \item \textbf{Publikacja datasetu} -- udostępnienie zbioru wraz ze statystykami
+        i dokumentacją
+\end{enumerate}
+
+\vspace{1.5em}
+\noindent\rule{\textwidth}{0.4pt}
+\begin{center}
+\textbf{Dokument przygotowany przez zespół projektowy Dog FACS Dataset}\\
+Gdańsk, czerwiec 2026
+\end{center}
+
+\end{document}
