@@ -7,6 +7,7 @@ psa jest najbardziej rozluźniony i stabilny (minimalne ruchy).
 Neutralna klatka służy jako punkt odniesienia do obliczania delta AU.
 """
 
+import math
 from typing import Optional
 
 import numpy as np
@@ -20,6 +21,9 @@ VARIANCE_SCALE: float = 1000.0
 
 # Próg widoczności keypointa, by wszedł do medianowej bazy.
 BASELINE_VIS_THRESHOLD: float = 0.3
+
+# Frakcja najstabilniejszych kandydatów branych pod uwagę przy wyborze "typowej" klatki.
+TOP_STABLE_FRACTION: float = 0.34
 
 
 class NeutralFrameDetector:
@@ -116,12 +120,11 @@ class NeutralFrameDetector:
                 "Wideo może mieć za mało wykrytych keypoints."
             )
 
-        scores = [
-            (idx, self._compute_stability_score(keypoints_list, idx, frame_indices))
+        score_map = {
+            idx: self._compute_stability_score(keypoints_list, idx, frame_indices)
             for idx in candidates
-        ]
-        best_idx, _ = max(scores, key=lambda x: x[1])
-        return best_idx
+        }
+        return _select_most_typical(candidates, score_map, keypoints_list)
 
     def detect_manual(self, frame_idx: int) -> int:
         """
@@ -352,6 +355,45 @@ def _critical_keypoints_visible(kp: np.ndarray, threshold: float) -> bool:
 def _count_visible_critical_kps(kp: np.ndarray, threshold: float) -> int:
     """Liczy widoczne krytyczne keypoints."""
     return sum(1 for idx in _CRITICAL_KP_INDICES if kp[idx, 2] >= threshold)
+
+
+def _select_most_typical(
+    candidates: list[int],
+    scores: dict[int, float],
+    keypoints_list: list[Optional[np.ndarray]],
+) -> int:
+    """
+    Wybiera klatkę o konfiguracji najbliższej globalnej medianie kształtu.
+
+    Łagodzi fakt, że "stabilna" ≠ "neutralna": wśród najstabilniejszych kandydatów
+    preferuje tego najbliższego typowej (modalnej) konfiguracji po wszystkich kandydatach.
+    Założenie heurystyczne: typowe = rozluźnione. To proxy, nie twardy fakt.
+
+    Args:
+        candidates: Indeksy kandydatów
+        scores: Mapa indeks → stability score
+        keypoints_list: Lista keypoints (None dozwolone)
+
+    Returns:
+        Indeks wybranej klatki
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+
+    shapes = {
+        idx: _normalize_shape(keypoints_list[idx].reshape(NUM_KEYPOINTS, 3)[:, :2])
+        for idx in candidates
+    }
+    median_shape = np.median(np.array(list(shapes.values())), axis=0)
+
+    ranked = sorted(candidates, key=lambda i: scores[i], reverse=True)
+    top_n = max(1, math.ceil(len(ranked) * TOP_STABLE_FRACTION))
+    shortlist = ranked[:top_n]
+
+    return min(
+        shortlist,
+        key=lambda i: float(np.sum((shapes[i] - median_shape) ** 2)),
+    )
 
 
 # =============================================================================

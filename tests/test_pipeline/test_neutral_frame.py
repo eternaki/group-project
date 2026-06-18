@@ -401,6 +401,26 @@ class TestNeutralFrameDetector:
         assert score_far == 0.0
         assert score_positional > 0.8
 
+    def test_detect_auto_prefers_typical_expression_among_stable(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: gdy kilka klatek równie stabilnych, wybierana jest typowa (modalna) konfiguracja."""
+        base = make_frontal_kp()
+        frames = [np.zeros((480, 640, 3), dtype=np.uint8) for _ in range(9)]
+        # 8 klatek typowych (zamknięty pysk) + 1 nietypowa (szeroko otwarty pysk),
+        # wszystkie pojedynczo stabilne (powtórzone identycznie w oknie nie są — więc
+        # budujemy listę gdzie każda klatka ma stabilne sąsiedztwo identycznych kopii).
+        typical = base
+        atypical = base.reshape(NUM_KEYPOINTS, 3).copy()
+        atypical[KP.LOWER_LIP_CENTER, 1] += 50
+        atypical[KP.CHIN, 1] += 50
+        kps = [typical.copy() for _ in range(8)] + [atypical.flatten()]
+
+        idx = detector.detect_auto(frames, kps)
+
+        # Wybór NIE powinien paść na nietypową klatkę (indeks 8).
+        assert idx != 8
+
 
 # =============================================================================
 # Testy funkcji compute_neutral_baseline
