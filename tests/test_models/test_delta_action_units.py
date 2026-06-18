@@ -372,3 +372,36 @@ class TestActionUnitNames:
             assert code not in ACTION_UNIT_NAMES, (
                 f"{code} nie istnieje w DogFACS i nie powinien być w ACTION_UNIT_NAMES"
             )
+
+
+class TestAUImprovements:
+    """Testy ulepszeń AU (wariant A): AD33≠AD35, AD19 język, EAD104 rotacja."""
+
+    def test_ad33_distinct_from_ad35(self) -> None:
+        """AD33 (wydęte policzki) i AD35 (szczelina warg) reagują na RÓŻNE zmiany."""
+        neutral = make_dog_face_kp()
+        # Poszerz pysk (policzki), wargi bez zmian -> AD33 rośnie, AD35 ~bez zmian
+        target = neutral.reshape(NUM_KEYPOINTS, 3).copy()
+        target[KP.MUZZLE_LEFT][0] -= 25
+        target[KP.MUZZLE_RIGHT][0] += 25
+        aus = DeltaActionUnitsExtractor(neutral).extract(target.flatten())
+        assert aus["AD33"].ratio > 1.15, "AD33 powinno wzrosnąć przy szerszym pysku"
+        assert abs(aus["AD35"].ratio - 1.0) < 0.05, "AD35 nie powinno reagować na pysk"
+
+    def test_ad35_lip_bite_on_closing_lips(self) -> None:
+        """AD35 (Lip Bite) aktywuje się przy zmniejszeniu szczeliny warg."""
+        neutral = make_dog_face_kp()
+        target = neutral.reshape(NUM_KEYPOINTS, 3).copy()
+        # Dolna warga blisko górnej (mała szczelina)
+        target[KP.LOWER_LIP_CENTER][1] = target[KP.UPPER_LIP_CENTER][1] + 2
+        aus = DeltaActionUnitsExtractor(neutral).extract(target.flatten())
+        assert aus["AD35"].is_active, "AD35 powinno się aktywować przy zwartych wargach"
+
+    def test_ad19_uses_tongue_keypoint(self) -> None:
+        """AD19 (Tongue Show) reaguje na widoczny czubek języka poniżej wargi."""
+        neutral = make_dog_face_kp().reshape(NUM_KEYPOINTS, 3).copy()
+        neutral[KP.TONGUE_TIP] = [150, 228, 0.1]  # język schowany, niska widoczność
+        target = neutral.copy()
+        target[KP.TONGUE_TIP] = [150, 260, 0.95]  # język wystawiony, poniżej wargi
+        aus = DeltaActionUnitsExtractor(neutral.flatten()).extract(target.flatten())
+        assert aus["AD19"].ratio > 1.15, "AD19 powinno wzrosnąć przy widocznym języku"

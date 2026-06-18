@@ -136,6 +136,7 @@ class KP:
     LOWER_LIP_RIGHT: int = 44
     LOWER_LIP_CENTER: int = 41
     LOWER_LIP_LEFT: int = 43
+    TONGUE_TIP: int = 45  # czubek języka (dla AD19 Tongue Show)
 
     # Pysk (DogFLW): górny stop = nose_pad_mid(24), boki = snout(28/29), podbródek = chin(42)
     MUZZLE_TOP: int = 24

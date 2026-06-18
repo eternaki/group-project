@@ -295,12 +295,12 @@ class DeltaActionUnitsExtractor:
                 / eye_dist
             ),
 
-            # AD19: Tongue Show — proxy: otwarcie ust + szczelina pionowa
-            "ad19_tongue": _tongue_proxy(coords, eye_dist),
+            # AD19: Tongue Show — widoczność czubka języka + pozycja poniżej wargi
+            "ad19_tongue": _tongue_proxy(coords, vis, eye_dist),
 
-            # AD33: Blow — szczelina mała, wargi zaokrąglone (podobne do AU25)
+            # AD33: Blow — wydęte policzki (szerszy pysk); odróżnia od AD35 (szczelina warg)
             "ad33_blow": (
-                _dist(coords[KP.UPPER_LIP_CENTER], coords[KP.LOWER_LIP_CENTER])
+                _dist(coords[KP.MUZZLE_LEFT], coords[KP.MUZZLE_RIGHT])
                 / eye_dist
             ),
 
@@ -334,7 +334,8 @@ class DeltaActionUnitsExtractor:
             # EAD103: Ears Flattener — czubki uszu blisko głowy (nisko)
             "ead103_ears_flat": _ear_flatten_ratio(coords, eye_dist),
 
-            # EAD104: Ears Rotator — asymetria uszu (kąt obrotu)
+            # EAD104: Ears Rotator — asymetria osi uszu (proxy; rotacja 3D słabo
+            # mierzalna z 2D landmarków — znane ograniczenie)
             "ead104_ears_rotate": _ear_rotation_asymmetry(coords),
 
             # EAD105: Ears Apart — uszy daleko od siebie
@@ -404,8 +405,8 @@ _AU_KEYPOINT_GROUPS: dict[str, list[int]] = {
     "AU25":   [KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER],
     "AU26":   [KP.NOSE_TIP, KP.CHIN],
     "AU27":   [KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER, KP.CHIN],
-    "AD19":   [KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER, KP.NOSE_TIP],
-    "AD33":   [KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER],
+    "AD19":   [KP.TONGUE_TIP, KP.LOWER_LIP_CENTER],
+    "AD33":   [KP.MUZZLE_LEFT, KP.MUZZLE_RIGHT],
     "AD35":   [KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER],
     "AD37":   [KP.LOWER_LIP_CENTER, KP.MOUTH_LEFT_CORNER, KP.MOUTH_RIGHT_CORNER],
     "AD137":  [KP.UPPER_LIP_CENTER, KP.NOSE_TIP],
@@ -452,15 +453,16 @@ def _lip_corner_ratio(coords: np.ndarray, eye_dist: float) -> float:
     return avg_corner_dist / eye_dist if eye_dist > 1e-6 else 0.0
 
 
-def _tongue_proxy(coords: np.ndarray, eye_dist: float) -> float:
+def _tongue_proxy(coords: np.ndarray, vis: np.ndarray, eye_dist: float) -> float:
     """
-    Proxy dla AD19 (Tongue Show).
+    AD19 (Tongue Show) — używa dedykowanego keypointa języka (TONGUE_TIP=45).
 
-    Język widoczny gdy: usta otwarte + dolna warga nisko + szczelina pionowa duża.
+    Język wystawiony gdy: model pewnie lokalizuje czubek języka (wysoka widoczność)
+    ORAZ czubek jest poniżej dolnej wargi (większe y). Łączymy oba sygnały.
     """
-    vertical_gap = _dist(coords[KP.UPPER_LIP_CENTER], coords[KP.LOWER_LIP_CENTER])
-    jaw_drop = _dist(coords[KP.NOSE_TIP], coords[KP.CHIN])
-    return (vertical_gap / eye_dist) * min(1.0, jaw_drop / eye_dist)
+    tongue_vis = float(vis[KP.TONGUE_TIP])
+    below = max(0.0, coords[KP.TONGUE_TIP][1] - coords[KP.LOWER_LIP_CENTER][1]) / eye_dist
+    return tongue_vis * (1.0 + below)
 
 
 def _ear_forward_ratio(coords: np.ndarray, eye_dist: float) -> float:
@@ -488,9 +490,11 @@ def _ear_flatten_ratio(coords: np.ndarray, eye_dist: float) -> float:
 
 def _ear_rotation_asymmetry(coords: np.ndarray) -> float:
     """
-    Oblicza asymetrię rotacji uszu dla EAD104.
+    Asymetria rotacji uszu dla EAD104 (Ears Rotator).
 
-    Zwraca wartość bezwzględną różnicy kątów uszu (0 = symetryczne).
+    Zwraca wartość bezwzględną różnicy kątów osi uszu (0 = symetryczne).
+    UWAGA: rotacja pinny to ruch 3D, słabo mierzalny z 2D landmarków — to proxy,
+    który łapie głównie asymetryczną rotację (jedno ucho obraca się bardziej).
     """
     left_angle = math.atan2(
         coords[KP.LEFT_EAR_TIP][1] - coords[KP.LEFT_EAR_BASE_FRONT][1],
