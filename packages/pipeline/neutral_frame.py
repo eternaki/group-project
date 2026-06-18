@@ -14,6 +14,10 @@ import numpy as np
 from packages.data.schemas import KP, NUM_KEYPOINTS
 from packages.models.head_pose import HeadPose, estimate_head_pose
 
+# Skala wariancji w jednostkach znormalizowanych (po podziale przez eye-distance).
+# Dobrana tak, by ~0.05 (5% odległości oczu) jitteru dawało wyraźnie niższy score.
+VARIANCE_SCALE: float = 1000.0
+
 
 class NeutralFrameDetector:
     """
@@ -249,7 +253,7 @@ class NeutralFrameDetector:
         end = min(len(keypoints_list), center_idx + self.window_size // 2 + 1)
 
         window_coords = [
-            kp.reshape(NUM_KEYPOINTS, 3)[:, :2]
+            _normalize_shape(kp.reshape(NUM_KEYPOINTS, 3)[:, :2])
             for kp in keypoints_list[start:end]
             if kp is not None
         ]
@@ -259,12 +263,38 @@ class NeutralFrameDetector:
 
         coords_array = np.array(window_coords)   # (window, 46, 2)
         mean_variance = float(np.mean(np.var(coords_array, axis=0)))
-        return 1.0 / (1.0 + mean_variance * 10)
+        return 1.0 / (1.0 + mean_variance * VARIANCE_SCALE)
 
 
 # =============================================================================
 # Funkcje pomocnicze (prywatne)
 # =============================================================================
+
+
+def _dist(p1: np.ndarray, p2: np.ndarray) -> float:
+    """Odległość euklidesowa między dwoma punktami."""
+    return float(np.sqrt(np.sum((p1 - p2) ** 2)))
+
+
+def _normalize_shape(coords: np.ndarray) -> np.ndarray:
+    """
+    Normalizuje kształt twarzy: centruje na punkcie środkowym oczu i skaluje
+    przez odległość między oczami. Usuwa translację i skalę (blisko/daleko),
+    zostawiając samą zmianę kształtu wyrazu.
+
+    Args:
+        coords: Współrzędne keypoints (46, 2)
+
+    Returns:
+        Znormalizowane współrzędne (46, 2)
+    """
+    left_center = (coords[KP.LEFT_EYE_INNER] + coords[KP.LEFT_EYE_OUTER]) / 2
+    right_center = (coords[KP.RIGHT_EYE_INNER] + coords[KP.RIGHT_EYE_OUTER]) / 2
+    mid_eye = (left_center + right_center) / 2
+    eye_dist = _dist(left_center, right_center)
+    scale = eye_dist if eye_dist > 1e-6 else 1.0
+    return (coords - mid_eye) / scale
+
 
 # Indeksy krytycznych keypoints (oczy, nos, uszy)
 _CRITICAL_KP_INDICES: list[int] = [

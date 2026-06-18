@@ -342,3 +342,29 @@ class TestNeutralFrameDetector:
         """Test: detect_manual zwraca podany indeks bez zmian."""
         assert detector.detect_manual(5) == 5
         assert detector.detect_manual(0) == 0
+
+    def test_stability_score_is_scale_and_translation_invariant(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: stability score niezmienniczy względem skali i translacji twarzy."""
+        rng = np.random.default_rng(7)
+        base = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        seq = [
+            (base + np.column_stack([
+                rng.random((NUM_KEYPOINTS, 2)) * 0.8,
+                np.zeros((NUM_KEYPOINTS, 1)),
+            ]))
+            for _ in range(12)
+        ]
+        seq_raw = [f.flatten() for f in seq]
+        # Ta sama sekwencja przeskalowana x2.5 i przesunięta o +400px (x,y)
+        seq_scaled = []
+        for f in seq:
+            g = f.copy()
+            g[:, :2] = g[:, :2] * 2.5 + 400.0
+            seq_scaled.append(g.flatten())
+
+        score_raw = detector._compute_stability_score(seq_raw, center_idx=6)
+        score_scaled = detector._compute_stability_score(seq_scaled, center_idx=6)
+
+        assert abs(score_raw - score_scaled) < 0.02
