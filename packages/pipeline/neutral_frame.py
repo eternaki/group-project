@@ -312,13 +312,18 @@ def _normalize_shape(coords: np.ndarray) -> np.ndarray:
     return (coords - mid_eye) / scale
 
 
-# Indeksy krytycznych keypoints (oczy, nos, uszy)
+# Indeksy krytycznych keypoints (oczy, nos, uszy ORAZ usta/wargi — kluczowe dla
+# baseline AU dolnej twarzy: bez nich mouth-AU liczone od śmiecia).
 _CRITICAL_KP_INDICES: list[int] = [
     KP.LEFT_EYE_INNER,
     KP.RIGHT_EYE_INNER,
     KP.NOSE_TIP,
     KP.LEFT_EAR_BASE_FRONT,
     KP.RIGHT_EAR_BASE_FRONT,
+    KP.MOUTH_LEFT_CORNER,
+    KP.MOUTH_RIGHT_CORNER,
+    KP.UPPER_LIP_CENTER,
+    KP.LOWER_LIP_CENTER,
 ]
 
 

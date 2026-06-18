@@ -369,6 +369,19 @@ class TestNeutralFrameDetector:
 
         assert abs(score_raw - score_scaled) < 0.02
 
+    def test_garbage_mouth_frame_is_not_valid_candidate(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: dobre oczy/nos, ale niewidoczne usta → NIE kandydat (baseline ust = śmieć)."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        for idx in (KP.MOUTH_LEFT_CORNER, KP.MOUTH_RIGHT_CORNER,
+                    KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER):
+            kp[idx, 2] = 0.05
+        kp_flat = kp.flatten()
+        pose = estimate_head_pose(kp_flat)
+
+        assert detector._is_valid_candidate(kp_flat, pose) is False
+
     def test_stability_window_uses_original_timeline(
         self, detector: NeutralFrameDetector
     ) -> None:
