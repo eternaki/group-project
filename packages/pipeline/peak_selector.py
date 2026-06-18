@@ -84,6 +84,7 @@ class PeakFrameSelector:
         frontal_only: bool = False,  # Zmieniono na False - zbyt restrykcyjne
         min_keypoint_conf: float = 0.5,  # Zmniejszono z 0.7 na 0.5
         max_head_angle: float = 40.0,  # Maksymalny kąt yaw/pitch (nowy parametr)
+        min_sharpness: float = 60.0,  # Min. ostrość mordy (var Laplacian) — filtr rozmycia
     ):
         """
         Initialize peak frame selector.
@@ -100,6 +101,7 @@ class PeakFrameSelector:
         self.frontal_only = frontal_only
         self.min_kp_conf = min_keypoint_conf
         self.max_head_angle = max_head_angle
+        self.min_sharpness = min_sharpness
 
     def select(
         self,
@@ -138,7 +140,8 @@ class PeakFrameSelector:
         for i, delta_aus in enumerate(delta_aus_list):
             if i == neutral_idx or delta_aus is None:
                 continue
-            if not self._is_valid_peak(keypoints_list[i], head_poses[i]):
+            frame_i = frames[i] if i < len(frames) else None
+            if not self._is_valid_peak(keypoints_list[i], head_poses[i], frame_i):
                 continue
             tfm = compute_tfm(delta_aus)
             valid_all.append((i, tfm))
@@ -217,7 +220,8 @@ class PeakFrameSelector:
             if delta_aus is None:
                 continue
 
-            if not self._is_valid_peak(keypoints_list[i], head_poses[i]):
+            frame_i = frames[i] if i < len(frames) else None
+            if not self._is_valid_peak(keypoints_list[i], head_poses[i], frame_i):
                 continue
 
             tfm = compute_tfm(delta_aus)
@@ -268,6 +272,7 @@ class PeakFrameSelector:
         self,
         keypoints: Optional[np.ndarray],
         head_pose: Optional[HeadPose],
+        frame: Optional[np.ndarray] = None,
     ) -> bool:
         """
         Check if frame is valid for peak selection.
@@ -275,6 +280,7 @@ class PeakFrameSelector:
         Args:
             keypoints: Keypoints array (60 values) or None
             head_pose: Head pose estimation or None
+            frame: Pełna klatka (do oceny ostrości mordy)
 
         Returns:
             True if valid peak candidate
@@ -302,7 +308,30 @@ class PeakFrameSelector:
             if abs(head_pose.pitch) > self.max_head_angle:
                 return False
 
+        # 3. Ostrość mordy (filtr rozmycia ruchu) — var Laplacian na cropie mordy
+        if frame is not None and self.min_sharpness > 0:
+            if self._face_sharpness(frame, kp) < self.min_sharpness:
+                return False
+
         return True
+
+    @staticmethod
+    def _face_sharpness(frame: np.ndarray, kp: np.ndarray) -> float:
+        """Ostrość regionu mordy = wariancja Laplaciana (niska = rozmycie)."""
+        import cv2
+
+        h, w = frame.shape[:2]
+        vis = kp[:, 2] > 0.1
+        if vis.sum() < 4:
+            return 0.0
+        xs, ys = kp[vis, 0], kp[vis, 1]
+        x0, y0 = max(0, int(xs.min())), max(0, int(ys.min()))
+        x1, y1 = min(w, int(xs.max())), min(h, int(ys.max()))
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            return 0.0
+        crop = frame[y0:y1, x0:x1]
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
     def _is_separated(self, idx: int, selected: list[int]) -> bool:
         """

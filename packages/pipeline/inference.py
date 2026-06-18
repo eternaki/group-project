@@ -601,6 +601,7 @@ class InferencePipeline:
         min_separation_frames: int = 30,
         min_keypoint_conf: float = 0.5,  # filtr: tylko pewne keypoints (było 0.3)
         max_head_angle: float = 30.0,  # filtr: odrzuca silny profil (było 40)
+        min_sharpness: float = 60.0,  # filtr: odrzuca rozmyte/ruchowe kadry
         progress_callback: Optional[object] = None,
     ) -> dict:
         """
@@ -799,6 +800,7 @@ class InferencePipeline:
             frontal_only=False,  # Nie wymagamy ścisłego frontal (zbyt restrykcyjne)
             min_keypoint_conf=min_keypoint_conf,  # Próg pewności keypoints
             max_head_angle=max_head_angle,  # Maksymalny kąt yaw/pitch
+            min_sharpness=min_sharpness,  # Próg ostrości (filtr rozmycia)
         )
 
         peak_indices = selector.select(
