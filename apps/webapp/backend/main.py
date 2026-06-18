@@ -350,7 +350,6 @@ async def process_video(
             tfm_score = peak_data["tfm_score"]
 
             # Zapisz klatkę bez rysowania keypoints (edytor frontend sam je rysuje)
-            keypoints = peak_data["keypoints"]
             save_frame_to_disk(frame, frame_idx, session_id)
 
             # URL dla frontend

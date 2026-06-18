@@ -451,12 +451,13 @@ class TestBreedsJson:
         with open(breeds_path) as f:
             breeds = json.load(f)
 
-        breed_names = list(breeds.values())
+        # case-insensitive — breeds.json używa nazewnictwa ImageNet (np. "golden retriever")
+        breed_names = [b.lower() for b in breeds.values()]
 
         # Sprawdź kilka znanych ras
-        expected = ["Chihuahua", "Golden Retriever", "German Shepherd", "Beagle"]
+        expected = ["chihuahua", "golden retriever", "german shepherd", "beagle"]
         for breed in expected:
-            assert breed in breed_names, f"Brak rasy: {breed}"
+            assert any(breed in bn for bn in breed_names), f"Brak rasy: {breed}"
 
     def test_breeds_json_sequential_ids(self) -> None:
         """Test czy ID są sekwencyjne."""

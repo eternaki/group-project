@@ -118,3 +118,25 @@ apps/webapp/backend/static/frames/
 
 # Вложенная копия репозитория (не часть проекта)
 Dog-Emotion-Classification/
+
+# Lokalne artefakty treningu/diagnostyki keypoints (nie commitować)
+/yolov8n.pt
+/bash.exe.stackdump
+/runs/
+data/dogflw_raw/
+data/dogface_yolo/
+data/dogface_runs/
+data/kfull*/
+data/kinspect/
+data/klog/
+data/kaggle_out/
+data/kp_results/
+data/tmpl/
+data/kp_template*
+data/keypoints_hrnet*.json
+data/backend.log
+data/frontend.log
+data/dogface_train.log
+# Backupy/pośrednie wagi keypoints (tylko keypoints_dogflw.pt jest aktywny)
+models/keypoints_hrnet*.pt
+models/keypoints_dogflw_resnet_OLD.pt
