@@ -61,6 +61,12 @@ class PipelineConfig:
     # Multi-crop TTA: skale cropu mordy w przebiegu 2 (uśrednienie predykcji).
     # Pojedyncza skala (1.6,) = bez TTA; kilka skal = stabilniejsza lokalizacja.
     keypoints_tta_expands: tuple[float, ...] = (1.5, 1.7)
+    # Detektor MORDY (YOLOv8) — kadruje twarz pod keypoints zamiast zawodnego
+    # two-pass z bboxa ciała (fix: pies na cały kadr). Fallback gdy brak wag.
+    use_face_detector: bool = True
+    face_detector_weights: Path = field(
+        default_factory=lambda: Path("models/dogface_yolo.pt")
+    )
 
     def __post_init__(self) -> None:
         """Konwertuje ścieżki do Path."""
@@ -283,6 +289,17 @@ class InferencePipeline:
         else:
             print(f"  ! Brak wag: {self.config.keypoints_weights}")
 
+        # 3b. Detektor mordy (opcjonalny — kadruje twarz pod keypoints)
+        self.face_model = None
+        if self.config.use_face_detector and self.config.face_detector_weights.exists():
+            try:
+                from ultralytics import YOLO
+
+                self.face_model = YOLO(str(self.config.face_detector_weights))
+                print(f"  Detektor mordy: {self.config.face_detector_weights}")
+            except Exception as e:
+                print(f"  ! Detektor mordy niedostępny: {e}")
+
         # 4. Emotion classification (Rule-based only, NO ML)
         print("\n[4/4] Konfiguracja klasyfikacji emocji...")
         print("  → Używam RULE-BASED classification (DogFACS)")
@@ -373,6 +390,16 @@ class InferencePipeline:
         Returns:
             KeypointsPrediction we współrzędnych pełnego obrazu
         """
+        # Ścieżka A: detektor mordy (jeśli dostępny) — kadruje twarz wprost,
+        # niezawodnie nawet gdy pies zajmuje cały kadr.
+        if self.face_model is not None:
+            face = self._detect_face(image, x, y, w, h)
+            if face is not None:
+                pred = self._keypoints_on_region(image, *face)
+                if pred is not None:
+                    return pred
+
+        # Ścieżka B (fallback): dwuprzebiegowy two-pass z bboxa ciała.
         # Przebieg 1: kwadratowy crop całego bboxa psa
         crop1, ox1, oy1 = self._square_crop(image, x, y, w, h, expand=1.1)
         pred1 = self.keypoints_model.predict(crop1)
@@ -436,6 +463,53 @@ class InferencePipeline:
         return KeypointsPrediction(
             keypoints=merged, confidence=conf, num_detected=visible
         )
+
+    def _detect_face(
+        self, image: np.ndarray, x: int, y: int, w: int, h: int
+    ) -> Optional[tuple[float, float, float, float]]:
+        """
+        Wykrywa mordę w regionie bboxa ciała (z zapasem). Zwraca (fx, fy, fw, fh)
+        w układzie pełnego obrazu lub None.
+        """
+        pad = int(0.10 * max(w, h))
+        ih, iw = image.shape[:2]
+        x0, y0 = max(0, x - pad), max(0, y - pad)
+        x1, y1 = min(iw, x + w + pad), min(ih, y + h + pad)
+        crop = image[y0:y1, x0:x1]
+        if crop.size == 0:
+            return None
+        try:
+            res = self.face_model.predict(
+                crop, verbose=False, conf=0.25, device=self.config.device
+            )
+        except Exception:
+            return None
+        boxes = res[0].boxes if res else None
+        if boxes is None or len(boxes) == 0:
+            return None
+        i = int(boxes.conf.argmax())
+        bx0, by0, bx1, by1 = (float(v) for v in boxes.xyxy[i].tolist())
+        return (bx0 + x0, by0 + y0, bx1 - bx0, by1 - by0)
+
+    def _keypoints_on_region(
+        self, image: np.ndarray, fx: float, fy: float, fw: float, fh: float
+    ) -> Optional[KeypointsPrediction]:
+        """Keypoints na regionie mordy z multi-crop TTA (współrz. pełnego obrazu)."""
+        preds = []
+        for ex in self.config.keypoints_tta_expands:
+            crop, ox, oy = self._square_crop(
+                image, int(fx), int(fy), int(fw), int(fh), expand=ex
+            )
+            if crop.size == 0 or min(crop.shape[:2]) <= 10:
+                continue
+            pr = self.keypoints_model.predict(crop)
+            for kp in pr.keypoints:
+                kp.x += ox
+                kp.y += oy
+            preds.append(pr)
+        if not preds:
+            return None
+        return preds[0] if len(preds) == 1 else self._merge_keypoint_predictions(preds)
 
     def process_frame(
         self,
