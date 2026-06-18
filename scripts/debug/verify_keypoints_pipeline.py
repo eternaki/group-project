@@ -11,7 +11,6 @@ import subprocess
 import sys
 
 import cv2
-import numpy as np
 
 from packages.data.schemas import KEYPOINT_NAMES, NUM_KEYPOINTS
 from packages.pipeline import InferencePipeline, PipelineConfig
