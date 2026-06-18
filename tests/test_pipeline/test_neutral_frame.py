@@ -368,3 +368,22 @@ class TestNeutralFrameDetector:
         score_scaled = detector._compute_stability_score(seq_scaled, center_idx=6)
 
         assert abs(score_raw - score_scaled) < 0.02
+
+    def test_stability_window_uses_original_timeline(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: z frame_indices okno liczy sąsiadów po realnym czasie, nie po pozycji."""
+        base = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        # 3 stabilne klatki, ale w realnym czasie odległe o 100 klatek od siebie.
+        seq = [base.flatten() for _ in range(3)]
+        far_indices = [0, 100, 200]
+
+        # Z frame_indices: sąsiedzi poza oknem (window 10) → brak sąsiadów → 0.0
+        score_far = detector._compute_stability_score(
+            seq, center_idx=1, frame_indices=far_indices
+        )
+        # Bez frame_indices: sąsiedztwo pozycyjne → liczy wariancję (stabilne → wysoki)
+        score_positional = detector._compute_stability_score(seq, center_idx=1)
+
+        assert score_far == 0.0
+        assert score_positional > 0.8

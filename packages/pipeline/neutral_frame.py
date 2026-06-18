@@ -67,6 +67,7 @@ class NeutralFrameDetector:
         keypoints_list: list[Optional[np.ndarray]],
         head_poses: Optional[list[Optional[HeadPose]]] = None,
         debug: bool = False,
+        frame_indices: Optional[list[int]] = None,
     ) -> int:
         """
         Automatycznie wykrywa neutralną klatkę z sekwencji wideo.
@@ -76,6 +77,7 @@ class NeutralFrameDetector:
             keypoints_list: Lista tablic keypoints (138 wartości każda)
             head_poses: Opcjonalna lista HeadPose (obliczana jeśli None)
             debug: Włącz logowanie debugowania
+            frame_indices: Oryginalne indeksy klatek w wideo (opcjonalne)
 
         Returns:
             Indeks neutralnej klatki
@@ -112,7 +114,7 @@ class NeutralFrameDetector:
             )
 
         scores = [
-            (idx, self._compute_stability_score(keypoints_list, idx))
+            (idx, self._compute_stability_score(keypoints_list, idx, frame_indices))
             for idx in candidates
         ]
         best_idx, _ = max(scores, key=lambda x: x[1])
@@ -236,25 +238,39 @@ class NeutralFrameDetector:
         self,
         keypoints_list: list[Optional[np.ndarray]],
         center_idx: int,
+        frame_indices: Optional[list[int]] = None,
     ) -> float:
         """
-        Oblicza wynik stabilności klatki.
+        Oblicza wynik stabilności klatki na znormalizowanych współrzędnych.
 
-        Stabilność = 1 / (1 + wariancja). Wyższy = bardziej neutralna.
+        Stabilność = 1 / (1 + wariancja * VARIANCE_SCALE). Wyższy = bardziej neutralna.
+        Gdy frame_indices podane, okno obejmuje klatki o oryginalnym indeksie w zasięgu
+        ±window_size//2 od center (poprawne sąsiedztwo czasowe mimo luk detekcji).
 
         Args:
             keypoints_list: Lista wszystkich keypoints (może zawierać None)
             center_idx: Indeks klatki do oceny
+            frame_indices: Oryginalne indeksy klatek w wideo (opcjonalne)
 
         Returns:
             Wynik stabilności (wyższy = bardziej stabilna)
         """
-        start = max(0, center_idx - self.window_size // 2)
-        end = min(len(keypoints_list), center_idx + self.window_size // 2 + 1)
+        half = self.window_size // 2
+        if frame_indices is not None:
+            center_frame = frame_indices[center_idx]
+            members = [
+                keypoints_list[j]
+                for j in range(len(keypoints_list))
+                if abs(frame_indices[j] - center_frame) <= half
+            ]
+        else:
+            start = max(0, center_idx - half)
+            end = min(len(keypoints_list), center_idx + half + 1)
+            members = keypoints_list[start:end]
 
         window_coords = [
             _normalize_shape(kp.reshape(NUM_KEYPOINTS, 3)[:, :2])
-            for kp in keypoints_list[start:end]
+            for kp in members
             if kp is not None
         ]
 
