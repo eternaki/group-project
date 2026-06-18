@@ -431,8 +431,13 @@ async def process_video(
         })
 
     except Exception as e:
-        print(f"❌ Błąd przetwarzania: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+
+        tb = traceback.format_exc()
+        print(f"❌ Błąd przetwarzania: {e}\n{tb}")
+        raise HTTPException(
+            status_code=500, detail=f"{type(e).__name__}: {e}"
+        )
 
     finally:
         # Usuń temp file

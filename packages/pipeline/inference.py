@@ -599,8 +599,8 @@ class InferencePipeline:
         num_peaks: int = 10,
         neutral_idx: Optional[int] = None,
         min_separation_frames: int = 30,
-        min_keypoint_conf: float = 0.3,
-        max_head_angle: float = 40.0,
+        min_keypoint_conf: float = 0.5,  # filtr: tylko pewne keypoints (było 0.3)
+        max_head_angle: float = 30.0,  # filtr: odrzuca silny profil (było 40)
         progress_callback: Optional[object] = None,
     ) -> dict:
         """
@@ -810,7 +810,24 @@ class InferencePipeline:
             num_peaks=num_peaks,
         )
 
+        # Statystyka filtra jakości (wariant B): ile klatek miało pewne keypoints
+        confident = sum(
+            1
+            for kp in keypoints_list
+            if kp is not None
+            and float(np.mean(kp.reshape(NUM_KEYPOINTS, 3)[:, 2])) >= min_keypoint_conf
+        )
+        print(
+            f"  → Filtr jakości: {confident}/{len(frames_list)} klatek z pewnymi "
+            f"keypoints (próg conf {min_keypoint_conf}, max kąt {max_head_angle}°)"
+        )
         print(f"  → Wybrano {len(peak_indices)} peak frames")
+        if not peak_indices:
+            print(
+                "  ! UWAGA: 0 klatek przeszło filtr — wideo prawdopodobnie ma psa "
+                "tylko w profilu / rozmyte. Zmniejsz min_keypoint_conf lub użyj "
+                "innego wideo."
+            )
 
         _cb(95, "Classifying emotions & breeds...")
 
