@@ -315,7 +315,7 @@ class PeakFrameSelector:
             vis = kp[:, 2] > 0.1
             if vis.sum() >= 4:
                 xs, ys = kp[vis, 0], kp[vis, 1]
-                m = max(3.0, 0.012 * min(fw, fh))  # margines ~1.2%
+                m = max(8.0, 0.03 * min(fw, fh))  # margines ~3% (morda z zapasem od krawędzi)
                 if (
                     xs.min() <= m
                     or ys.min() <= m
