@@ -18,6 +18,9 @@ from packages.models.head_pose import HeadPose, estimate_head_pose
 # Dobrana tak, by ~0.05 (5% odległości oczu) jitteru dawało wyraźnie niższy score.
 VARIANCE_SCALE: float = 1000.0
 
+# Próg widoczności keypointa, by wszedł do medianowej bazy.
+BASELINE_VIS_THRESHOLD: float = 0.3
+
 
 class NeutralFrameDetector:
     """
@@ -349,3 +352,61 @@ def _critical_keypoints_visible(kp: np.ndarray, threshold: float) -> bool:
 def _count_visible_critical_kps(kp: np.ndarray, threshold: float) -> int:
     """Liczy widoczne krytyczne keypoints."""
     return sum(1 for idx in _CRITICAL_KP_INDICES if kp[idx, 2] >= threshold)
+
+
+# =============================================================================
+# Funkcje publiczne
+# =============================================================================
+
+
+def compute_neutral_baseline(
+    keypoints_list: list[Optional[np.ndarray]],
+    neutral_idx: int,
+    head_poses: list[Optional[HeadPose]],
+    window_size: int = 10,
+    max_yaw: float = 35.0,
+    max_pitch: float = 40.0,
+) -> np.ndarray:
+    """
+    Buduje odporny baseline neutralny jako per-keypoint medianę po oknie klatek.
+
+    Zamiast jednej (szumnej) klatki neutralnej bierze medianę x,y po valid+frontalnych
+    klatkach w oknie ±window_size//2 wokół neutral_idx (po realnym indeksie). Gasi szum
+    lokalizacji keypoints (±piksele). Punkt bez widocznych próbek → wartość z neutral_idx.
+
+    Args:
+        keypoints_list: Lista keypoints (138 wartości) lub None, indeksowana po klatkach
+        neutral_idx: Indeks wybranej klatki neutralnej (w tej samej liście)
+        head_poses: Lista HeadPose lub None (równoległa do keypoints_list)
+        window_size: Rozmiar okna czasowego
+        max_yaw: Maks. yaw klatki wchodzącej do mediany (frontalność)
+        max_pitch: Maks. pitch klatki wchodzącej do mediany
+
+    Returns:
+        Wektor (138,) medianowej bazy neutralnej
+    """
+    neutral = keypoints_list[neutral_idx].reshape(NUM_KEYPOINTS, 3)
+    half = window_size // 2
+    lo, hi = neutral_idx - half, neutral_idx + half
+
+    members = [
+        keypoints_list[j].reshape(NUM_KEYPOINTS, 3)
+        for j in range(max(0, lo), min(len(keypoints_list), hi + 1))
+        if keypoints_list[j] is not None
+        and head_poses[j] is not None
+        and abs(head_poses[j].yaw) <= max_yaw
+        and abs(head_poses[j].pitch) <= max_pitch
+    ]
+    if not members:
+        return neutral.flatten()
+
+    stack = np.array(members)  # (M, 46, 3)
+    baseline = neutral.copy()
+    for k in range(NUM_KEYPOINTS):
+        visible = stack[stack[:, k, 2] >= BASELINE_VIS_THRESHOLD, k, :]
+        if len(visible) > 0:
+            baseline[k, 0] = float(np.median(visible[:, 0]))
+            baseline[k, 1] = float(np.median(visible[:, 1]))
+            baseline[k, 2] = float(np.median(visible[:, 2]))
+        # else: zostaw wartość z klatki neutral (fallback)
+    return baseline.flatten()

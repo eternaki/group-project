@@ -400,3 +400,46 @@ class TestNeutralFrameDetector:
 
         assert score_far == 0.0
         assert score_positional > 0.8
+
+
+# =============================================================================
+# Testy funkcji compute_neutral_baseline
+# =============================================================================
+
+class TestComputeNeutralBaseline:
+    """Testy dla funkcji compute_neutral_baseline."""
+
+    def test_compute_neutral_baseline_is_robust_to_outlier_frame(self) -> None:
+        """Test: pojedyncza klatka-outlier w oknie nie psuje medianowej bazy."""
+        from packages.pipeline.neutral_frame import compute_neutral_baseline
+
+        base = make_frontal_kp()
+        n = 7
+        kps = [base.copy() for _ in range(n)]
+        # Klatka 3 = mocny outlier (przesunięcie ust o 60px)
+        outlier = base.reshape(NUM_KEYPOINTS, 3)
+        outlier[KP.LOWER_LIP_CENTER, 1] += 60
+        kps[3] = outlier.flatten()
+        poses = [estimate_head_pose(k) for k in kps]
+
+        baseline = compute_neutral_baseline(kps, neutral_idx=3, head_poses=poses)
+        bl = baseline.reshape(NUM_KEYPOINTS, 3)
+
+        # Mediana ignoruje outlier → dolna warga blisko wartości bazowej (228), nie 288.
+        assert abs(bl[KP.LOWER_LIP_CENTER, 1] - 228.0) < 5.0
+        assert baseline.shape == (NUM_KEYPOINTS * 3,)
+
+    def test_compute_neutral_baseline_falls_back_when_keypoint_invisible(self) -> None:
+        """Test: punkt niewidoczny we wszystkich klatkach okna → wartość z klatki neutral."""
+        from packages.pipeline.neutral_frame import compute_neutral_baseline
+
+        base = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        base[KP.TONGUE_TIP] = [151.0, 240.0, 0.02]  # niewidoczny wszędzie
+        kps = [base.flatten() for _ in range(5)]
+        poses = [estimate_head_pose(k) for k in kps]
+
+        baseline = compute_neutral_baseline(kps, neutral_idx=2, head_poses=poses)
+        bl = baseline.reshape(NUM_KEYPOINTS, 3)
+
+        assert abs(bl[KP.TONGUE_TIP, 0] - 151.0) < 1e-3
+        assert abs(bl[KP.TONGUE_TIP, 1] - 240.0) < 1e-3
