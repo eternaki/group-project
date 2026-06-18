@@ -422,6 +422,28 @@ class TestNeutralFrameDetector:
         assert idx != 8
 
 
+
+def test_select_most_typical_prefers_shape_over_score() -> None:
+    """_select_most_typical musi preferować typowy kształt ponad najwyższy score."""
+    from packages.pipeline.neutral_frame import _select_most_typical
+
+    base = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)[:, :2]
+    atypical = base.copy()
+    atypical[KP.LOWER_LIP_CENTER, 1] += 50
+    atypical[KP.CHIN, 1] += 50
+
+    vis = np.ones((NUM_KEYPOINTS, 1), dtype=np.float32)
+    kp_list = [np.concatenate([base, vis], axis=1).flatten() for _ in range(8)]
+    kp_list.append(np.concatenate([atypical, vis], axis=1).flatten())
+
+    candidates = list(range(9))
+    scores = {i: 0.5 for i in range(8)}
+    scores[8] = 1.0  # atypowa klatka ma NAJWYŻSZY score → stary max() zwróciłby 8
+
+    result = _select_most_typical(candidates, scores, kp_list)
+    assert result != 8
+
+
 # =============================================================================
 # Testy funkcji compute_neutral_baseline
 # =============================================================================
