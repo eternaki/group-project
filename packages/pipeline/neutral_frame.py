@@ -5,6 +5,12 @@ Wykrywa "neutralną klatkę bazową" w sekwencji wideo, gdzie wyraz twarzy
 psa jest najbardziej rozluźniony i stabilny (minimalne ruchy).
 
 Neutralna klatka służy jako punkt odniesienia do obliczania delta AU.
+
+Znane ograniczenia (data-free):
+- Stabilność ≠ neutralność: detektor mierzy brak ruchu, nie rozluźnienie wyrazu.
+  Łagodzone heurystyką "typowej konfiguracji" (_select_most_typical), ale to proxy 2D.
+- Medianowy baseline zakłada ~stałą skalę twarzy w obrębie okna (frontalny, krótki
+  odcinek czasu). Per-AU progi i kalibracja wyrazu — poza zakresem (wariant C).
 """
 
 import math

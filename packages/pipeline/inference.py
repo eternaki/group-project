@@ -660,6 +660,7 @@ class InferencePipeline:
         from packages.models.emotion import classify_emotion_from_delta_aus
         from packages.pipeline.neutral_frame import (
             NeutralFrameDetector,
+            compute_neutral_baseline,
             estimate_head_pose,
         )
         from packages.pipeline.peak_selector import PeakFrameSelector, compute_tfm
@@ -762,6 +763,7 @@ class InferencePipeline:
                 keypoints_list=valid_keypoints,
                 head_poses=valid_head_poses,
                 debug=False,  # Ustaw True dla szczegółowych logów
+                frame_indices=valid_frame_indices,
             )
             # Zmapuj z powrotem na oryginalne indeksy
             neutral_idx = valid_frame_indices[neutral_idx]
@@ -769,10 +771,14 @@ class InferencePipeline:
         else:
             print(f"  → Using manual neutral frame: {neutral_idx}")
 
-        neutral_keypoints = keypoints_list[neutral_idx]
-
-        if neutral_keypoints is None:
+        if keypoints_list[neutral_idx] is None:
             raise ValueError(f"Neutral frame {neutral_idx} nie ma keypoints!")
+
+        neutral_keypoints = compute_neutral_baseline(
+            keypoints_list=keypoints_list,
+            neutral_idx=neutral_idx,
+            head_poses=head_poses,
+        )
 
         _cb(86, "Computing delta AUs...")
 
