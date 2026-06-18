@@ -308,7 +308,23 @@ class PeakFrameSelector:
             if abs(head_pose.pitch) > self.max_head_angle:
                 return False
 
-        # 3. Ostrość mordy (filtr rozmycia ruchu) — var Laplacian na cropie mordy
+        # 3. Morda przycięta krawędzią kadru — keypoints "przyklejone" do brzegu
+        # oznaczają, że część mordy wyszła poza obraz. Odrzucamy.
+        if frame is not None:
+            fh, fw = frame.shape[:2]
+            vis = kp[:, 2] > 0.1
+            if vis.sum() >= 4:
+                xs, ys = kp[vis, 0], kp[vis, 1]
+                m = max(3.0, 0.012 * min(fw, fh))  # margines ~1.2%
+                if (
+                    xs.min() <= m
+                    or ys.min() <= m
+                    or xs.max() >= fw - m
+                    or ys.max() >= fh - m
+                ):
+                    return False
+
+        # 4. Ostrość mordy (filtr rozmycia ruchu) — var Laplacian na cropie mordy
         if frame is not None and self.min_sharpness > 0:
             if self._face_sharpness(frame, kp) < self.min_sharpness:
                 return False
