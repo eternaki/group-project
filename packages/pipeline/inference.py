@@ -14,6 +14,7 @@ from typing import Optional
 
 import numpy as np
 
+from packages.data.schemas import NUM_KEYPOINTS, Keypoint
 from packages.models import (
     BBoxConfig,
     BBoxModel,
@@ -57,6 +58,9 @@ class PipelineConfig:
     max_dogs: int = 10
     use_rule_based_emotion: bool = True  # Rule-based emotion (nie wymaga treningu)
     keypoints_two_pass: bool = True  # Dwuprzebiegowa detekcja keypoints (zoom na mordę)
+    # Multi-crop TTA: skale cropu mordy w przebiegu 2 (uśrednienie predykcji).
+    # Pojedyncza skala (1.6,) = bez TTA; kilka skal = stabilniejsza lokalizacja.
+    keypoints_tta_expands: tuple[float, ...] = (1.5, 1.7)
 
     def __post_init__(self) -> None:
         """Konwertuje ścieżki do Path."""
@@ -384,22 +388,54 @@ class InferencePipeline:
         fx += ox1
         fy += oy1
 
-        # Przebieg 2: kwadratowy crop wokół mordy (margines 1.6×)
-        crop2, ox2, oy2 = self._square_crop(
-            image, int(fx), int(fy), int(fw), int(fh), expand=1.6
-        )
-        if crop2.size == 0 or min(crop2.shape[:2]) <= 10:
+        # Przebieg 2: multi-crop TTA — kilka skal cropu mordy, uśrednienie
+        # predykcji ważone widocznością (stabilniejsza lokalizacja).
+        preds = []
+        for ex in self.config.keypoints_tta_expands:
+            crop2, ox2, oy2 = self._square_crop(
+                image, int(fx), int(fy), int(fw), int(fh), expand=ex
+            )
+            if crop2.size == 0 or min(crop2.shape[:2]) <= 10:
+                continue
+            pr = self.keypoints_model.predict(crop2)
+            for kp in pr.keypoints:
+                kp.x += ox2
+                kp.y += oy2
+            preds.append(pr)
+
+        if not preds:
             # Fallback: wynik 1. przebiegu
             for kp in pred1.keypoints:
                 kp.x += ox1
                 kp.y += oy1
             return pred1
+        if len(preds) == 1:
+            return preds[0]
+        return self._merge_keypoint_predictions(preds)
 
-        pred2 = self.keypoints_model.predict(crop2)
-        for kp in pred2.keypoints:
-            kp.x += ox2
-            kp.y += oy2
-        return pred2
+    @staticmethod
+    def _merge_keypoint_predictions(
+        preds: list[KeypointsPrediction],
+    ) -> KeypointsPrediction:
+        """Uśrednia predykcje keypoints per-punkt, ważąc widocznością (multi-crop TTA)."""
+        merged = []
+        for i in range(NUM_KEYPOINTS):
+            pts = [p.keypoints[i] for p in preds]
+            wsum = sum(max(k.visibility, 0.0) for k in pts)
+            if wsum > 1e-6:
+                x = sum(max(k.visibility, 0.0) * k.x for k in pts) / wsum
+                y = sum(max(k.visibility, 0.0) * k.y for k in pts) / wsum
+            else:
+                x = sum(k.x for k in pts) / len(pts)
+                y = sum(k.y for k in pts) / len(pts)
+            merged.append(
+                Keypoint(x=x, y=y, visibility=max(k.visibility for k in pts))
+            )
+        conf = float(np.mean([k.visibility for k in merged]))
+        visible = sum(1 for k in merged if k.visibility > 0.15)
+        return KeypointsPrediction(
+            keypoints=merged, confidence=conf, num_detected=visible
+        )
 
     def process_frame(
         self,

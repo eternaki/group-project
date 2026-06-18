@@ -45,7 +45,7 @@ FLIP_MAPPING: dict[int, int] = {
 class KeypointsConfig(ModelConfig):
     """Konfiguracja modelu keypoints."""
 
-    model_name: str = "hrnet_w32"  # HRNet-W32: stride-4 → heatmapy bez deconv
+    model_name: str = "hrnet_w48"  # HRNet-W48: większa pojemność (lepszy PCK)
     img_size: int = 320  # wejście 320 → heatmapa 80 (lepsza lokalizacja niż 256/64)
     heatmap_size: int = 80
     confidence_threshold: float = 0.15  # Niższy próg dla lepszej wizualizacji
