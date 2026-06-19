@@ -146,3 +146,7 @@ data/dataset_candidate/
 
 # Klucz Google Drive API (lokalny, nie commitować!)
 drive_key.txt
+
+# Pobrane wideo z Google Drive (lokalne)
+data/drive_dogs/
+data/dataset_final/
