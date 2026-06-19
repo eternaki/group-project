@@ -10,7 +10,10 @@ import pytest
 
 from packages.data.schemas import KP, NUM_KEYPOINTS
 from packages.models.head_pose import HeadPose, estimate_head_pose
-from packages.pipeline.neutral_frame import NeutralFrameDetector
+from packages.pipeline.neutral_frame import (
+    NeutralFrameDetector,
+    collect_neutral_baseline,
+)
 
 # =============================================================================
 # Fixture: realistyczna twarz psa (46 keypoints)
@@ -93,6 +96,75 @@ def make_frontal_kp() -> np.ndarray:
 # =============================================================================
 # Testy klasy HeadPose
 # =============================================================================
+
+class TestCollectNeutralBaseline:
+    """Testy funkcji collect_neutral_baseline — okno klatek wokół neutralnej.
+
+    Zamiast jednej (zaszumionej) klatki neutralnej, zbiera okno sąsiednich
+    poprawnych klatek → median jako stabilna baza dla ekstraktora AU.
+    """
+
+    def test_collects_window_around_neutral(self) -> None:
+        """Okno ±2 wokół klatki 3 zwraca 5 poprawnych klatek (indeksy 1..5)."""
+        frames = [make_frontal_kp() for _ in range(7)]
+        baseline = collect_neutral_baseline(frames, neutral_idx=3, window=2)
+        assert len(baseline) == 5
+
+    def test_skips_none_frames(self) -> None:
+        """Klatki None w oknie są pomijane."""
+        frames: list = [make_frontal_kp() for _ in range(7)]
+        frames[2] = None
+        frames[4] = None
+        baseline = collect_neutral_baseline(frames, neutral_idx=3, window=2)
+        # Okno 1..5 → wykluczone 2 i 4 → zostają 1, 3, 5
+        assert len(baseline) == 3
+
+    def test_clamps_at_left_boundary(self) -> None:
+        """Okno przy lewej krawędzi nie wychodzi poza zakres."""
+        frames = [make_frontal_kp() for _ in range(7)]
+        baseline = collect_neutral_baseline(frames, neutral_idx=0, window=2)
+        # Indeksy 0..2 → 3 klatki
+        assert len(baseline) == 3
+
+    def test_window_zero_returns_single_frame(self) -> None:
+        """Okno 0 zwraca tylko klatkę neutralną."""
+        frames = [make_frontal_kp() for _ in range(7)]
+        baseline = collect_neutral_baseline(frames, neutral_idx=3, window=0)
+        assert len(baseline) == 1
+
+    def test_no_valid_frames_raises(self) -> None:
+        """Brak poprawnych klatek w oknie rzuca ValueError."""
+        frames: list = [None, None, None]
+        with pytest.raises(ValueError, match="poprawn|valid|neutral"):
+            collect_neutral_baseline(frames, neutral_idx=1, window=1)
+
+
+class TestNeutralPrefersFrontal:
+    """Detektor neutralny powinien przy równej stabilności preferować frontalną pozę.
+
+    Zła baza (głowa odwrócona/pochylona) psuje wszystkie delta AU — zwłaszcza uszy.
+    """
+
+    def test_prefers_frontal_among_equally_stable(self) -> None:
+        """Przy identycznych (stabilnych) keypoints wybierana jest najbardziej frontalna klatka."""
+        kp = make_frontal_kp()
+        keypoints_list = [kp.copy() for _ in range(7)]
+        # Wszystkie klatki jednakowo stabilne; różni je tylko poza głowy.
+        # Klatki bardziej odwrócone (yaw/pitch wysokie, ale wciąż w granicach kandydata)
+        # i jedna wyraźnie frontalna (idx 3).
+        def hp(yaw: float, pitch: float) -> HeadPose:
+            return HeadPose(yaw=yaw, pitch=pitch, roll=0.0, is_frontal=True, confidence=0.9)
+        head_poses = [
+            hp(30, 30), hp(28, 30), hp(30, 28),
+            hp(2, 2),                      # idx 3 — najbardziej frontalna
+            hp(30, 28), hp(28, 30), hp(30, 30),
+        ]
+        detector = NeutralFrameDetector()
+        idx = detector.detect_auto(
+            frames=[None] * 7, keypoints_list=keypoints_list, head_poses=head_poses
+        )
+        assert idx == 3, f"oczekiwano najbardziej frontalnej klatki (3), wybrano {idx}"
+
 
 class TestHeadPose:
     """Testy dla klasy HeadPose."""
