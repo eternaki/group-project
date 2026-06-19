@@ -140,3 +140,6 @@ data/dogface_train.log
 # Backupy/pośrednie wagi keypoints (tylko keypoints_dogflw.pt jest aktywny)
 models/keypoints_hrnet*.pt
 models/keypoints_dogflw_resnet_OLD.pt
+
+# Kandydujący zestaw danych (lokalny: klatki, wideo, COCO)
+data/dataset_candidate/
