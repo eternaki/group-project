@@ -143,3 +143,6 @@ models/keypoints_dogflw_resnet_OLD.pt
 
 # Kandydujący zestaw danych (lokalny: klatki, wideo, COCO)
 data/dataset_candidate/
+
+# Klucz Google Drive API (lokalny, nie commitować!)
+drive_key.txt
