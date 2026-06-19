@@ -132,6 +132,36 @@ class TestEmotionRule:
 
         assert matches is False
 
+    def test_low_confidence_required_au_does_not_match(self) -> None:
+        """Niewiarygodny (niska confidence) required AU nie potwierdza reguły.
+
+        Np. klamrowany EAD ma confidence 0 — nie można na nim oprzeć emocji.
+        """
+        rule = EmotionRule(
+            emotion="fearful",
+            priority=90,
+            required_aus={"EAD103": 1.15, "AU101": 1.10},
+        )
+        delta_aus = make_aus_with(AU101=1.15)
+        # EAD103 ma wysokie ratio, ale confidence 0 (niewiarygodny pomiar uszu)
+        delta_aus["EAD103"] = DeltaActionUnit("EAD103", 1.20, 0.20, False, 0.0)
+        matches, _ = rule.matches(delta_aus)
+        assert matches is False
+
+    def test_low_confidence_inhibitory_au_does_not_block(self) -> None:
+        """Niewiarygodny (niska confidence) inhibitory AU nie blokuje reguły."""
+        rule = EmotionRule(
+            emotion="happy",
+            priority=100,
+            required_aus={"AU12": 1.20},
+            inhibitory_aus={"EAD103": 1.10},
+        )
+        delta_aus = make_aus_with(AU12=1.30)
+        # EAD103 "aktywny" ratio 1.25, ale confidence 0 → nie powinien hamować
+        delta_aus["EAD103"] = DeltaActionUnit("EAD103", 1.25, 0.25, False, 0.0)
+        matches, _ = rule.matches(delta_aus)
+        assert matches is True
+
     def test_optional_aus_increase_confidence(self) -> None:
         """Test: opcjonalne AU zwiększają pewność dopasowania."""
         rule = EmotionRule(
