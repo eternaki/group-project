@@ -56,12 +56,23 @@ def _quality(k: np.ndarray) -> dict:
     cN, cM = float(np.mean(k[_NOSE, 2])), float(np.mean(k[_MOUTH, 2]))
     anat = _anatomy_ok(k)
 
+    # STRICT: czysty frontalny portret (premium, mała liczba) — wymaga symetrii.
     strict = (
         abs(hp.yaw) <= 20 and abs(hp.pitch) <= 25 and abs(hp.roll) <= 20
         and cL >= 0.55 and cR >= 0.55 and cN >= 0.5 and cM >= 0.5
         and abs(cL - cR) <= 0.22
         and anat
     )
+    # GOOD: poprawna geometria keypoints + pewność, DOPUSZCZA ekspresję/lekki obrót.
+    # To główny tier dla danych AU — wyraziste klatki (otwarty pysk) mają sens dla AU,
+    # nie wymagamy neutralnego frontu, tylko wiarygodnej geometrii.
+    good = (
+        anat and mean_conf >= 0.6
+        and abs(hp.yaw) <= 30 and abs(hp.pitch) <= 30
+        and cN >= 0.45 and cM >= 0.45
+        and max(cL, cR) >= 0.5  # przynajmniej jedno oko pewne
+    )
+    tier = "strict" if strict else ("good" if good else "weak")
     return {
         "mean_conf": round(mean_conf, 3),
         "yaw": round(hp.yaw, 1),
@@ -70,6 +81,8 @@ def _quality(k: np.ndarray) -> dict:
         "eye_conf_r": round(cR, 3),
         "anatomy_ok": bool(anat),
         "strict_ok": bool(strict),
+        "good_ok": bool(good),
+        "tier": tier,
     }
 
 
@@ -83,45 +96,51 @@ def main() -> None:
     anns = coco.get("annotations", [])
     print(f"Anotacji: {len(anns)}")
 
-    strict_ok = 0
-    anat_ok = 0
+    tiers: Counter = Counter()
     for a in anns:
         kp = a.get("keypoints")
         if not kp or len(kp) != NUM_KEYPOINTS * 3:
-            a["quality"] = {"strict_ok": False, "anatomy_ok": False, "note": "brak keypoints"}
+            a["quality"] = {"tier": "weak", "strict_ok": False, "good_ok": False,
+                            "anatomy_ok": False, "note": "brak keypoints"}
+            tiers["weak"] += 1
             continue
         k = np.array(kp, dtype=np.float32).reshape(NUM_KEYPOINTS, 3)
         q = _quality(k)
         a["quality"] = q
-        strict_ok += q["strict_ok"]
-        anat_ok += q["anatomy_ok"]
+        tiers[q["tier"]] += 1
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     # wzbogacony COCO
     full_path = args.out_dir / "annotations_quality.json"
     full_path.write_text(json.dumps(coco, ensure_ascii=False, indent=1), encoding="utf-8")
 
-    # czysty podzbiór (strict_ok)
-    strict_ids = {a["image_id"] for a in anns if a.get("quality", {}).get("strict_ok")}
+    # czysty podzbiór = tier strict LUB good (poprawna geometria, użyteczne dla AU)
+    def _is_clean(a: dict) -> bool:
+        return a.get("quality", {}).get("tier") in ("strict", "good")
+
+    clean_ids = {a["image_id"] for a in anns if _is_clean(a)}
     clean = {
         "info": coco.get("info", {}),
         "licenses": coco.get("licenses", []),
         "categories": coco.get("categories", []),
-        "images": [im for im in coco.get("images", []) if im["id"] in strict_ids],
-        "annotations": [a for a in anns if a.get("quality", {}).get("strict_ok")],
+        "images": [im for im in coco.get("images", []) if im["id"] in clean_ids],
+        "annotations": [a for a in anns if _is_clean(a)],
     }
     clean_path = args.out_dir / "annotations_clean.json"
     clean_path.write_text(json.dumps(clean, ensure_ascii=False, indent=1), encoding="utf-8")
 
+    n = max(1, len(anns))
     emos = Counter(a.get("emotion") for a in clean["annotations"])
     breeds = Counter(a.get("breed") for a in clean["annotations"])
     print("\n==== STATYSTYKI ====")
     print(f"anotacje (peak frames):   {len(anns)}")
-    print(f"anatomy_ok:               {anat_ok} ({100*anat_ok/max(1,len(anns)):.1f}%)")
-    print(f"strict_ok (czysty zbiór): {strict_ok} ({100*strict_ok/max(1,len(anns)):.1f}%)")
+    print(f"tier strict (premium):    {tiers['strict']} ({100*tiers['strict']/n:.1f}%)")
+    print(f"tier good (główny AU):    {tiers['good']} ({100*tiers['good']/n:.1f}%)")
+    print(f"tier weak (odrzucone):    {tiers['weak']} ({100*tiers['weak']/n:.1f}%)")
+    print(f"CZYSTY ZBIÓR (strict+good): {len(clean['annotations'])} ({100*len(clean['annotations'])/n:.1f}%)")
     print(f"emocje (clean):           {dict(emos)}")
     print(f"rasy (clean, top5):       {dict(breeds.most_common(5))}")
-    print(f"\nzapisano: {full_path.name} (pełny+quality), {clean_path.name} (strict)")
+    print(f"\nzapisano: {full_path.name} (pełny+quality), {clean_path.name} (strict+good)")
 
 
 if __name__ == "__main__":
