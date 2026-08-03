@@ -67,7 +67,7 @@ class DogTracker:
         assigned: list[Optional[int]] = [None] * len(detections)
         used_tracks: set[int] = set()
 
-        pairs = self._score_pairs(detections, histograms, used_tracks)
+        pairs = self._score_pairs(detections, histograms)
         for score, det_idx, track in pairs:
             if assigned[det_idx] is not None or track.track_id in used_tracks:
                 continue
@@ -81,25 +81,25 @@ class DogTracker:
 
         for det_idx, track_id in enumerate(assigned):
             if track_id is None:
-                assigned[det_idx] = self._start_track(
-                    detections[det_idx].bbox, histograms[det_idx]
-                )
+                new_track_id = self._start_track(detections[det_idx].bbox, histograms[det_idx])
+                assigned[det_idx] = new_track_id
+                # świeżo założony trek nie może zostać postarzony w tym samym wywołaniu
+                used_tracks.add(new_track_id)
 
         self._age_tracks(used_tracks)
-        return [track_id for track_id in assigned if track_id is not None]
+        result = [track_id for track_id in assigned if track_id is not None]
+        assert len(result) == len(detections), "każda detekcja musi dostać track_id"
+        return result
 
     def _score_pairs(
         self,
         detections: list[Detection],
         histograms: list[np.ndarray],
-        used_tracks: set[int],
     ) -> list[tuple[float, int, _Track]]:
         """Zwraca pary (jakość, indeks detekcji, trek) posortowane malejąco."""
         pairs: list[tuple[float, int, _Track]] = []
         for det_idx, detection in enumerate(detections):
             for track in self._tracks:
-                if track.track_id in used_tracks:
-                    continue
                 appearance = _histogram_similarity(histograms[det_idx], track.histogram)
                 if appearance < MIN_APPEARANCE_SIMILARITY:
                     # kolor jednoznacznie inny - to na pewno inny pies,

@@ -75,3 +75,17 @@ class TestDogTracker:
         again = tracker.update(frame, [_detection(box)])
 
         assert first != again
+
+    def test_nowo_zalozony_trek_nie_jest_postarzany_w_tej_samej_klatce(self):
+        """Regresja: świeżo utworzony trek nie może zostać zliczony jako 'niedopasowany'
+        w tym samym wywołaniu update() - inaczej przy max_gap_frames=0 każdy pies
+        dostawałby nowe id w każdej klatce, mimo ciągłej obecności."""
+        box = (100, 100, 60, 60)
+        frame = _frame_with_patch((0, 0, 200), box)
+        tracker = DogTracker(max_gap_frames=0)
+
+        first = tracker.update(frame, [_detection(box)])
+        second = tracker.update(frame, [_detection(box)])
+        third = tracker.update(frame, [_detection(box)])
+
+        assert first == second == third
