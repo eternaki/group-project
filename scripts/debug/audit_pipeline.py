@@ -6,7 +6,7 @@ Mierzy na prawdziwych wideo:
 1. Detekcja psa — ile klatek bez psa, ile z wieloma psami (ryzyko podmiany psa
    między klatkami, bo delta AU liczy się względem klatki neutralnej JEDNEGO psa).
 2. Keypoints — rozkład pewności, ile poniżej progu.
-3. Poza głowy — rozkład |yaw| / |pitch|, ile poza limitem.
+3. Poza głowy — rozkład |yaw_asymmetry| / |roll|, ile poza limitem.
 4. Klatka neutralna — który indeks wybrany, jaka frontalność.
 5. AU — ile klamrowanych (niewiarygodnych), ile aktywnych, rozkład confidence.
 6. Emocje — jakie reguły się odpalają.
@@ -48,8 +48,8 @@ class AuditStats:
     frames_no_keypoints: int = 0
     dog_conf: list[float] = field(default_factory=list)
     kp_conf: list[float] = field(default_factory=list)
-    yaw: list[float] = field(default_factory=list)
-    pitch: list[float] = field(default_factory=list)
+    yaw_asymmetry: list[float] = field(default_factory=list)
+    roll: list[float] = field(default_factory=list)
     neutral_frontality: list[float] = field(default_factory=list)
     au_clamped: Counter = field(default_factory=Counter)
     au_active: Counter = field(default_factory=Counter)
@@ -118,8 +118,8 @@ def audit_frame_data(all_frames_data: list[dict], stats: AuditStats) -> None:
 
         pose = data.get("head_pose")
         if pose is not None:
-            stats.yaw.append(abs(float(pose.yaw)))
-            stats.pitch.append(abs(float(pose.pitch)))
+            stats.yaw_asymmetry.append(abs(float(pose.yaw_asymmetry)))
+            stats.roll.append(abs(float(pose.roll)))
 
         delta_aus = data.get("delta_aus")
         if not delta_aus:
@@ -170,7 +170,7 @@ def audit_video(
     if neutral_data is not None and neutral_data.get("head_pose") is not None:
         pose = neutral_data["head_pose"]
         stats.neutral_frontality.append(
-            abs(float(pose.yaw)) + abs(float(pose.pitch)) + abs(float(pose.roll))
+            abs(float(pose.yaw_asymmetry)) / 0.35 + abs(float(pose.roll)) / 30.0
         )
 
     for peak in result.get("peak_frames", []):
@@ -220,11 +220,15 @@ def build_report(stats: AuditStats, elapsed: float) -> dict:
             ),
         },
         "etap_3_poza_glowy": {
-            "yaw_abs": percentiles(stats.yaw),
-            "pitch_abs": percentiles(stats.pitch),
-            "poza_limitem_30_proc": round(
-                sum(1 for y, p in zip(stats.yaw, stats.pitch) if y > 30 or p > 30)
-                / max(len(stats.yaw), 1) * 100,
+            "yaw_asymmetry_abs": percentiles(stats.yaw_asymmetry),
+            "roll_abs": percentiles(stats.roll),
+            "poza_limitem_proc": round(
+                sum(
+                    1
+                    for y, r in zip(stats.yaw_asymmetry, stats.roll)
+                    if y > 0.35 or r > 30
+                )
+                / max(len(stats.yaw_asymmetry), 1) * 100,
                 1,
             ),
         },

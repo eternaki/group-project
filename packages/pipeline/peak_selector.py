@@ -83,7 +83,8 @@ class PeakFrameSelector:
         min_tfm_threshold: float = 0.15,   # Minimum movement
         frontal_only: bool = False,  # Zmieniono na False - zbyt restrykcyjne
         min_keypoint_conf: float = 0.5,  # Zmniejszono z 0.7 na 0.5
-        max_head_angle: float = 40.0,  # Maksymalny kąt yaw/pitch (nowy parametr)
+        max_yaw_asymmetry: float = 0.35,  # Maks. asymetria kącik oka <-> nos
+        max_roll: float = 30.0,  # Maks. przechylenie (stopnie)
         min_sharpness: float = 60.0,  # Min. ostrość mordy (var Laplacian) — filtr rozmycia
     ):
         """
@@ -94,13 +95,15 @@ class PeakFrameSelector:
             min_tfm_threshold: Minimum TFM score to consider
             frontal_only: Only select strictly frontal poses (<20°)
             min_keypoint_conf: Minimum keypoint confidence
-            max_head_angle: Maximum yaw/pitch angle in degrees (used when frontal_only=False)
+            max_yaw_asymmetry: Maximum yaw asymmetry (used when frontal_only=False)
+            max_roll: Maximum roll angle in degrees (used when frontal_only=False)
         """
         self.min_separation = min_separation_frames
         self.min_tfm = min_tfm_threshold
         self.frontal_only = frontal_only
         self.min_kp_conf = min_keypoint_conf
-        self.max_head_angle = max_head_angle
+        self.max_yaw_asymmetry = max_yaw_asymmetry
+        self.max_roll = max_roll
         self.min_sharpness = min_sharpness
 
     def select(
@@ -302,10 +305,10 @@ class PeakFrameSelector:
             if not head_pose.is_frontal:
                 return False
         else:
-            # Relaxed: just check max angle threshold
-            if abs(head_pose.yaw) > self.max_head_angle:
+            # Relaxed: just check max threshold
+            if abs(head_pose.yaw_asymmetry) > self.max_yaw_asymmetry:
                 return False
-            if abs(head_pose.pitch) > self.max_head_angle:
+            if abs(head_pose.roll) > self.max_roll:
                 return False
 
         # 3. Morda przycięta krawędzią kadru — keypoints "przyklejone" do brzegu

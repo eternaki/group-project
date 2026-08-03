@@ -1,8 +1,9 @@
 """
 Tagowanie jakości zestawu danych COCO (filtry automatyczne, bez udziału człowieka).
 
-Dla każdej anotacji liczy z keypoints: średnią pewność, kąt głowy (yaw/pitch),
-spójność anatomiczną oraz "strict_ok" (czysta frontalna morda). Zapisuje wzbogacony
+Dla każdej anotacji liczy z keypoints: średnią pewność, pozę głowy
+(yaw_asymmetry/roll), spójność anatomiczną oraz "strict_ok" (czysta frontalna morda).
+Zapisuje wzbogacony
 COCO + czysty podzbiór (strict_ok) + statystyki.
 
 Użycie:
@@ -58,7 +59,7 @@ def _quality(k: np.ndarray) -> dict:
 
     # STRICT: czysty frontalny portret (premium, mała liczba) — wymaga symetrii.
     strict = (
-        abs(hp.yaw) <= 20 and abs(hp.pitch) <= 25 and abs(hp.roll) <= 20
+        abs(hp.yaw_asymmetry) <= 0.15 and abs(hp.roll) <= 20
         and cL >= 0.55 and cR >= 0.55 and cN >= 0.5 and cM >= 0.5
         and abs(cL - cR) <= 0.22
         and anat
@@ -68,15 +69,15 @@ def _quality(k: np.ndarray) -> dict:
     # nie wymagamy neutralnego frontu, tylko wiarygodnej geometrii.
     good = (
         anat and mean_conf >= 0.6
-        and abs(hp.yaw) <= 30 and abs(hp.pitch) <= 30
+        and abs(hp.yaw_asymmetry) <= 0.25 and abs(hp.roll) <= 30
         and cN >= 0.45 and cM >= 0.45
         and max(cL, cR) >= 0.5  # przynajmniej jedno oko pewne
     )
     tier = "strict" if strict else ("good" if good else "weak")
     return {
         "mean_conf": round(mean_conf, 3),
-        "yaw": round(hp.yaw, 1),
-        "pitch": round(hp.pitch, 1),
+        "yaw_asymmetry": round(hp.yaw_asymmetry, 3),
+        "roll": round(hp.roll, 1),
         "eye_conf_l": round(cL, 3),
         "eye_conf_r": round(cR, 3),
         "anatomy_ok": bool(anat),

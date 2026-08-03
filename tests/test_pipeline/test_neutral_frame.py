@@ -152,12 +152,14 @@ class TestNeutralPrefersFrontal:
         # Wszystkie klatki jednakowo stabilne; różni je tylko poza głowy.
         # Klatki bardziej odwrócone (yaw/pitch wysokie, ale wciąż w granicach kandydata)
         # i jedna wyraźnie frontalna (idx 3).
-        def hp(yaw: float, pitch: float) -> HeadPose:
-            return HeadPose(yaw=yaw, pitch=pitch, roll=0.0, is_frontal=True, confidence=0.9)
+        def hp(yaw_asymmetry: float) -> HeadPose:
+            return HeadPose(
+                yaw_asymmetry=yaw_asymmetry, roll=0.0, is_frontal=True, confidence=0.9
+            )
         head_poses = [
-            hp(30, 30), hp(28, 30), hp(30, 28),
-            hp(2, 2),                      # idx 3 — najbardziej frontalna
-            hp(30, 28), hp(28, 30), hp(30, 30),
+            hp(0.30), hp(0.28), hp(0.30),
+            hp(0.02),                      # idx 3 — najbardziej frontalna
+            hp(0.30), hp(0.28), hp(0.30),
         ]
         detector = NeutralFrameDetector()
         idx = detector.detect_auto(
@@ -172,27 +174,24 @@ class TestHeadPose:
     def test_creation_frontal(self) -> None:
         """Test tworzenia frontalnej pozy głowy."""
         pose = HeadPose(
-            yaw=5.0,
-            pitch=-3.0,
+            yaw_asymmetry=0.05,
             roll=2.0,
             is_frontal=True,
             confidence=0.95,
         )
 
-        assert pose.yaw == 5.0
-        assert pose.pitch == -3.0
+        assert pose.yaw_asymmetry == 0.05
         assert pose.roll == 2.0
         assert pose.is_frontal is True
         assert pose.confidence == 0.95
 
     def test_to_dict(self) -> None:
         """Test konwersji HeadPose do słownika."""
-        pose = HeadPose(yaw=10.0, pitch=-5.0, roll=3.0, is_frontal=True, confidence=0.9)
+        pose = HeadPose(yaw_asymmetry=0.1, roll=3.0, is_frontal=True, confidence=0.9)
 
         result = pose.to_dict()
 
-        assert result["yaw"] == 10.0
-        assert result["pitch"] == -5.0
+        assert result["yaw_asymmetry"] == 0.1
         assert result["roll"] == 3.0
         assert result["is_frontal"] is True
         assert result["confidence"] == 0.9
@@ -211,12 +210,11 @@ class TestEstimateHeadPose:
         pose = estimate_head_pose(kp)
 
         assert pose.is_frontal is True
-        assert abs(pose.yaw) < 25
-        assert abs(pose.pitch) < 30  # nos naturalnie poniżej oczu ~26°
+        assert abs(pose.yaw_asymmetry) < 0.05
         assert abs(pose.roll) < 25
 
-    def test_left_turned_face_has_positive_yaw(self) -> None:
-        """Test: twarz obrócona w lewo ma yaw > 0."""
+    def test_left_turned_face_has_negative_yaw_asymmetry(self) -> None:
+        """Test: twarz obrócona w lewo (nos bliżej lewego oka) ma yaw_asymmetry < 0."""
         kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
         # Przesuń nos w lewo
         kp[KP.NOSE_TIP, 0] -= 35
@@ -225,10 +223,10 @@ class TestEstimateHeadPose:
 
         pose = estimate_head_pose(kp.flatten())
 
-        assert pose.yaw > 5
+        assert pose.yaw_asymmetry < -0.05
 
-    def test_right_turned_face_has_negative_yaw(self) -> None:
-        """Test: twarz obrócona w prawo ma yaw < 0."""
+    def test_right_turned_face_has_positive_yaw_asymmetry(self) -> None:
+        """Test: twarz obrócona w prawo (nos bliżej prawego oka) ma yaw_asymmetry > 0."""
         kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
         kp[KP.NOSE_TIP, 0] += 35
         kp[KP.LEFT_EYE_INNER, 0] += 20
@@ -236,7 +234,7 @@ class TestEstimateHeadPose:
 
         pose = estimate_head_pose(kp.flatten())
 
-        assert pose.yaw < -5
+        assert pose.yaw_asymmetry > 0.05
 
     def test_tilted_eyes_produce_nonzero_roll(self) -> None:
         """Test: przekrzywione oczy dają roll ≠ 0."""
@@ -282,21 +280,19 @@ class TestNeutralFrameDetector:
     def test_default_initialization(self, detector: NeutralFrameDetector) -> None:
         """Test inicjalizacji detektora z domyślnymi parametrami."""
         assert detector.min_keypoint_conf == 0.5
-        assert detector.max_yaw == 35.0
-        assert detector.max_pitch == 40.0
-        assert detector.max_roll == 20.0
+        assert detector.max_yaw_asymmetry == 0.35
+        assert detector.max_roll == 30.0
 
     def test_custom_initialization(self) -> None:
         """Test inicjalizacji z niestandardowymi parametrami."""
         detector = NeutralFrameDetector(
             min_keypoint_conf=0.8,
-            max_yaw=15.0,
-            max_pitch=15.0,
+            max_yaw_asymmetry=0.15,
             max_roll=10.0,
         )
 
         assert detector.min_keypoint_conf == 0.8
-        assert detector.max_yaw == 15.0
+        assert detector.max_yaw_asymmetry == 0.15
 
     def test_empty_sequence_raises_value_error(
         self, detector: NeutralFrameDetector
