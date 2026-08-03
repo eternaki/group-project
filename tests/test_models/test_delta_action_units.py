@@ -12,6 +12,8 @@ from packages.data.schemas import KP, NUM_KEYPOINTS
 from packages.models.delta_action_units import (
     ACTION_UNIT_NAMES,
     NUM_ACTION_UNITS,
+    RATIO_CLAMP_MAX,
+    RATIO_CLAMP_MIN,
     DeltaActionUnit,
     DeltaActionUnitsExtractor,
     extract_delta_action_units,
@@ -372,6 +374,110 @@ class TestActionUnitNames:
             assert code not in ACTION_UNIT_NAMES, (
                 f"{code} nie istnieje w DogFACS i nie powinien być w ACTION_UNIT_NAMES"
             )
+
+
+class TestClampedRatioUnreliable:
+    """Klamrowanie stosunku = wyrodne pomiary (mały mianownik / skrajna zmiana).
+
+    Najczęściej dotyczy uszu (EAD): punkty uszu są ruchome i słabo lokalizowane,
+    więc stosunki odległości "wybuchają" do granic clampu i dawały fałszywe aktywne AU.
+    Klamrowany pomiar uznajemy za niewiarygodny: is_active=False, confidence=0.
+    """
+
+    def test_clamped_max_ratio_not_active(self) -> None:
+        """Stosunek dobity do RATIO_CLAMP_MAX → AU nieaktywny, confidence 0."""
+        neutral = make_dog_face_kp().reshape(NUM_KEYPOINTS, 3).copy()
+        # Końce uszu bardzo blisko siebie w neutralu → mały mianownik EAD105
+        neutral[KP.LEFT_EAR_TIP] = [148, 70, 0.9]
+        neutral[KP.RIGHT_EAR_TIP] = [152, 70, 0.9]
+        target = make_dog_face_kp()  # normalne, rozstawione uszy → ogromny stosunek
+        aus = DeltaActionUnitsExtractor(neutral.flatten()).extract(target)
+        assert aus["EAD105"].ratio == pytest.approx(RATIO_CLAMP_MAX), "powinno dobić do MAX"
+        assert aus["EAD105"].is_active is False, "klamrowany pomiar nie jest aktywny"
+        assert aus["EAD105"].confidence == 0.0, "klamrowany pomiar ma confidence 0"
+
+    def test_clamped_min_ratio_not_active(self) -> None:
+        """Stosunek dobity do RATIO_CLAMP_MIN → AU nieaktywny, confidence 0."""
+        neutral = make_dog_face_kp()  # normalne uszy
+        target = make_dog_face_kp().reshape(NUM_KEYPOINTS, 3).copy()
+        target[KP.LEFT_EAR_TIP] = [148, 70, 0.9]   # uszy zbite → maleńki licznik
+        target[KP.RIGHT_EAR_TIP] = [152, 70, 0.9]
+        aus = DeltaActionUnitsExtractor(neutral).extract(target.flatten())
+        assert aus["EAD105"].ratio == pytest.approx(RATIO_CLAMP_MIN), "powinno dobić do MIN"
+        assert aus["EAD105"].is_active is False
+        assert aus["EAD105"].confidence == 0.0
+
+    def test_unclamped_activation_unaffected(self) -> None:
+        """Niewyklamrowana realna zmiana nadal daje aktywne AU z confidence."""
+        neutral = make_dog_face_kp()
+        target = make_dog_face_kp().reshape(NUM_KEYPOINTS, 3).copy()
+        target[KP.CHIN, 1] += 20  # umiarkowane opuszczenie żuchwy (AU26), bez clampu
+        aus = DeltaActionUnitsExtractor(neutral).extract(target.flatten())
+        assert RATIO_CLAMP_MIN < aus["AU26"].ratio < RATIO_CLAMP_MAX
+        assert aus["AU26"].is_active is True
+        assert aus["AU26"].confidence > 0.0
+
+
+class TestMedianBaseline:
+    """Testy bazy median (wariant A+): wiele klatek neutralnych → median jako baza.
+
+    Pojedyncza klatka neutralna bywa zaszumiona (drganie keypoints). Median z kilku
+    klatek daje stabilną bazę i jest odporna na pojedynczy odstający kadr.
+    """
+
+    def test_list_of_identical_frames_equals_that_frame(self) -> None:
+        """Lista identycznych klatek → baza równa tej klatce (sanity)."""
+        frame = make_dog_face_kp()
+        extractor = DeltaActionUnitsExtractor([frame, frame.copy(), frame.copy()])
+        np.testing.assert_allclose(
+            extractor.neutral_kp, frame.reshape(NUM_KEYPOINTS, 3), rtol=1e-5
+        )
+
+    def test_2d_array_neutral_accepted(self) -> None:
+        """Wejście jako tablica 2D (N, 138) jest akceptowane jak lista klatek."""
+        frame = make_dog_face_kp()
+        stacked = np.stack([frame, frame.copy(), frame.copy()])  # (3, 138)
+        extractor = DeltaActionUnitsExtractor(stacked)
+        np.testing.assert_allclose(
+            extractor.neutral_kp, frame.reshape(NUM_KEYPOINTS, 3), rtol=1e-5
+        )
+
+    def test_median_baseline_robust_to_single_outlier_frame(self) -> None:
+        """Median ignoruje pojedynczy odstający kadr neutralny.
+
+        4 czyste klatki (chin y=250) + 1 odstająca (chin y=400). Median chin y = 250.
+        Klatka docelowa = czysta → AU26 (Jaw Drop) ratio ≈ 1.0, mimo outliera w bazie.
+        """
+        clean = make_dog_face_kp().reshape(NUM_KEYPOINTS, 3)
+        outlier = clean.copy()
+        outlier[KP.CHIN, 1] = 400  # drastycznie opuszczony podbródek (błąd detekcji)
+
+        frames = [clean.flatten()] * 4 + [outlier.flatten()]
+        extractor = DeltaActionUnitsExtractor(frames)
+
+        delta_aus = extractor.extract(clean.flatten())
+        assert delta_aus["AU26"].ratio == pytest.approx(1.0, abs=0.05), (
+            "Median powinna odrzucić outlier — AU26 ≈ 1.0 dla czystej klatki docelowej"
+        )
+
+    def test_single_frame_backward_compatible(self) -> None:
+        """Pojedyncza klatka (138,) działa jak dotychczas (kompatybilność wsteczna)."""
+        frame = make_dog_face_kp()
+        extractor = DeltaActionUnitsExtractor(frame)
+        np.testing.assert_allclose(
+            extractor.neutral_kp, frame.reshape(NUM_KEYPOINTS, 3), rtol=1e-5
+        )
+
+    def test_empty_neutral_list_raises(self) -> None:
+        """Pusta lista klatek neutralnych rzuca ValueError."""
+        with pytest.raises(ValueError, match="pusta|empty|co najmniej"):
+            DeltaActionUnitsExtractor([])
+
+    def test_neutral_frame_wrong_length_raises(self) -> None:
+        """Klatka o złej długości w liście rzuca ValueError."""
+        good = make_dog_face_kp()
+        with pytest.raises(ValueError, match="138"):
+            DeltaActionUnitsExtractor([good, np.zeros(60)])
 
 
 class TestAUImprovements:

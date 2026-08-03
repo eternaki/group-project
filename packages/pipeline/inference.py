@@ -660,6 +660,7 @@ class InferencePipeline:
         from packages.models.emotion import classify_emotion_from_delta_aus
         from packages.pipeline.neutral_frame import (
             NeutralFrameDetector,
+            collect_neutral_baseline,
             estimate_head_pose,
         )
         from packages.pipeline.peak_selector import PeakFrameSelector, compute_tfm
@@ -770,15 +771,18 @@ class InferencePipeline:
             print(f"  → Using manual neutral frame: {neutral_idx}")
 
         neutral_keypoints = keypoints_list[neutral_idx]
-
         if neutral_keypoints is None:
             raise ValueError(f"Neutral frame {neutral_idx} nie ma keypoints!")
+
+        # Baza median z okna klatek wokół neutralnej — odporna na pojedynczy zły kadr
+        neutral_baseline = collect_neutral_baseline(keypoints_list, neutral_idx)
+        print(f"  → Baza median z {len(neutral_baseline)} klatek wokół neutralnej")
 
         _cb(86, "Computing delta AUs...")
 
         # Step 4: Oblicz delta AU dla wszystkich klatek
         print("\n[4/5] Obliczanie delta Action Units...")
-        delta_extractor = DeltaActionUnitsExtractor(neutral_keypoints)
+        delta_extractor = DeltaActionUnitsExtractor(neutral_baseline)
 
         delta_aus_list = []
         for kp in keypoints_list:
