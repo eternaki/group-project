@@ -1914,22 +1914,21 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - [ ] **Step 1: Napisz test odpowiedzi z listą psów**
 
 ```python
-    async def test_process_video_zwraca_liste_psow(self, client) -> None:
-        """Test: odpowiedź zawiera psy z własnymi track_id (wideo może mieć kilka)."""
-        resp = await client.get(f"/api/sessions/{SESSION_ID}")
+    async def test_klatka_sesji_niesie_track_id(self, client) -> None:
+        """Test: każda klatka wie, do którego psa należy (wideo może mieć kilka)."""
+        resp = await client.get(f"/api/sessions/{SESSION_ID}/frames")
         assert resp.status_code == 200
 
-        data = resp.json()
-        assert "dogs" in data or "frames" in data, (
-            "sesja musi wystawiać psy jako listę albo zachować zgodne pole frames"
-        )
+        frames = resp.json()["frames"]
+        assert frames, "sesja testowa musi mieć co najmniej jedną klatkę"
+        assert "track_id" in frames[0], "klatka musi wskazywać psa, którego dotyczy"
 ```
 
-- [ ] **Step 2: Uruchom test i potwierdź czerwony lub zielony**
+- [ ] **Step 2: Uruchom test i potwierdź czerwony**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_backend/test_sessions_api.py -q`
-Jeśli test przechodzi od razu (bo `frames` istnieje), rozszerz asercję o sprawdzenie
-`track_id` w pierwszej klatce — musi wtedy zawieść.
+Run: `.venv/Scripts/python.exe -m pytest tests/test_backend/test_sessions_api.py -q -k track_id`
+Expected: FAIL — `AssertionError: klatka musi wskazywać psa, którego dotyczy`
+(pole `track_id` nie istnieje jeszcze w `FrameAnnotation`)
 
 - [ ] **Step 3: Zaktualizuj `main.py`**
 
