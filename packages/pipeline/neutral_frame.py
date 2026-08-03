@@ -107,8 +107,15 @@ class NeutralFrameDetector:
                 "Wideo może mieć za mało wykrytych keypoints."
             )
 
+        # Wynik = stabilność × frontalność. Przy podobnej stabilności preferujemy
+        # klatkę bardziej frontalną — odwrócona/pochylona głowa daje złą bazę
+        # (szczególnie dla geometrii uszu), psując wszystkie delta AU.
         scores = [
-            (idx, self._compute_stability_score(keypoints_list, idx))
+            (
+                idx,
+                self._compute_stability_score(keypoints_list, idx)
+                * _frontal_factor(head_poses[idx]),
+            )
             for idx in candidates
         ]
         best_idx, _ = max(scores, key=lambda x: x[1])
@@ -274,6 +281,64 @@ _CRITICAL_KP_INDICES: list[int] = [
     KP.LEFT_EAR_BASE_FRONT,
     KP.RIGHT_EAR_BASE_FRONT,
 ]
+
+
+def collect_neutral_baseline(
+    keypoints_list: list[Optional[np.ndarray]],
+    neutral_idx: int,
+    window: int = 2,
+) -> list[np.ndarray]:
+    """
+    Zbiera okno poprawnych klatek wokół klatki neutralnej dla bazy median.
+
+    Zamiast pojedynczej (zaszumionej) klatki neutralnej, zwraca listę
+    sąsiednich poprawnych klatek z przedziału [neutral_idx-window, neutral_idx+window].
+    Lista trafia do DeltaActionUnitsExtractor, który liczy median jako stabilną bazę.
+
+    Args:
+        keypoints_list: Lista keypoints dla każdej klatki (None = brak detekcji)
+        neutral_idx: Indeks wykrytej klatki neutralnej
+        window: Promień okna w klatkach (domyślnie 2 → do 5 klatek)
+
+    Returns:
+        Lista poprawnych tablic keypoints (co najmniej jedna)
+
+    Raises:
+        ValueError: Gdy w oknie nie ma żadnej poprawnej klatki
+    """
+    start = max(0, neutral_idx - window)
+    end = min(len(keypoints_list), neutral_idx + window + 1)
+
+    baseline = [
+        keypoints_list[i] for i in range(start, end) if keypoints_list[i] is not None
+    ]
+
+    if not baseline:
+        raise ValueError(
+            f"Brak poprawnych klatek neutralnych w oknie ±{window} "
+            f"wokół indeksu {neutral_idx}"
+        )
+
+    return baseline
+
+
+def _frontal_factor(pose: Optional[HeadPose]) -> float:
+    """
+    Współczynnik frontalności do oceny kandydata na neutralną klatkę.
+
+    Im mniejsze sumaryczne odchylenie głowy (|yaw|+|pitch|+|roll|), tym wyższy
+    współczynnik (max 1.0). Spada ku 0 dla mocno odwróconej głowy.
+
+    Args:
+        pose: Poza głowy (None → neutralny współczynnik 0.5)
+
+    Returns:
+        Współczynnik w (0, 1]
+    """
+    if pose is None:
+        return 0.5
+    total_deviation = abs(pose.yaw) + abs(pose.pitch) + abs(pose.roll)
+    return 1.0 / (1.0 + total_deviation / 30.0)
 
 
 def _is_frontal_pose(
