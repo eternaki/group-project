@@ -9,9 +9,52 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from packages.data.schemas import KEYPOINT_NAMES, SKELETON_CONNECTIONS
+
+# Typ pojedynczej wartości w polu au_analysis: nowy format (słownik z wiarygodnością)
+# lub stary (samo ratio) — zbiory sprzed wprowadzenia is_active/confidence.
+AUValue = Union[float, dict]
+
+
+def au_ratio(value: AUValue) -> float:
+    """
+    Zwraca ratio AU niezależnie od formatu zapisu.
+
+    Args:
+        value: Wartość z au_analysis — float (stary format) lub słownik z kluczem "ratio"
+
+    Returns:
+        Ratio (stosunek cel/neutral)
+    """
+    if isinstance(value, dict):
+        return float(value.get("ratio", 0.0))
+    return float(value)
+
+
+def au_analysis_from_delta_aus(delta_aus: dict) -> dict[str, dict]:
+    """
+    Serializuje Action Units do pola au_analysis wraz z wiarygodnością pomiaru.
+
+    Sam ratio nie wystarcza: klamrowana wartość (np. ruchome ucho przy limicie 3.0)
+    wygląda jak silna aktywacja, choć pomiar jest niewiarygodny. Zapisujemy więc
+    komplet: ratio + is_active + confidence.
+
+    Args:
+        delta_aus: Słownik {nazwa AU: DeltaActionUnit}
+
+    Returns:
+        Słownik {nazwa AU: {"ratio": float, "is_active": bool, "confidence": float}}
+    """
+    return {
+        name: {
+            "ratio": float(au.ratio),
+            "is_active": bool(au.is_active),
+            "confidence": float(au.confidence),
+        }
+        for name, au in delta_aus.items()
+    }
 
 
 @dataclass
@@ -184,7 +227,7 @@ class COCODataset:
         emotion_name: Optional[str] = None,
         confidence: Optional[dict[str, float]] = None,
         iscrowd: int = 0,
-        au_analysis: Optional[dict[str, float]] = None,
+        au_analysis: Optional[dict[str, AUValue]] = None,
         neutral_frame_id: Optional[int] = None,
         emotion_rule_applied: Optional[str] = None,
         **extra_fields,
@@ -203,7 +246,9 @@ class COCODataset:
             emotion_name: Nazwa emocji
             confidence: Słownik z pewnością {"bbox": 0.95, ...}
             iscrowd: Czy to tłum (domyślnie 0)
-            au_analysis: Analiza Action Units {"AU101": 0.15, "AU12": 0.25, ...}
+            au_analysis: Analiza Action Units
+                {"AU101": {"ratio": 1.15, "is_active": True, "confidence": 0.9}, ...}
+                (stary format — samo ratio jako float — jest nadal odczytywany)
             neutral_frame_id: ID neutral frame (reference do image_id)
             emotion_rule_applied: Nazwa zastosowanej reguły emocji
             **extra_fields: Dodatkowe pola
@@ -527,7 +572,7 @@ class COCODataset:
                         "avg_delta": 0.0,
                     }
                 stats["action_units"][au_name]["count"] += 1
-                stats["action_units"][au_name]["total_delta"] += au_value
+                stats["action_units"][au_name]["total_delta"] += au_ratio(au_value)
 
         # Oblicz średnie dla AU
         for au_name in stats["action_units"]:

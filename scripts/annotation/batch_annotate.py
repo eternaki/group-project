@@ -29,6 +29,8 @@ import cv2
 import numpy as np
 import torch
 
+from packages.data.coco import au_analysis_from_delta_aus
+
 # Konfiguracja logowania
 logging.basicConfig(
     level=logging.INFO,
@@ -389,9 +391,10 @@ class BatchAnnotator:
                 breed_name = breed_pred.class_name
                 confidence["breed"] = float(breed_pred.confidence)
 
-            au_analysis = {
-                k: float(v) for k, v in emotion_pred.action_units.items()
-            } or None
+            # Zapisujemy komplet (ratio + is_active + confidence), bo samo ratio
+            # nie odróżnia realnej aktywacji od klamrowanego, niewiarygodnego pomiaru.
+            delta_aus = peak.get("delta_aus")
+            au_analysis = au_analysis_from_delta_aus(delta_aus) if delta_aus else None
 
             self.coco_dataset.add_annotation(
                 image_id=image_id,

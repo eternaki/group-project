@@ -337,7 +337,16 @@ def _build_coco_annotation(
         "breed": frame.breed,
         "breed_confidence": frame.breed_confidence,
         "tfm_score": frame.tfm_score,
-        "aus": frame.aus,
+        # Ten sam format co w batch annotation (packages.data.coco): ratio nie
+        # odróżnia realnej aktywacji od klamrowanego pomiaru, więc zapisujemy komplet.
+        "au_analysis": {
+            name: {
+                "ratio": au.get("ratio", 0.0),
+                "is_active": au.get("is_active", False),
+                "confidence": au.get("confidence", 0.0),
+            }
+            for name, au in (frame.aus or {}).items()
+        },
     }
     if frame.bbox is not None:
         ann["bbox"] = frame.bbox
