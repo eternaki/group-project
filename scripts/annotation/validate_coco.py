@@ -419,7 +419,6 @@ class COCOValidator:
 
         # Zbierz prawidłowe ID
         valid_image_ids = {img["id"] for img in data.get("images", [])}
-        valid_category_ids = {cat["id"] for cat in data.get("categories", [])}
 
         # Napraw anotacje
         fixed_annotations = []

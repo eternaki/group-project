@@ -458,7 +458,7 @@ def main():
     if args.report:
         print(selector.generate_report(distribution))
     else:
-        print(f"\n=== WYNIK ===")
+        print("\n=== WYNIK ===")
         print(f"Wybrano {distribution.sample_size} obrazów z {distribution.total_images}")
         print(f"Zapisano do: {args.output}")
 

@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
-import numpy as np
 
 # Konfiguracja logowania
 logging.basicConfig(
@@ -84,7 +83,7 @@ class QualityMonitor:
 
     Użycie:
         monitor = QualityMonitor(annotations_path)
-        metrics = monitor.analyze()
+        monitor.analyze()
         monitor.generate_report()
     """
 
@@ -531,7 +530,7 @@ def main():
     )
 
     # Analiza
-    metrics = monitor.analyze()
+    monitor.analyze()
 
     # Raport
     if args.report:

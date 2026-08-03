@@ -36,12 +36,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageOps
-
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
+from PIL import Image, ImageOps
+from torch.utils.data import DataLoader, Dataset
 
 # timm bywa wstępnie zainstalowany; gwarantujemy obecność
 try:

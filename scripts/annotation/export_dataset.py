@@ -293,7 +293,7 @@ Dataset zawierający anotacje emocji psów w formacie COCO. Stworzony jako czę�
         for split_name, split_data in s.by_split.items():
             content += f"| {split_name} | {split_data['images']} | {split_data['annotations']} |\n"
 
-        content += f"""
+        content += """
 ### Rozkład emocji
 
 | Emocja | Liczba |
@@ -302,7 +302,7 @@ Dataset zawierający anotacje emocji psów w formacie COCO. Stworzony jako czę�
         for emotion, count in sorted(s.by_emotion.items()):
             content += f"| {emotion} | {count} |\n"
 
-        content += f"""
+        content += """
 ### Top 10 ras
 
 | Rasa | Liczba |
@@ -555,7 +555,7 @@ def main():
     if args.package:
         exporter.create_package(output_dir)
 
-    print(f"\n=== EKSPORT ZAKOŃCZONY ===")
+    print("\n=== EKSPORT ZAKOŃCZONY ===")
     print(f"Katalog: {output_dir}")
     print(f"Obrazy:  {exporter.stats.total_images}")
     print(f"Anotacje: {exporter.stats.total_annotations}")
