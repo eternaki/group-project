@@ -66,6 +66,28 @@ class TrackQuality:
     min_face_px: float = MIN_FACE_SIZE_PX
     min_conf: float = MIN_KEYPOINT_CONF
 
+    def __post_init__(self) -> None:
+        """
+        Sprawdza progi.
+
+        Bez tej kontroli `min_frames=0` przepuszczał PUSTY trek jako przyjęty:
+        `np.median([])` daje NaN, a porównanie `NaN < próg` jest fałszywe, więc
+        żadna z pozostałych kontroli nie zadziałała. Dopiero dalej leciał
+        nieczytelny `IndexError`.
+
+        Raises:
+            ValueError: Gdy próg jest poza sensownym zakresem
+        """
+        if self.min_frames < MIN_NOISE_SAMPLES:
+            raise ValueError(
+                f"min_frames musi wynosić co najmniej {MIN_NOISE_SAMPLES} "
+                f"(poniżej tego szum AU jest niemierzalny), otrzymano {self.min_frames}"
+            )
+        if self.min_face_px <= 0.0:
+            raise ValueError(f"min_face_px musi być dodatnie, otrzymano {self.min_face_px}")
+        if not 0.0 < self.min_conf <= 1.0:
+            raise ValueError(f"min_conf musi być w (0, 1], otrzymano {self.min_conf}")
+
 
 DEFAULT_TRACK_QUALITY: TrackQuality = TrackQuality()
 
@@ -104,6 +126,9 @@ class TrackResult:
             najsilniejszej (nie pozycje w `frames`)
         au_noise: Odchylenie standardowe ratio na trek, osobno dla każdego AU.
             AU o mniej niż `MIN_NOISE_SAMPLES` poprawnych pomiarach nie ma tu klucza.
+            UWAGA: pusty słownik NIE znaczy „trek odrzucony" — przyjęty trek, w
+            którym każde AU ma za mało pomiarów, też go dostanie. Jedynym
+            poprawnym dyskryminatorem jest `rejected_reason`.
         au_sample_count: Liczba poprawnych pomiarów ratio, z których policzono szum.
             Bez niej nie da się skorygować obciążenia krótkich treków (patrz
             `compute_au_noise`) ani odróżnić braku pomiaru od pomiaru stabilnego.

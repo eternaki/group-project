@@ -12,6 +12,7 @@ from packages.models.delta_action_units import (
 from packages.models.head_pose import HeadPose
 from packages.pipeline.landmark_smoothing import KeypointSmoother
 from packages.pipeline.track_processing import (
+    MIN_NOISE_SAMPLES,
     NO_NEUTRAL_FRAME,
     TrackFrame,
     TrackQuality,
@@ -31,6 +32,9 @@ JITTER_PX: float = 2.0
 REALISTIC_JITTER_PX: float = 9.1
 JITTER_FRAMES: int = 25
 BASELINE_FRAMES: int = 5
+# Liczba realizacji szumu w teście charakteryzującym — pojedyncze losowanie daje
+# rozrzut mediany sigma 0.121-0.211, więc jeden przebieg przypinałby skrajność
+NOISE_REALIZATIONS: int = 20
 # Próg aktywacji AU wyrażony jako delta (ratio 1.15 → 0.15)
 ACTIVATION_DELTA: float = DEFAULT_ACTIVATION_THRESHOLD - 1.0
 # AU liczone z widoczności punktów, nie z geometrii — filtr nie rusza kanału widoczności,
@@ -108,6 +112,39 @@ def _noise_of_series(series: list[np.ndarray]) -> dict[str, float]:
         for idx, keypoints in enumerate(series[BASELINE_FRAMES:], start=BASELINE_FRAMES)
     ]
     return compute_au_noise(frames)
+
+
+class TestTrackQualityValidation:
+    """Progi godności nie mogą dać się ustawić tak, żeby wyłączyć bramkę."""
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"min_frames": 0},
+            {"min_frames": 1},
+            {"min_frames": -3},
+            {"min_face_px": 0.0},
+            {"min_face_px": -10.0},
+            {"min_conf": 0.0},
+            {"min_conf": 1.5},
+        ],
+    )
+    def test_out_of_range_thresholds_raise(self, kwargs: dict) -> None:
+        """
+        Regresja: `min_frames=0` przepuszczał PUSTY trek jako przyjęty.
+
+        Mechanizm: `np.median([])` daje NaN, a `NaN < próg` jest fałszywe, więc
+        pozostałe kontrole też przepuszczały. Dopiero dalej leciał nieczytelny
+        `IndexError` po dwóch ostrzeżeniach numpy.
+        """
+        with pytest.raises(ValueError):
+            TrackQuality(**kwargs)
+
+    def test_empty_track_cannot_be_accepted_by_loosened_thresholds(self) -> None:
+        """Nie ma konfiguracji, przy której pusty trek przechodzi bramkę."""
+        loosest = TrackQuality(min_frames=MIN_NOISE_SAMPLES, min_face_px=1e-6, min_conf=1e-6)
+
+        assert evaluate_track_quality([], quality=loosest) is not None
 
 
 class TestEvaluateTrackQuality:
@@ -301,33 +338,43 @@ class TestComputeAuNoise:
             for name in VISIBILITY_BASED_AUS
         ), "AU145 i AD19 liczą się z widoczności — filtr ich nie dotyka (patrz stała)"
 
-    def test_noise_at_real_model_error_still_exceeds_activation_threshold(self) -> None:
+    def test_noise_at_real_model_error_is_of_the_order_of_activation_threshold(self) -> None:
         """
         Test charakteryzujący (nie progowy): zapisuje, gdzie naprawdę jesteśmy.
 
         Poprzedni test używa jitteru 2 px = NME_iod 0.02, czyli modelu idealnego.
         Nasz model keypoints ma NME_iod 0.091 (9.1 px przy rozstawie oczu 100 px).
-        Przy tym poziomie błędu mediana sigma PO wygładzeniu wciąż przekracza próg
-        aktywacji 0.15, a wygładzanie daje już tylko ~1.5x zamiast ~2.7x. Wniosek:
-        samo wygładzanie nie wystarczy — dopóki keypoints są tej jakości, część AU
-        zapala się od szumu i `au_noise` musi ważyć te klatki w treningu.
+
+        Liczby uśrednione po `NOISE_REALIZATIONS` realizacjach szumu, bo pojedyncze
+        losowanie daje rozrzut, który łatwo wziąć za wynik: mediana sigma po
+        wygładzeniu waha się 0.121-0.211 (mediana 0.166), a liczba AU powyżej progu
+        9-16. Zapisanie jednego przebiegu oznaczałoby podanie skrajności za regułę.
+
+        Stan faktyczny: mediana sigma PO wygładzeniu jest RZĘDU progu aktywacji
+        0.15, a nie bezpiecznie pod nim; zysk z wygładzania spada z ~2.8x (jitter
+        2 px) do ~1.5x. Wniosek: samo wygładzanie nie wystarczy — dopóki keypoints
+        są tej jakości, część AU zapala się od szumu, reguły AU pozostają
+        pre-etykietami, a `au_noise` musi ważyć te klatki w treningu.
         """
-        rng = np.random.default_rng(0)
-        raw_series = _jittered_series(rng, jitter_px=REALISTIC_JITTER_PX)
+        medians: list[float] = []
+        counts: list[int] = []
+        for seed in range(NOISE_REALIZATIONS):
+            rng = np.random.default_rng(seed)
+            raw_series = _jittered_series(rng, jitter_px=REALISTIC_JITTER_PX)
+            smoothed_noise = _noise_of_series(_smoothed_series(raw_series))
+            medians.append(float(np.median(list(smoothed_noise.values()))))
+            counts.append(sum(1 for s in smoothed_noise.values() if s > ACTIVATION_DELTA))
 
-        smoothed_noise = _noise_of_series(_smoothed_series(raw_series))
+        typical_median = float(np.median(medians))
+        typical_count = float(np.median(counts))
 
-        smoothed_median = float(np.median(list(smoothed_noise.values())))
-        above_threshold = [
-            name for name, sigma in smoothed_noise.items() if sigma > ACTIVATION_DELTA
-        ]
-        assert smoothed_median > ACTIVATION_DELTA, (
-            f"stan faktyczny: mediana sigma {smoothed_median:.3f} przy progu "
-            f"aktywacji {ACTIVATION_DELTA:.2f}"
+        assert typical_median > ACTIVATION_DELTA / 2, (
+            f"stan faktyczny: typowa mediana sigma {typical_median:.3f} przy progu "
+            f"aktywacji {ACTIVATION_DELTA:.2f} (zakres {min(medians):.3f}-{max(medians):.3f})"
         )
-        assert len(above_threshold) >= 12, (
-            f"stan faktyczny: {len(above_threshold)} z {len(smoothed_noise)} AU "
-            f"powyżej progu aktywacji: {sorted(above_threshold)}"
+        assert typical_count >= 9, (
+            f"stan faktyczny: typowo {typical_count:.0f} z 21 AU powyżej progu "
+            f"aktywacji (zakres {min(counts)}-{max(counts)})"
         )
 
 
