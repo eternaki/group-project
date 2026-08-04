@@ -31,6 +31,7 @@ from packages.models.delta_action_units import (
     RATIO_CLAMP_MAX,
     RATIO_CLAMP_MIN,
 )
+from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
 from packages.pipeline import InferencePipeline, PipelineConfig
 
 VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".webm")
@@ -170,7 +171,8 @@ def audit_video(
     if neutral_data is not None and neutral_data.get("head_pose") is not None:
         pose = neutral_data["head_pose"]
         stats.neutral_frontality.append(
-            abs(float(pose.yaw_asymmetry)) / 0.35 + abs(float(pose.roll)) / 30.0
+            abs(float(pose.yaw_asymmetry)) / DEFAULT_MAX_YAW_ASYMMETRY
+            + abs(float(pose.roll)) / DEFAULT_MAX_ROLL
         )
 
     for peak in result.get("peak_frames", []):
@@ -226,7 +228,7 @@ def build_report(stats: AuditStats, elapsed: float) -> dict:
                 sum(
                     1
                     for y, r in zip(stats.yaw_asymmetry, stats.roll)
-                    if y > 0.35 or r > 30
+                    if y > DEFAULT_MAX_YAW_ASYMMETRY or r > DEFAULT_MAX_ROLL
                 )
                 / max(len(stats.yaw_asymmetry), 1) * 100,
                 1,

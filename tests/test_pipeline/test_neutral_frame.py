@@ -14,84 +14,7 @@ from packages.pipeline.neutral_frame import (
     NeutralFrameDetector,
     collect_neutral_baseline,
 )
-
-# =============================================================================
-# Fixture: realistyczna twarz psa (46 keypoints)
-# =============================================================================
-
-def make_frontal_kp() -> np.ndarray:
-    """
-    Tworzy realistyczną tablicę 46 keypoints — frontalna twarz psa.
-
-    Centrum (150, 150), odległość między centrami oczu ~100px.
-    Symetria lewo/prawa → minimalne yaw/pitch/roll.
-
-    Returns:
-        Tablica (138,) z wartościami [x0, y0, v0, ...]
-    """
-    kp = np.zeros((NUM_KEYPOINTS, 3), dtype=np.float32)
-    kp[:, 2] = 0.95
-
-    # Oczy
-    kp[KP.LEFT_EYE_INNER]  = [105, 150, 0.95]
-    kp[KP.LEFT_EYE_TOP]    = [100, 144, 0.95]
-    kp[KP.LEFT_EYE_OUTER]  = [95, 150, 0.95]
-    kp[KP.LEFT_EYE_BOTTOM] = [100, 156, 0.95]
-    kp[KP.RIGHT_EYE_INNER] = [195, 150, 0.95]
-    kp[KP.RIGHT_EYE_TOP]   = [200, 144, 0.95]
-    kp[KP.RIGHT_EYE_OUTER] = [205, 150, 0.95]
-    kp[KP.RIGHT_EYE_BOTTOM]= [200, 156, 0.95]
-
-    # Brwi
-    kp[KP.LEFT_BROW_INNER]  = [108, 137, 0.9]
-    kp[KP.LEFT_BROW_CENTER] = [100, 134, 0.9]
-    kp[KP.LEFT_BROW_OUTER]  = [92, 137, 0.9]
-    kp[KP.RIGHT_BROW_INNER] = [192, 137, 0.9]
-    kp[KP.RIGHT_BROW_CENTER]= [200, 134, 0.9]
-    kp[KP.RIGHT_BROW_OUTER] = [208, 137, 0.9]
-
-    # Uszy (symetryczne)
-    kp[KP.LEFT_EAR_BASE_FRONT]  = [80, 120, 0.9]
-    kp[KP.LEFT_EAR_BASE_BACK]   = [75, 115, 0.85]
-    kp[KP.LEFT_EAR_MID]         = [72, 95, 0.85]
-    kp[KP.LEFT_EAR_TIP]         = [68, 70, 0.8]
-    kp[KP.RIGHT_EAR_BASE_FRONT] = [220, 120, 0.9]
-    kp[KP.RIGHT_EAR_BASE_BACK]  = [225, 115, 0.85]
-    kp[KP.RIGHT_EAR_MID]        = [228, 95, 0.85]
-    kp[KP.RIGHT_EAR_TIP]        = [232, 70, 0.8]
-
-    # Nos — pośrodku
-    kp[KP.NOSE_TIP]       = [150, 200, 0.95]
-    kp[KP.NOSE_LEFT_WING] = [143, 196, 0.9]
-    kp[KP.NOSE_RIGHT_WING]= [157, 196, 0.9]
-    kp[KP.NOSE_BRIDGE]    = [150, 175, 0.9]
-
-    # Usta
-    kp[KP.MOUTH_LEFT_CORNER]  = [120, 218, 0.9]
-    kp[KP.UPPER_LIP_LEFT]     = [132, 214, 0.9]
-    kp[KP.UPPER_LIP_CENTER]   = [150, 212, 0.9]
-    kp[KP.UPPER_LIP_RIGHT]    = [168, 214, 0.9]
-    kp[KP.MOUTH_RIGHT_CORNER] = [180, 218, 0.9]
-    kp[KP.LOWER_LIP_RIGHT]    = [168, 226, 0.9]
-    kp[KP.LOWER_LIP_CENTER]   = [150, 228, 0.9]
-    kp[KP.LOWER_LIP_LEFT]     = [132, 226, 0.9]
-
-    # Pysk i kontur
-    kp[KP.MUZZLE_TOP]        = [150, 207, 0.9]
-    kp[KP.MUZZLE_LEFT]       = [122, 222, 0.85]
-    kp[KP.MUZZLE_RIGHT]      = [178, 222, 0.85]
-    kp[KP.CHIN]              = [150, 250, 0.85]
-    kp[KP.FOREHEAD_CENTER]   = [150, 115, 0.8]
-    kp[KP.FOREHEAD_LEFT]     = [120, 118, 0.8]
-    kp[KP.FOREHEAD_RIGHT]    = [180, 118, 0.8]
-    kp[KP.LEFT_CHEEK_UPPER]  = [88, 162, 0.8]
-    kp[KP.LEFT_CHEEK_LOWER]  = [88, 202, 0.8]
-    kp[KP.RIGHT_CHEEK_UPPER] = [212, 162, 0.8]
-    kp[KP.RIGHT_CHEEK_LOWER] = [212, 202, 0.8]
-    kp[KP.JAW_CENTER]        = [150, 245, 0.85]
-
-    return kp.flatten()
-
+from tests.test_pipeline.kp_fixtures import make_frontal_kp
 
 # =============================================================================
 # Testy klasy HeadPose
@@ -150,7 +73,7 @@ class TestNeutralPrefersFrontal:
         kp = make_frontal_kp()
         keypoints_list = [kp.copy() for _ in range(7)]
         # Wszystkie klatki jednakowo stabilne; różni je tylko poza głowy.
-        # Klatki bardziej odwrócone (yaw/pitch wysokie, ale wciąż w granicach kandydata)
+        # Klatki bardziej odwrócone (wysoka asymetria yaw, ale wciąż w granicach kandydata)
         # i jedna wyraźnie frontalna (idx 3).
         def hp(yaw_asymmetry: float) -> HeadPose:
             return HeadPose(

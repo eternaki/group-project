@@ -12,7 +12,12 @@ from typing import Optional
 import numpy as np
 
 from packages.data.schemas import KP, NUM_KEYPOINTS
-from packages.models.head_pose import HeadPose, estimate_head_pose
+from packages.models.head_pose import (
+    DEFAULT_MAX_ROLL,
+    DEFAULT_MAX_YAW_ASYMMETRY,
+    HeadPose,
+    estimate_head_pose,
+)
 
 
 class NeutralFrameDetector:
@@ -37,8 +42,8 @@ class NeutralFrameDetector:
         self,
         window_size: int = 10,
         min_keypoint_conf: float = 0.5,
-        max_yaw_asymmetry: float = 0.35,
-        max_roll: float = 30.0,
+        max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+        max_roll: float = DEFAULT_MAX_ROLL,
     ) -> None:
         """
         Inicjalizuje detektor.
@@ -342,7 +347,10 @@ def _frontal_factor(pose: Optional[HeadPose]) -> float:
     """
     if pose is None:
         return 0.5
-    deviation = abs(pose.yaw_asymmetry) / 0.35 + abs(pose.roll) / 30.0
+    deviation = (
+        abs(pose.yaw_asymmetry) / DEFAULT_MAX_YAW_ASYMMETRY
+        + abs(pose.roll) / DEFAULT_MAX_ROLL
+    )
     return 1.0 / (1.0 + deviation)
 
 

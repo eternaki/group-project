@@ -23,7 +23,12 @@ from packages.models.delta_action_units import (
     DeltaActionUnit,
     DeltaActionUnitsExtractor,
 )
-from packages.models.head_pose import estimate_head_pose, validate_head_pose
+from packages.models.head_pose import (
+    DEFAULT_MAX_ROLL,
+    DEFAULT_MAX_YAW_ASYMMETRY,
+    estimate_head_pose,
+    validate_head_pose,
+)
 
 
 @dataclass
@@ -173,7 +178,8 @@ class TemporalProcessor:
         self,
         neutral_keypoints: np.ndarray,
         window_size: int = 30,
-        head_pose_threshold: float = 30.0,
+        max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+        max_roll: float = DEFAULT_MAX_ROLL,
         min_visibility: float = 0.5,
         stability_threshold: float = 0.05,
     ) -> None:
@@ -183,13 +189,18 @@ class TemporalProcessor:
         Args:
             neutral_keypoints: Keypoints neutralnej klatki (138 wartości)
             window_size: Rozmiar okna agregacji (klatki)
-            head_pose_threshold: Maksymalny kąt dla frontalnej pozy
+            max_yaw_asymmetry: Maks. asymetria kącik oka <-> nos dla frontalnej pozy
+            max_roll: Maksymalne przechylenie (stopnie) dla frontalnej pozy
             min_visibility: Minimalna średnia widoczność keypoints
             stability_threshold: Próg wariancji ratio AU dla stabilności
         """
         self.neutral_keypoints = neutral_keypoints
-        self.head_pose_threshold = head_pose_threshold
+        self.max_yaw_asymmetry = max_yaw_asymmetry
+        self.max_roll = max_roll
         self.min_visibility = min_visibility
+
+        # Baza neutralna jest stała dla całego wideo — miary liczone raz.
+        self._extractor = DeltaActionUnitsExtractor(neutral_keypoints)
 
         self._buffer = TemporalAUBuffer(
             window_size=window_size,
@@ -234,14 +245,21 @@ class TemporalProcessor:
             return self._buffer.get_aggregated() if self._buffer.is_ready() else None
 
         # 2. Sprawdź pozę głowy
-        head_pose = estimate_head_pose(keypoints_flat)
-        if not validate_head_pose(head_pose, self.head_pose_threshold, self.min_visibility):
+        head_pose = estimate_head_pose(
+            keypoints_flat,
+            max_yaw_asymmetry=self.max_yaw_asymmetry,
+            max_roll=self.max_roll,
+        )
+        if not validate_head_pose(
+            head_pose,
+            max_yaw_asymmetry=self.max_yaw_asymmetry,
+            min_confidence=self.min_visibility,
+        ):
             self._rejected_head_pose += 1
             return self._buffer.get_aggregated() if self._buffer.is_ready() else None
 
         # 3. Oblicz delta AU względem klatki neutralnej
-        extractor = DeltaActionUnitsExtractor(keypoints_flat, self.neutral_keypoints)
-        delta_aus: dict[str, DeltaActionUnit] = extractor.extract()
+        delta_aus: dict[str, DeltaActionUnit] = self._extractor.extract(keypoints_flat)
 
         # 4. Konwertuj do dict[str, float] (ratio) i dodaj do bufora
         au_ratios = {name: au.ratio for name, au in delta_aus.items()}

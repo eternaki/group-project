@@ -36,8 +36,10 @@ class HeadPose:
 
     Attributes:
         yaw_asymmetry: Obrót lewo/prawo jako asymetria odległości kącik oka ↔ nos,
-            zakres [-1, 1], 0 = morda frontalna. Metryka bezwymiarowa, niezależna
-            od długości pyska i od skali obrazu.
+            zakres [-1, 1], 0 = morda frontalna. Ujemna wartość = nos bliżej
+            LEWEGO oka (głowa obrócona w stronę lewego oka), dodatnia = nos
+            bliżej PRAWEGO oka (obrót w stronę prawego oka). Metryka
+            bezwymiarowa, niezależna od długości pyska i od skali obrazu.
         roll: Przechylenie w stopniach (kąt linii wewnętrznych kącików oczu do osi X)
         is_frontal: True gdy oba kąty mieszczą się w limitach
         confidence: Pewność estymacji (0-1)
