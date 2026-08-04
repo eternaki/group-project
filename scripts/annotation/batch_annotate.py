@@ -30,7 +30,12 @@ import numpy as np
 import torch
 
 from packages.data.coco import au_analysis_from_delta_aus
+from packages.models.breed import BreedPrediction
+from packages.models.emotion import EmotionPrediction, classify_emotion_from_delta_aus
 from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
+from packages.pipeline.inference import VideoDatasetConfig
+from packages.pipeline.peak_selector import compute_tfm
+from packages.pipeline.track_processing import TrackFrame, TrackResult
 
 # Konfiguracja logowania
 logging.basicConfig(
@@ -55,7 +60,7 @@ class BatchConfig:
 
     # Parametry generowania datasetu (peak frames + emocje/AU)
     num_peaks: int = 10  # liczba peak frames na wideo do anotacji emocji
-    peak_min_separation: int = 3  # min. separacja peak frames (w klatkach ekstrakcji)
+    peak_min_separation_s: float = 3.0  # min. odstęp peak frames w SEKUNDACH nagrania
     min_keypoint_conf: float = 0.3  # min. pewność keypoints dla peak frame
     max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY  # dla peak frame
     max_roll: float = DEFAULT_MAX_ROLL  # dla peak frame
@@ -73,6 +78,26 @@ class BatchConfig:
     video_extensions: list[str] = field(
         default_factory=lambda: [".mp4", ".webm", ".mkv", ".avi", ".mov"]
     )
+
+
+@dataclass
+class VideoContext:
+    """
+    Dane jednego wideo potrzebne przy zapisie anotacji treku.
+
+    Attributes:
+        video_id: Identyfikator wideo (nazwa pliku bez rozszerzenia)
+        emotion: Etykieta emocji z katalogu źródłowego
+        frames: Wyekstrahowane klatki (indeks = numer klatki w treku)
+        frame_numbers: Numery klatek w oryginalnym nagraniu
+        frames_dir: Katalog na zapisywane klatki tego wideo
+    """
+
+    video_id: str
+    emotion: str
+    frames: list[np.ndarray]
+    frame_numbers: list[int]
+    frames_dir: Path
 
 
 @dataclass
@@ -296,10 +321,11 @@ class BatchAnnotator:
         """
         Przetwarza pojedyncze wideo przez pełny pipeline datasetu.
 
-        Wykorzystuje process_video_for_dataset(): auto-detekcja neutral frame,
-        obliczenie delta Action Units względem niej, wybór peak frames i
-        klasyfikacja emocji + rasy. Do COCO trafiają tylko peak frames z pełną
-        anotacją (bbox, keypoints, rasa, emocja, AU).
+        Wykorzystuje process_video_for_dataset(): trekowanie psów, własna klatka
+        neutralna każdego psa, delta Action Units względem niej i wybór peak frames.
+        Do COCO trafiają peak frames każdego przyjętego treku (boks mordy, keypoints,
+        rasa, emocja, AU). Treki odrzucone lądują w logu z powodem — bez tego nie
+        wiadomo, gdzie lejek danych traci materiał.
 
         Args:
             video_path: Ścieżka do pliku wideo
@@ -329,90 +355,87 @@ class BatchAnnotator:
             logger.warning(f"Za mało klatek ({len(frame_items)}) w {video_path.name}, pomijam")
             return stats
 
-        frame_numbers = [fn for fn, _ in frame_items]
-        frames = [f for _, f in frame_items]
+        context = VideoContext(
+            video_id=video_id,
+            emotion=emotion,
+            frames=[frame for _, frame in frame_items],
+            frame_numbers=[number for number, _ in frame_items],
+            frames_dir=frames_video_dir,
+        )
 
-        # Pełny pipeline datasetu (neutral frame -> delta AU -> emocje na peak frames)
+        # Konfiguracja powstaje poza try: zły próg to pomyłka wywołującego,
+        # a nie powód do cichego pominięcia wideo.
+        video_config = self._video_config(len(context.frames))
         try:
-            num_peaks = min(self.config.num_peaks, len(frames))
             dataset_result = self.pipeline.process_video_for_dataset(
-                frames,
-                num_peaks=num_peaks,
-                min_separation_frames=self.config.peak_min_separation,
-                min_keypoint_conf=self.config.min_keypoint_conf,
-                max_yaw_asymmetry=self.config.max_yaw_asymmetry,
-                max_roll=self.config.max_roll,
+                context.frames, config=video_config
             )
         except ValueError as e:
-            # Za mało klatek z keypoints / brak neutral frame
             logger.warning(f"Pominięto {video_path.name}: {e}")
             return stats
 
-        # Zapisz peak frames do COCO z pełną anotacją
-        for peak in dataset_result["peak_frames"]:
-            if peak["bbox"] is None:
+        for track in dataset_result["rejected_tracks"]:
+            logger.info(f"  Trek {track.track_id} odrzucony: {track.rejected_reason}")
+
+        for track in dataset_result["tracks"]:
+            self._save_track_peaks(track, context, stats)
+
+        self.progress.total_detections += stats["detections"]
+
+        return stats
+
+    def _video_config(self, num_frames: int) -> VideoDatasetConfig:
+        """
+        Buduje konfigurację przetwarzania wideo z ustawień batcha.
+
+        Args:
+            num_frames: Liczba wyekstrahowanych klatek
+
+        Returns:
+            Progi dla process_video_for_dataset()
+        """
+        return VideoDatasetConfig(
+            num_peaks=min(self.config.num_peaks, num_frames),
+            fps=self.config.fps,
+            min_peak_separation_s=self.config.peak_min_separation_s,
+            min_keypoint_conf=self.config.min_keypoint_conf,
+            max_yaw_asymmetry=self.config.max_yaw_asymmetry,
+            max_roll=self.config.max_roll,
+        )
+
+    def _save_track_peaks(
+        self,
+        track: TrackResult,
+        context: VideoContext,
+        stats: dict,
+    ) -> None:
+        """
+        Zapisuje klatki szczytowe jednego treku (jednego psa) do zbioru.
+
+        Nazwa pliku niesie track_id, bo na wideo z kilkoma psami ta sama klatka
+        trafia do zbioru raz na psa — bez tego pliki nadpisywałyby się nawzajem.
+
+        Args:
+            track: Przyjęty trek
+            context: Dane wideo
+            stats: Statystyki przetwarzania (modyfikowane w miejscu)
+        """
+        peak_indices = set(track.peak_indices)
+
+        for track_frame in track.frames:
+            if track_frame.frame_idx not in peak_indices:
                 continue
 
-            frame_idx = peak["frame_idx"]
-            frame_num = frame_numbers[frame_idx]
-            frame_id = f"{video_id}_{frame_num:06d}"
-            frame_img = peak["frame"]
-            h, w = frame_img.shape[:2]
-
-            # Zapisz klatkę
-            frame_path = frames_video_dir / f"{frame_id}.jpg"
-            cv2.imwrite(str(frame_path), frame_img)
-
+            frame_number = context.frame_numbers[track_frame.frame_idx]
+            frame_id = f"{context.video_id}_t{track.track_id}_{frame_number:06d}"
+            frame_path = context.frames_dir / f"{frame_id}.jpg"
+            cv2.imwrite(str(frame_path), context.frames[track_frame.frame_idx])
             stats["frames_processed"] += 1
 
             if self.coco_dataset is None:
                 continue
 
-            image_id = self.coco_dataset.add_image(
-                file_name=str(frame_path.relative_to(self.config.frames_dir)),
-                width=w,
-                height=h,
-                source_video=video_id,
-                frame_number=frame_num,
-                emotion_label=emotion,
-            )
-
-            # Keypoints (już w układzie pełnego obrazu, format [x, y, v, ...])
-            kp = peak["keypoints"]
-            keypoints = [float(v) for v in kp] if kp is not None else None
-            num_kp = int(sum(1 for v in (kp[2::3] if kp is not None else []) if v > 0))
-
-            bbox = [int(v) for v in peak["bbox"]]
-            emotion_pred = peak["emotion"]
-            breed_pred = peak["breed"]
-
-            # Confidence (bbox conf nie jest zwracany przez peak selector)
-            confidence = {"emotion": float(emotion_pred.confidence)}
-            breed_id = breed_name = None
-            if breed_pred is not None:
-                breed_id = int(breed_pred.class_id)
-                breed_name = breed_pred.class_name
-                confidence["breed"] = float(breed_pred.confidence)
-
-            # Zapisujemy komplet (ratio + is_active + confidence), bo samo ratio
-            # nie odróżnia realnej aktywacji od klamrowanego, niewiarygodnego pomiaru.
-            delta_aus = peak.get("delta_aus")
-            au_analysis = au_analysis_from_delta_aus(delta_aus) if delta_aus else None
-
-            self.coco_dataset.add_annotation(
-                image_id=image_id,
-                bbox=bbox,
-                keypoints=keypoints,
-                num_keypoints=num_kp,
-                breed_id=breed_id,
-                breed_name=breed_name,
-                emotion_id=int(emotion_pred.emotion_id),
-                emotion_name=emotion_pred.emotion,
-                confidence=confidence,
-                au_analysis=au_analysis,
-                emotion_rule_applied=emotion_pred.rule_applied,
-                tfm_score=float(peak["tfm_score"]),
-            )
+            emotion_pred = self._add_track_annotation(track_frame, context, frame_path)
             stats["detections"] += 1
 
             # Flaguj niską pewność emocji
@@ -425,9 +448,98 @@ class BatchAnnotator:
             if self.progress.total_frames % self.config.save_interval == 0:
                 self._save_intermediate()
 
-        self.progress.total_detections += stats["detections"]
+    def _add_track_annotation(
+        self,
+        track_frame: TrackFrame,
+        context: VideoContext,
+        frame_path: Path,
+    ) -> EmotionPrediction:
+        """
+        Dopisuje anotację jednej klatki szczytowej treku do zbioru COCO.
 
-        return stats
+        Args:
+            track_frame: Klatka treku z policzonymi delta AU
+            context: Dane wideo
+            frame_path: Ścieżka zapisanej klatki
+
+        Returns:
+            Predykcja emocji tej klatki
+        """
+        frame_img = context.frames[track_frame.frame_idx]
+        height, width = frame_img.shape[:2]
+
+        image_id = self.coco_dataset.add_image(
+            file_name=str(frame_path.relative_to(self.config.frames_dir)),
+            width=width,
+            height=height,
+            source_video=context.video_id,
+            frame_number=context.frame_numbers[track_frame.frame_idx],
+            emotion_label=context.emotion,
+        )
+
+        emotion_pred = classify_emotion_from_delta_aus(track_frame.delta_aus)
+        breed_pred = self._classify_breed(frame_img, track_frame.face_box)
+
+        confidence = {"emotion": float(emotion_pred.confidence)}
+        breed_id = breed_name = None
+        if breed_pred is not None:
+            breed_id = int(breed_pred.class_id)
+            breed_name = breed_pred.class_name
+            confidence["breed"] = float(breed_pred.confidence)
+
+        # Keypoints są już w układzie pełnego obrazu, format [x, y, v, ...]
+        keypoints = [float(v) for v in track_frame.keypoints]
+
+        # Zapisujemy komplet (ratio + is_active + confidence), bo samo ratio
+        # nie odróżnia realnej aktywacji od klamrowanego, niewiarygodnego pomiaru.
+        self.coco_dataset.add_annotation(
+            image_id=image_id,
+            bbox=[int(v) for v in track_frame.face_box],
+            keypoints=keypoints,
+            num_keypoints=int(sum(1 for v in keypoints[2::3] if v > 0)),
+            breed_id=breed_id,
+            breed_name=breed_name,
+            emotion_id=int(emotion_pred.emotion_id),
+            emotion_name=emotion_pred.emotion,
+            confidence=confidence,
+            au_analysis=au_analysis_from_delta_aus(track_frame.delta_aus),
+            emotion_rule_applied=emotion_pred.rule_applied,
+            tfm_score=float(compute_tfm(track_frame.delta_aus)),
+        )
+        return emotion_pred
+
+    def _classify_breed(
+        self,
+        frame: np.ndarray,
+        face_box: tuple[float, float, float, float],
+    ) -> Optional[BreedPrediction]:
+        """
+        Klasyfikuje rasę psa z kadru mordy.
+
+        UWAGA: to kadr MORDY, nie całego psa — trek nie niesie boksu ciała.
+        Rasa z samej mordy jest słabsza niż z sylwetki; docelowo trek powinien
+        nieść też boks ciała (patrz raport zadania 6).
+
+        Args:
+            frame: Pełna klatka wideo
+            face_box: Boks mordy (x, y, w, h)
+
+        Returns:
+            Predykcja rasy albo None, gdy model niedostępny lub kadr pusty
+        """
+        if self.pipeline is None or self.pipeline.breed_model is None:
+            return None
+
+        x, y, w, h = (int(v) for v in face_box)
+        cropped = frame[max(0, y) : y + h, max(0, x) : x + w]
+        if cropped.size == 0:
+            return None
+
+        try:
+            return self.pipeline.breed_model.predict(cropped)
+        except Exception as e:
+            logger.warning(f"Błąd klasyfikacji rasy: {e}")
+            return None
 
     def _save_intermediate(self) -> None:
         """Zapisuje pośrednie wyniki."""

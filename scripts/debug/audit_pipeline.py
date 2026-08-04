@@ -3,13 +3,13 @@
 Audyt pipeline: gdzie tracimy klatki i jakiej jakości są wyniki na każdym etapie.
 
 Mierzy na prawdziwych wideo:
-1. Detekcja psa — ile klatek bez psa, ile z wieloma psami (ryzyko podmiany psa
-   między klatkami, bo delta AU liczy się względem klatki neutralnej JEDNEGO psa).
-2. Keypoints — rozkład pewności, ile poniżej progu.
+0. Treki — ile psów przyjętych, ile odrzuconych i z jakich powodów.
+1. Detekcja psa — ile klatek bez psa, ile z wieloma psami.
+2. Keypoints — rozkład pewności, ile detekcji bez zmierzonej mordy.
 3. Poza głowy — rozkład |yaw_asymmetry| / |roll|, ile poza limitem.
-4. Klatka neutralna — który indeks wybrany, jaka frontalność.
-5. AU — ile klamrowanych (niewiarygodnych), ile aktywnych, rozkład confidence.
-6. Emocje — jakie reguły się odpalają.
+4. Klatka neutralna — jaka frontalność klatki neutralnej każdego treku.
+5. AU — ile klamrowanych (niewiarygodnych), ile aktywnych, rozkład confidence, szum.
+6. Emocje — jakie reguły się odpalają na klatkach szczytowych.
 
 Użycie:
     python scripts/debug/audit_pipeline.py --limit 12 --fps 1
@@ -31,10 +31,15 @@ from packages.models.delta_action_units import (
     RATIO_CLAMP_MAX,
     RATIO_CLAMP_MIN,
 )
+from packages.models.emotion import classify_emotion_from_delta_aus
 from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
-from packages.pipeline import InferencePipeline, PipelineConfig
+from packages.pipeline import InferencePipeline, PipelineConfig, VideoDatasetConfig
+from packages.pipeline.track_processing import TrackResult
 
 VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+
+# Liczba AU w DogFACS — dzielnik przy liczeniu udziału pomiarów klamrowanych
+NUM_ACTION_UNITS = 21
 
 
 @dataclass
@@ -46,7 +51,11 @@ class AuditStats:
     frames_total: int = 0
     frames_no_dog: int = 0
     frames_multi_dog: int = 0
-    frames_no_keypoints: int = 0
+    detections_total: int = 0
+    detections_no_face: int = 0
+    tracks_accepted: int = 0
+    tracks_rejected: int = 0
+    track_reject_reasons: Counter = field(default_factory=Counter)
     dog_conf: list[float] = field(default_factory=list)
     kp_conf: list[float] = field(default_factory=list)
     yaw_asymmetry: list[float] = field(default_factory=list)
@@ -90,96 +99,105 @@ def extract_frames(video_path: Path, fps: float, max_frames: int) -> list[np.nda
     return frames
 
 
-def audit_detection(pipeline: InferencePipeline, frames: list[np.ndarray], stats: AuditStats) -> None:
-    """Etap 1: detekcja psa — braki i wielopsie klatki."""
+def audit_detection(
+    pipeline: InferencePipeline, frames: list[np.ndarray], stats: AuditStats
+) -> int:
+    """
+    Etap 1: detekcja psa — braki i wielopsie klatki.
+
+    Returns:
+        Liczba detekcji psów w tym wideo (suma po klatkach)
+    """
+    detections_total = 0
     for frame in frames:
         detections = pipeline.bbox_model.predict(frame)
+        detections_total += len(detections)
         if not detections:
             stats.frames_no_dog += 1
             continue
         if len(detections) > 1:
             stats.frames_multi_dog += 1
         stats.dog_conf.append(float(detections[0].confidence))
+    return detections_total
 
 
-def audit_frame_data(all_frames_data: list[dict], stats: AuditStats) -> None:
-    """Etapy 2-3 i 5: keypoints, poza głowy, AU."""
-    # Rozrzut ratio w obrębie JEDNEGO wideo = "podłoga szumu". Jeśli jest większy
-    # od progu aktywacji (1.15), AU zapala się od drgań keypoints, nie od mimiki.
-    ratios_in_video: dict[str, list[float]] = {}
-
-    for data in all_frames_data:
-        keypoints = data.get("keypoints")
-        if keypoints is None:
-            stats.frames_no_keypoints += 1
-            continue
-
-        visibility = np.asarray(keypoints).reshape(-1, 3)[:, 2]
+def audit_track(track: TrackResult, stats: AuditStats) -> None:
+    """Etapy 2-5 dla jednego treku: keypoints, poza głowy, AU i szum ratio."""
+    for frame in track.frames:
+        visibility = np.asarray(frame.keypoints).reshape(-1, 3)[:, 2]
         stats.kp_conf.append(float(np.mean(visibility)))
+        stats.yaw_asymmetry.append(abs(float(frame.head_pose.yaw_asymmetry)))
+        stats.roll.append(abs(float(frame.head_pose.roll)))
 
-        pose = data.get("head_pose")
-        if pose is not None:
-            stats.yaw_asymmetry.append(abs(float(pose.yaw_asymmetry)))
-            stats.roll.append(abs(float(pose.roll)))
-
-        delta_aus = data.get("delta_aus")
-        if not delta_aus:
+        if not frame.delta_aus:
             continue
         stats.au_frames += 1
-        for name, au in delta_aus.items():
+        for name, au in frame.delta_aus.items():
             if au.ratio >= RATIO_CLAMP_MAX - 1e-6 or au.ratio <= RATIO_CLAMP_MIN + 1e-6:
                 stats.au_clamped[name] += 1
             if au.is_active:
                 stats.au_active[name] += 1
             stats.au_conf.setdefault(name, []).append(float(au.confidence))
-            ratios_in_video.setdefault(name, []).append(float(au.ratio))
 
-    for name, ratios in ratios_in_video.items():
-        if len(ratios) >= 3:
-            stats.au_noise.setdefault(name, []).append(float(np.std(ratios)))
+    # Szum ratio liczy już trek (z liczbą próbek obok) — nie liczymy go tu drugi raz,
+    # bo miara liczona na wideo mieszałaby ze sobą różne psy.
+    for name, noise in track.au_noise.items():
+        stats.au_noise.setdefault(name, []).append(float(noise))
+
+
+def audit_neutral_and_peaks(track: TrackResult, stats: AuditStats) -> None:
+    """Etapy 4 i 6: frontalność klatki neutralnej treku i emocje na peakach."""
+    peak_indices = set(track.peak_indices)
+
+    for frame in track.frames:
+        if frame.frame_idx == track.neutral_frame_idx:
+            stats.neutral_frontality.append(
+                abs(float(frame.head_pose.yaw_asymmetry)) / DEFAULT_MAX_YAW_ASYMMETRY
+                + abs(float(frame.head_pose.roll)) / DEFAULT_MAX_ROLL
+            )
+        if frame.frame_idx not in peak_indices:
+            continue
+
+        stats.peaks += 1
+        emotion = classify_emotion_from_delta_aus(frame.delta_aus)
+        stats.emotions[emotion.emotion] += 1
+        stats.rules[emotion.rule_applied or "-"] += 1
 
 
 def audit_video(
     pipeline: InferencePipeline,
     video_path: Path,
     stats: AuditStats,
-    fps: float,
+    config: VideoDatasetConfig,
     max_frames: int,
-    num_peaks: int,
 ) -> None:
     """Przetwarza jedno wideo i dopisuje statystyki."""
-    frames = extract_frames(video_path, fps, max_frames)
+    frames = extract_frames(video_path, config.fps, max_frames)
     if not frames:
         stats.videos_failed += 1
         return
 
     stats.frames_total += len(frames)
-    audit_detection(pipeline, frames, stats)
+    detections_total = audit_detection(pipeline, frames, stats)
+    stats.detections_total += detections_total
 
-    result = pipeline.process_video_for_dataset(
-        frames_list=frames,
-        num_peaks=num_peaks,
+    result = pipeline.process_video_for_dataset(frames, config=config)
+
+    measured_frames = sum(
+        len(track.frames) for track in result["tracks"] + result["rejected_tracks"]
     )
+    stats.detections_no_face += max(0, detections_total - measured_frames)
 
-    audit_frame_data(result.get("all_frames_data", []), stats)
+    for track in result["tracks"]:
+        stats.tracks_accepted += 1
+        audit_track(track, stats)
+        audit_neutral_and_peaks(track, stats)
 
-    neutral_idx = result.get("neutral_frame_idx")
-    neutral_data = next(
-        (d for d in result.get("all_frames_data", []) if d["frame_idx"] == neutral_idx),
-        None,
-    )
-    if neutral_data is not None and neutral_data.get("head_pose") is not None:
-        pose = neutral_data["head_pose"]
-        stats.neutral_frontality.append(
-            abs(float(pose.yaw_asymmetry)) / DEFAULT_MAX_YAW_ASYMMETRY
-            + abs(float(pose.roll)) / DEFAULT_MAX_ROLL
-        )
-
-    for peak in result.get("peak_frames", []):
-        stats.peaks += 1
-        emotion = peak["emotion"]
-        stats.emotions[emotion.emotion] += 1
-        stats.rules[emotion.rule_applied or "-"] += 1
+    for track in result["rejected_tracks"]:
+        stats.tracks_rejected += 1
+        # Powód niesie liczby (np. "za mało klatek z mordą: 2 < 3") — do zliczania
+        # bierzemy sam rodzaj powodu, inaczej każdy trek miałby własną kategorię.
+        stats.track_reject_reasons[track.rejected_reason.split(":")[0]] += 1
 
 
 def percentiles(values: list[float]) -> dict:
@@ -200,6 +218,7 @@ def build_report(stats: AuditStats, elapsed: float) -> dict:
     """Buduje raport w formie słownika."""
     frames = max(stats.frames_total, 1)
     au_frames = max(stats.au_frames, 1)
+    detections = max(stats.detections_total, 1)
 
     return {
         "wideo": {
@@ -208,14 +227,20 @@ def build_report(stats: AuditStats, elapsed: float) -> dict:
             "czas_s": round(elapsed, 1),
             "s_na_wideo": round(elapsed / max(stats.videos, 1), 1),
         },
+        "etap_0_treki": {
+            "przyjete": stats.tracks_accepted,
+            "odrzucone": stats.tracks_rejected,
+            "powody": dict(stats.track_reject_reasons.most_common(5)),
+        },
         "etap_1_detekcja_psa": {
             "klatki": stats.frames_total,
+            "detekcje": stats.detections_total,
             "bez_psa_proc": round(stats.frames_no_dog / frames * 100, 1),
             "wiele_psow_proc": round(stats.frames_multi_dog / frames * 100, 1),
             "confidence": percentiles(stats.dog_conf),
         },
         "etap_2_keypoints": {
-            "bez_keypoints_proc": round(stats.frames_no_keypoints / frames * 100, 1),
+            "detekcje_bez_mordy_proc": round(stats.detections_no_face / detections * 100, 1),
             "confidence": percentiles(stats.kp_conf),
             "ponizej_0_5_proc": round(
                 sum(1 for c in stats.kp_conf if c < 0.5) / max(len(stats.kp_conf), 1) * 100, 1
@@ -240,7 +265,7 @@ def build_report(stats: AuditStats, elapsed: float) -> dict:
         "etap_5_au": {
             "klatki_z_au": stats.au_frames,
             "klamrowane_proc_srednio": round(
-                sum(stats.au_clamped.values()) / (au_frames * 21) * 100, 1
+                sum(stats.au_clamped.values()) / (au_frames * NUM_ACTION_UNITS) * 100, 1
             ),
             "top_klamrowane": {
                 name: round(count / au_frames * 100, 1)
@@ -299,13 +324,17 @@ def main() -> int:
     pipeline = InferencePipeline(PipelineConfig(device=args.device))
     pipeline.load()
 
+    # Próbkowanie audytu musi trafić do konfiguracji: wchodzi w znaczniki czasu
+    # filtra wygładzającego i w przeliczenie odstępu peaków na klatki.
+    config = VideoDatasetConfig(num_peaks=args.num_peaks, fps=args.fps)
+
     stats = AuditStats()
     start = time.time()
 
     for i, video_path in enumerate(videos, 1):
         print(f"\n[{i}/{len(videos)}] {video_path.name}")
         try:
-            audit_video(pipeline, video_path, stats, args.fps, args.max_frames, args.num_peaks)
+            audit_video(pipeline, video_path, stats, config, args.max_frames)
             stats.videos += 1
         except Exception as e:  # noqa: BLE001 — audyt nie może paść na jednym wideo
             print(f"  ! Błąd: {type(e).__name__}: {e}")

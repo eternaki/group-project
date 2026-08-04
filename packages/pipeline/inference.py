@@ -6,8 +6,14 @@ Pipeline przetwarza obrazy przez wszystkie 4 modele:
 2. Breed classification (EfficientNet-B4) - klasyfikuje rasę
 3. Keypoints detection (SimpleBaseline) - wykrywa punkty kluczowe
 4. Emotion classification (EfficientNet-B0) - klasyfikuje emocję
+
+Przetwarzanie wideo (`process_video_for_dataset`) idzie po TREKACH psów, nie po
+klatkach: każdy pies dostaje własną klatkę neutralną, własne wygładzanie punktów
+i własne peaki. Wcześniej brana była detekcja o najwyższej pewności, więc na wideo
+z wieloma psami baza AU mogła należeć do innego psa niż klatka docelowa.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -26,7 +32,123 @@ from packages.models import (
     KeypointsModel,
     KeypointsPrediction,
 )
-from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
+from packages.models.bbox import Detection
+from packages.models.delta_action_units import DeltaActionUnitsExtractor
+from packages.models.head_pose import (
+    DEFAULT_MAX_ROLL,
+    DEFAULT_MAX_YAW_ASYMMETRY,
+    estimate_head_pose,
+)
+from packages.pipeline.dog_tracker import DogTracker
+from packages.pipeline.landmark_smoothing import KeypointSmoother
+from packages.pipeline.neutral_frame import NeutralFrameDetector, collect_neutral_baseline
+from packages.pipeline.peak_selector import PeakFrameSelector
+from packages.pipeline.track_processing import (
+    TrackFrame,
+    TrackQuality,
+    TrackResult,
+    build_track_result,
+    rejected_track,
+)
+
+# Domyślne próbkowanie klatek wideo [kl./s] — takie, przy jakim zbierany jest zbiór
+DEFAULT_SAMPLING_FPS: float = 5.0
+# Minimalny odstęp między peakami [s] — tak jak w opublikowanej metodzie (spec, 4.2)
+DEFAULT_MIN_PEAK_SEPARATION_S: float = 1.0
+# Minimalna średnia pewność keypoints klatki
+DEFAULT_MIN_KEYPOINT_CONF: float = 0.5
+# Minimalna ostrość mordy (wariancja Laplaciana) — filtr rozmycia ruchowego
+DEFAULT_MIN_SHARPNESS: float = 60.0
+# Promień okna klatek wokół neutralnej, z których liczona jest baza median
+NEUTRAL_BASELINE_WINDOW: int = 2
+
+# Podział paska postępu między etapy (procenty)
+_PROGRESS_TRACKING_END: int = 40
+_PROGRESS_TRACKS_END: int = 99
+
+
+@dataclass(frozen=True)
+class VideoDatasetConfig:
+    """
+    Progi przetwarzania wideo na treki.
+
+    Trzymane w jednym obiekcie, bo lista parametrów `process_video_for_dataset`
+    urosła ponad czytelność. Każdy próg ma dokładnie jedno miejsce ustawienia —
+    `min_keypoint_conf` decyduje zarówno o godności treku, jak i o wyborze klatki
+    neutralnej i peaków, więc nie da się ustawić go „w połowie pipeline'u".
+
+    Attributes:
+        num_peaks: Liczba klatek szczytowych do wybrania na trek
+        fps: Próbkowanie klatek wejściowych [kl./s]; wchodzi w znaczniki czasu
+            filtra wygładzającego i w przeliczenie odstępu peaków na klatki
+        neutral_frame_idx: Ręcznie wskazany numer klatki wideo jako neutralna;
+            trek, który tej klatki nie zawiera, dostaje klatkę neutralną z auto-detekcji
+        min_peak_separation_s: Minimalny odstęp między peakami [s]
+        min_keypoint_conf: Minimalna średnia pewność keypoints klatki
+        max_yaw_asymmetry: Maks. asymetria kącik oka <-> nos (obrót głowy)
+        max_roll: Maks. przechylenie głowy [stopnie]
+        min_sharpness: Minimalna ostrość mordy; 0 wyłącza filtr rozmycia
+    """
+
+    num_peaks: int = 10
+    fps: float = DEFAULT_SAMPLING_FPS
+    neutral_frame_idx: Optional[int] = None
+    min_peak_separation_s: float = DEFAULT_MIN_PEAK_SEPARATION_S
+    min_keypoint_conf: float = DEFAULT_MIN_KEYPOINT_CONF
+    max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY
+    max_roll: float = DEFAULT_MAX_ROLL
+    min_sharpness: float = DEFAULT_MIN_SHARPNESS
+
+    def __post_init__(self) -> None:
+        """
+        Sprawdza progi.
+
+        Raises:
+            ValueError: Gdy któryś próg jest poza sensownym zakresem
+        """
+        if self.fps <= 0.0:
+            raise ValueError(f"fps musi być dodatnie, otrzymano {self.fps}")
+        if self.num_peaks < 1:
+            raise ValueError(f"num_peaks musi być dodatnie, otrzymano {self.num_peaks}")
+        if not 0.0 < self.min_keypoint_conf <= 1.0:
+            raise ValueError(
+                f"min_keypoint_conf musi być w (0, 1], otrzymano {self.min_keypoint_conf}"
+            )
+        if self.min_peak_separation_s <= 0.0:
+            raise ValueError(
+                f"min_peak_separation_s musi być dodatnie, otrzymano {self.min_peak_separation_s}"
+            )
+        if self.max_yaw_asymmetry <= 0.0 or self.max_roll <= 0.0:
+            raise ValueError(
+                "Progi pozy głowy muszą być dodatnie, otrzymano "
+                f"max_yaw_asymmetry={self.max_yaw_asymmetry}, max_roll={self.max_roll}"
+            )
+        if self.min_sharpness < 0.0:
+            raise ValueError(
+                f"min_sharpness nie może być ujemne, otrzymano {self.min_sharpness}"
+            )
+
+    @property
+    def peak_separation_frames(self) -> int:
+        """
+        Odstęp peaków w klatkach przy zadanym próbkowaniu.
+
+        Odstęp liczony jest w pozycjach w obrębie treku, a trek bywa dziurawy
+        (pies wychodzi z kadru), więc realna przerwa czasowa jest nie mniejsza
+        niż zamówiona — nigdy krótsza.
+        """
+        return max(1, round(self.min_peak_separation_s * self.fps))
+
+    @property
+    def track_quality(self) -> TrackQuality:
+        """
+        Progi godności treku z progiem pewności wspólnym z filtrem klatek.
+
+        Bez tego próg godności zostawał na wartości domyślnej modułu, także gdy
+        wywołujący prosił o ostrzejszy filtr — i trek zbudowany z niepewnych
+        keypoints trafiał do zbioru.
+        """
+        return TrackQuality(min_conf=self.min_keypoint_conf)
 
 
 @dataclass
@@ -236,6 +358,9 @@ class InferencePipeline:
         self.bbox_model: Optional[BBoxModel] = None
         self.breed_model: Optional[BreedModel] = None
         self.keypoints_model: Optional[KeypointsModel] = None
+        # Detektor mordy — ustawiany w load(); tu, żeby odczyt przed load()
+        # nie kończył się AttributeError
+        self.face_model: Optional[object] = None
         # Emotion: rule-based only (no ML model needed)
 
     @property
@@ -400,7 +525,29 @@ class InferencePipeline:
                 if pred is not None:
                     return pred
 
-        # Ścieżka B (fallback): dwuprzebiegowy two-pass z bboxa ciała.
+        return self._keypoints_from_body_bbox(image, x, y, w, h)
+
+    def _keypoints_from_body_bbox(
+        self,
+        image: np.ndarray,
+        x: int,
+        y: int,
+        w: int,
+        h: int,
+    ) -> KeypointsPrediction:
+        """
+        Ścieżka zapasowa: dwuprzebiegowy zoom na mordę z bboxa ciała.
+
+        Wydzielona z `_predict_keypoints_two_pass`, żeby wywołujący, który już
+        wie, że detektor mordy nic nie znalazł, nie uruchamiał go po raz drugi.
+
+        Args:
+            image: Pełny obraz
+            x, y, w, h: Bounding box psa
+
+        Returns:
+            KeypointsPrediction we współrzędnych pełnego obrazu
+        """
         # Przebieg 1: kwadratowy crop całego bboxa psa
         crop1, ox1, oy1 = self._square_crop(image, x, y, w, h, expand=1.1)
         pred1 = self.keypoints_model.predict(crop1)
@@ -597,321 +744,309 @@ class InferencePipeline:
     def process_video_for_dataset(
         self,
         frames_list: list[np.ndarray],
-        num_peaks: int = 10,
-        neutral_idx: Optional[int] = None,
-        min_separation_frames: int = 30,
-        min_keypoint_conf: float = 0.5,  # filtr: tylko pewne keypoints (było 0.3)
-        max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
-        max_roll: float = DEFAULT_MAX_ROLL,
-        min_sharpness: float = 60.0,  # filtr: odrzuca rozmyte/ruchowe kadry
-        progress_callback: Optional[object] = None,
+        config: Optional[VideoDatasetConfig] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
     ) -> dict:
         """
-        Przetwarza sekwencję wideo do generowania datasetu.
+        Przetwarza sekwencję wideo na treki psów gotowe do zapisu w zbiorze.
 
-        Pipeline dla dataset generation:
-        1. Wykryj keypoints dla wszystkich klatek
-        2. Auto-detekcja neutral frame (lub użyj podanego)
-        3. Oblicz delta AU dla wszystkich klatek
-        4. Wybierz peak frames (wysoka TFM + separacja czasowa)
-        5. Klasyfikuj emocje dla peak frames
+        Dla każdego psa osobno: klatki treku → wygładzone keypoints → własna
+        klatka neutralna → delta AU względem TEJ klatki → peaki. Trek, który nie
+        przechodzi progu godności, trafia do `rejected_tracks` z zapisanym
+        powodem — wideo bez godnych treków nie kończy się wyjątkiem, bo cichy
+        brak wyniku i błąd to dwie różne informacje dla audytu.
 
         Args:
-            frames_list: Lista klatek wideo jako numpy arrays
-            num_peaks: Liczba peak frames do wybrania
-            neutral_idx: Opcjonalny indeks neutral frame (auto-detect jeśli None)
-            min_separation_frames: Minimalna separacja czasowa między peaks
-            min_keypoint_conf: Minimalna pewność keypoints dla peak frame
-            max_yaw_asymmetry: Maks. asymetria kącik oka <-> nos dla peak frame
-            max_roll: Maks. przechylenie głowy (stopnie) dla peak frame
+            frames_list: Kolejne klatki wideo (próbkowane z `config.fps`)
+            config: Progi przetwarzania (domyślnie `VideoDatasetConfig()`)
+            progress_callback: Wywoływane jako `(procent, etap)`
 
         Returns:
             Słownik z wynikami:
             {
-                "neutral_frame_idx": int,
-                "neutral_keypoints": np.ndarray,
-                "peak_frames": [
-                    {
-                        "frame_idx": int,
-                        "frame": np.ndarray,
-                        "keypoints": np.ndarray,
-                        "delta_aus": dict[str, DeltaActionUnit],
-                        "emotion": EmotionPrediction,
-                        "tfm_score": float,
-                    },
-                    ...
-                ],
-                "all_frames_data": [
-                    {
-                        "frame_idx": int,
-                        "keypoints": Optional[np.ndarray],
-                        "head_pose": Optional[HeadPose],
-                        "delta_aus": Optional[dict],
-                    },
-                    ...
-                ],
+                "tracks": list[TrackResult],           # treki przyjęte
+                "rejected_tracks": list[TrackResult],  # z wypełnionym rejected_reason
+                "total_frames": int,
             }
 
         Raises:
             RuntimeError: Gdy modele nie zostały załadowane
-            ValueError: Gdy brak keypoints do przetworzenia
         """
         if not self._models_loaded:
             raise RuntimeError("Pipeline nie załadowany. Wywołaj load() najpierw.")
 
-        from packages.models.delta_action_units import DeltaActionUnitsExtractor
-        from packages.models.emotion import classify_emotion_from_delta_aus
-        from packages.pipeline.neutral_frame import (
-            NeutralFrameDetector,
-            collect_neutral_baseline,
-            estimate_head_pose,
-        )
-        from packages.pipeline.peak_selector import PeakFrameSelector, compute_tfm
+        config = config or VideoDatasetConfig()
+        report = _progress_reporter(progress_callback)
 
-        print("\n" + "=" * 60)
-        print("DATASET GENERATION PIPELINE")
-        print("=" * 60)
+        frames_by_track = self._assign_tracks(frames_list, report)
+        accepted: list[TrackResult] = []
+        rejected: list[TrackResult] = []
 
-        def _cb(pct: int, stage: str) -> None:
-            if progress_callback is not None:
-                progress_callback(pct, stage)
-
-        _cb(3, "Extracting keypoints...")
-
-        # Step 1: Wykryj keypoints dla wszystkich klatek
-        print(f"\n[1/5] Wykrywanie keypoints dla {len(frames_list)} klatek...")
-        keypoints_list = []
-        bboxes_list: list[Optional[tuple[int, int, int, int]]] = []
-        valid_frame_indices = []
-        _total_frames = max(len(frames_list), 1)
-
-        for i, frame in enumerate(frames_list):
-            # Wykryj psa
-            detections = self.bbox_model.predict(frame)
-
-            if not detections:
-                keypoints_list.append(None)
-                bboxes_list.append(None)
-                continue
-
-            # Weź pierwszego psa (największy bbox)
-            detection = detections[0]
-            x, y, w, h = detection.bbox
-
-            # Crop
-            height, width = frame.shape[:2]
-            x = max(0, x)
-            y = max(0, y)
-            w = min(w, width - x)
-            h = min(h, height - y)
-            cropped = frame[y : y + h, x : x + w]
-
-            if cropped.size == 0:
-                keypoints_list.append(None)
-                bboxes_list.append(None)
-                continue
-
-            # Zachowaj bbox do późniejszej klasyfikacji rasy
-            bboxes_list.append((x, y, w, h))
-
-            # Wykryj keypoints dwuprzebiegowo (zoom na mordę) — współrzędne już
-            # w układzie pełnego obrazu. Format COCO: [x0, y0, v0, x1, y1, v1, ...]
-            try:
-                kp_pred = self._predict_keypoints_two_pass(frame, x, y, w, h)
-                keypoints_flat = np.array(kp_pred.to_coco_format(), dtype=np.float32)
-
-                keypoints_list.append(keypoints_flat)
-                valid_frame_indices.append(i)
-            except Exception as e:
-                print(f"  ! Błąd keypoints dla klatki {i}: {e}")
-                keypoints_list.append(None)
-
-            # Raportuj postęp per-klatka: etap 1 zajmuje 3% → 72%
-            _cb(3 + int((i + 1) / _total_frames * 69), "Detecting keypoints...")
-
-        # Filtruj tylko klatki z keypoints
-        valid_keypoints = [kp for kp in keypoints_list if kp is not None]
-
-        if len(valid_keypoints) < 2:
-            raise ValueError(
-                f"Za mało klatek z keypoints: {len(valid_keypoints)}. Potrzeba min 2."
+        for done, (track_id, entries) in enumerate(sorted(frames_by_track.items()), 1):
+            track = self._process_track(frames_list, track_id, entries, config)
+            (rejected if track.rejected_reason else accepted).append(track)
+            report(
+                _progress_percent(
+                    done, len(frames_by_track), _PROGRESS_TRACKING_END, _PROGRESS_TRACKS_END
+                ),
+                "Processing dog tracks...",
             )
 
-        print(f"  → Wykryto keypoints w {len(valid_keypoints)}/{len(frames_list)} klatkach")
-
-        _cb(73, "Estimating head pose...")
-
-        # Step 2: Estymacja head pose dla wszystkich klatek
-        print("\n[2/5] Estymacja head pose...")
-        head_poses = []
-        for kp in keypoints_list:
-            if kp is not None:
-                # Te same progi, co w selektorze peaków — inaczej `is_frontal`
-                # w statystyce poniżej opisywałoby inną granicę niż filtrowanie.
-                head_pose = estimate_head_pose(
-                    kp,
-                    max_yaw_asymmetry=max_yaw_asymmetry,
-                    max_roll=max_roll,
-                )
-                head_poses.append(head_pose)
-            else:
-                head_poses.append(None)
-
-        valid_head_poses = [hp for hp in head_poses if hp is not None]
-        frontal_count = sum(1 for hp in valid_head_poses if hp.is_frontal)
-        print(f"  → Frontal poses: {frontal_count}/{len(valid_head_poses)}")
-
-        _cb(80, "Detecting neutral frame...")
-
-        # Step 3: Auto-detekcja neutral frame (jeśli nie podano)
-        print("\n[3/5] Detekcja neutral frame...")
-        if neutral_idx is None:
-            detector = NeutralFrameDetector()
-            neutral_idx = detector.detect_auto(
-                frames=[frames_list[i] for i in valid_frame_indices],
-                keypoints_list=valid_keypoints,
-                head_poses=valid_head_poses,
-                debug=False,  # Ustaw True dla szczegółowych logów
-            )
-            # Zmapuj z powrotem na oryginalne indeksy
-            neutral_idx = valid_frame_indices[neutral_idx]
-            print(f"  → Auto-detected neutral frame: {neutral_idx}")
-        else:
-            print(f"  → Using manual neutral frame: {neutral_idx}")
-
-        neutral_keypoints = keypoints_list[neutral_idx]
-        if neutral_keypoints is None:
-            raise ValueError(f"Neutral frame {neutral_idx} nie ma keypoints!")
-
-        # Baza median z okna klatek wokół neutralnej — odporna na pojedynczy zły kadr
-        neutral_baseline = collect_neutral_baseline(keypoints_list, neutral_idx)
-        print(f"  → Baza median z {len(neutral_baseline)} klatek wokół neutralnej")
-
-        _cb(86, "Computing delta AUs...")
-
-        # Step 4: Oblicz delta AU dla wszystkich klatek
-        print("\n[4/5] Obliczanie delta Action Units...")
-        delta_extractor = DeltaActionUnitsExtractor(neutral_baseline)
-
-        delta_aus_list = []
-        for kp in keypoints_list:
-            if kp is not None:
-                delta_aus = delta_extractor.extract(kp)
-                delta_aus_list.append(delta_aus)
-            else:
-                delta_aus_list.append(None)
-
-        valid_delta_aus = [d for d in delta_aus_list if d is not None]
-        print(f"  → Obliczono delta AU dla {len(valid_delta_aus)} klatek")
-
-        _cb(92, "Selecting peak frames...")
-
-        # Step 5: Wybierz peak frames
-        print(f"\n[5/5] Wybór {num_peaks} peak frames (TFM-based)...")
-        selector = PeakFrameSelector(
-            min_separation_frames=min_separation_frames,
-            frontal_only=False,  # Nie wymagamy ścisłego frontal (zbyt restrykcyjne)
-            min_keypoint_conf=min_keypoint_conf,  # Próg pewności keypoints
-            max_yaw_asymmetry=max_yaw_asymmetry,  # Maks. asymetria kącik oka <-> nos
-            max_roll=max_roll,  # Maks. przechylenie głowy
-            min_sharpness=min_sharpness,  # Próg ostrości (filtr rozmycia)
-        )
-
-        peak_indices = selector.select(
-            frames=frames_list,
-            keypoints_list=keypoints_list,
-            neutral_idx=neutral_idx,
-            delta_aus_list=delta_aus_list,
-            head_poses=head_poses,
-            num_peaks=num_peaks,
-        )
-
-        # Statystyka filtra jakości (wariant B): ile klatek miało pewne keypoints
-        confident = sum(
-            1
-            for kp in keypoints_list
-            if kp is not None
-            and float(np.mean(kp.reshape(NUM_KEYPOINTS, 3)[:, 2])) >= min_keypoint_conf
-        )
-        print(
-            f"  → Filtr jakości: {confident}/{len(frames_list)} klatek z pewnymi "
-            f"keypoints (próg conf {min_keypoint_conf}, "
-            f"max asymetria {max_yaw_asymmetry}, max roll {max_roll}°)"
-        )
-        print(f"  → Wybrano {len(peak_indices)} peak frames")
-        if not peak_indices:
-            print(
-                "  ! UWAGA: 0 klatek przeszło filtr — wideo prawdopodobnie ma psa "
-                "tylko w profilu / rozmyte. Zmniejsz min_keypoint_conf lub użyj "
-                "innego wideo."
-            )
-
-        _cb(95, "Classifying emotions & breeds...")
-
-        # Step 6: Klasyfikuj emocje i rasę dla peak frames
-        print("\n[6/6] Klasyfikacja emocji i rasy dla peak frames...")
-        peak_frames_data = []
-
-        for peak_idx in peak_indices:
-            delta_aus = delta_aus_list[peak_idx]
-            tfm_score = compute_tfm(delta_aus)
-
-            # Klasyfikuj emocję
-            emotion_pred = classify_emotion_from_delta_aus(delta_aus)
-
-            # Klasyfikuj rasę (wymaga cropowania psa z klatki)
-            breed_pred = None
-            if self.breed_model is not None and bboxes_list[peak_idx] is not None:
-                bx, by, bw, bh = bboxes_list[peak_idx]
-                cropped_peak = frames_list[peak_idx][by : by + bh, bx : bx + bw]
-                if cropped_peak.size > 0:
-                    try:
-                        breed_pred = self.breed_model.predict(cropped_peak)
-                    except Exception as e:
-                        print(f"  ! Błąd klasyfikacji rasy dla klatki {peak_idx}: {e}")
-
-            peak_frames_data.append(
-                {
-                    "frame_idx": peak_idx,
-                    "frame": frames_list[peak_idx],
-                    "keypoints": keypoints_list[peak_idx],
-                    "bbox": list(bboxes_list[peak_idx]) if bboxes_list[peak_idx] else None,
-                    "delta_aus": delta_aus,
-                    "emotion": emotion_pred,
-                    "breed": breed_pred,
-                    "tfm_score": tfm_score,
-                }
-            )
-
-            print(
-                f"  Peak {peak_idx}: {emotion_pred.emotion.upper()} "
-                f"(conf={emotion_pred.confidence:.2f}, TFM={tfm_score:.3f})"
-            )
-
-        # Zbierz dane wszystkich klatek
-        all_frames_data = []
-        for i in range(len(frames_list)):
-            all_frames_data.append(
-                {
-                    "frame_idx": i,
-                    "keypoints": keypoints_list[i],
-                    "head_pose": head_poses[i],
-                    "delta_aus": delta_aus_list[i],
-                }
-            )
-
-        _cb(99, "Finalizing...")
-
-        print("\n" + "=" * 60)
-        print("DATASET GENERATION COMPLETE")
-        print("=" * 60)
-
+        _print_track_summary(accepted, rejected, len(frames_list))
         return {
-            "neutral_frame_idx": neutral_idx,
-            "neutral_keypoints": neutral_keypoints,
-            "peak_frames": peak_frames_data,
-            "all_frames_data": all_frames_data,
+            "tracks": accepted,
+            "rejected_tracks": rejected,
+            "total_frames": len(frames_list),
         }
+
+    def _assign_tracks(
+        self,
+        frames_list: list[np.ndarray],
+        report: Callable[[int, str], None],
+    ) -> dict[int, list[tuple[int, Detection]]]:
+        """
+        Przypisuje detekcje psów do treków przez całe wideo.
+
+        Jeden `DogTracker` na wideo — to on trzyma tożsamość psa między klatkami.
+
+        Args:
+            frames_list: Kolejne klatki wideo
+            report: Raportowanie postępu
+
+        Returns:
+            Słownik track_id → lista (numer klatki wideo, detekcja)
+        """
+        tracker = DogTracker()
+        frames_by_track: dict[int, list[tuple[int, Detection]]] = {}
+
+        for frame_idx, frame in enumerate(frames_list):
+            detections = self.bbox_model.predict(frame)
+            track_ids = tracker.update(frame, detections)
+            for track_id, detection in zip(track_ids, detections):
+                frames_by_track.setdefault(track_id, []).append((frame_idx, detection))
+            report(
+                _progress_percent(frame_idx + 1, len(frames_list), 0, _PROGRESS_TRACKING_END),
+                "Tracking dogs...",
+            )
+
+        return frames_by_track
+
+    def _process_track(
+        self,
+        frames_list: list[np.ndarray],
+        track_id: int,
+        entries: list[tuple[int, Detection]],
+        config: VideoDatasetConfig,
+    ) -> TrackResult:
+        """
+        Przetwarza jeden trek: keypoints → klatka neutralna → delta AU → peaki.
+
+        Args:
+            frames_list: Kolejne klatki wideo
+            track_id: Identyfikator treku z `DogTracker`
+            entries: Klatki tego treku jako (numer klatki wideo, detekcja)
+            config: Progi przetwarzania
+
+        Returns:
+            Wynik treku — przyjęty albo odrzucony z wypełnionym `rejected_reason`
+        """
+        track_frames = self._build_track_frames(frames_list, entries, config)
+
+        try:
+            neutral_position = self._neutral_position(frames_list, track_frames, config)
+        except ValueError as error:
+            return rejected_track(track_id, track_frames, f"brak klatki neutralnej: {error}")
+
+        baseline = collect_neutral_baseline(
+            [frame.keypoints for frame in track_frames],
+            neutral_position,
+            window=NEUTRAL_BASELINE_WINDOW,
+        )
+        extractor = DeltaActionUnitsExtractor(baseline)
+        for track_frame in track_frames:
+            track_frame.delta_aus = extractor.extract(track_frame.keypoints)
+
+        # Próg godności i zamiana pozycji w treku na numery klatek wideo są
+        # w `build_track_result` — tylko tam liczą się też szum AU i liczba próbek.
+        return build_track_result(
+            track_id,
+            track_frames,
+            neutral_position,
+            self._select_peaks(frames_list, track_frames, neutral_position, config),
+            quality=config.track_quality,
+        )
+
+    def _build_track_frames(
+        self,
+        frames_list: list[np.ndarray],
+        entries: list[tuple[int, Detection]],
+        config: VideoDatasetConfig,
+    ) -> list[TrackFrame]:
+        """
+        Wykrywa i wygładza keypoints wszystkich klatek jednego treku.
+
+        Filtr wygładzający ma stan, więc jedna instancja przypada na JEDEN trek —
+        współdzielenie mieszałoby ruch dwóch psów. Znacznik czasu liczony jest
+        z numeru klatki i próbkowania, więc luki w treku nie udają ciągłości.
+
+        Args:
+            frames_list: Kolejne klatki wideo
+            entries: Klatki tego treku jako (numer klatki wideo, detekcja)
+            config: Progi przetwarzania
+
+        Returns:
+            Klatki treku z wykrytą mordą (klatki bez keypoints są pominięte)
+        """
+        smoother = KeypointSmoother()
+        track_frames: list[TrackFrame] = []
+
+        for frame_idx, detection in entries:
+            frame = frames_list[frame_idx]
+            measured = self._face_keypoints(frame, detection.bbox)
+            if measured is None:
+                continue
+
+            prediction, face_box = measured
+            smoothed = smoother.smooth(
+                np.asarray(prediction.to_coco_format(), dtype=float),
+                face_box,
+                timestamp=frame_idx / config.fps,
+            )
+            track_frames.append(
+                TrackFrame(
+                    frame_idx=frame_idx,
+                    keypoints=smoothed,
+                    face_box=face_box,
+                    head_pose=estimate_head_pose(
+                        smoothed,
+                        max_yaw_asymmetry=config.max_yaw_asymmetry,
+                        max_roll=config.max_roll,
+                    ),
+                )
+            )
+
+        return track_frames
+
+    def _face_keypoints(
+        self,
+        frame: np.ndarray,
+        bbox: tuple[int, int, int, int],
+    ) -> Optional[tuple[KeypointsPrediction, tuple[float, float, float, float]]]:
+        """
+        Wykrywa keypoints mordy psa wraz z boksem, w którym zostały zmierzone.
+
+        Boks mordy jest potrzebny dalej dwa razy: do normalizacji przy wygładzaniu
+        i jako miara rozdzielczości pomiaru w progu godności treku.
+
+        Args:
+            frame: Pełna klatka wideo
+            bbox: Bounding box psa (x, y, w, h)
+
+        Returns:
+            (predykcja keypoints, boks mordy) albo None, gdy pomiar się nie udał
+        """
+        if self.keypoints_model is None:
+            return None
+
+        x, y, w, h = _clamp_bbox(bbox, frame.shape[0], frame.shape[1])
+        if w <= 0 or h <= 0:
+            return None
+
+        try:
+            face_box = (
+                self._detect_face(frame, x, y, w, h) if self.face_model is not None else None
+            )
+            if face_box is not None:
+                prediction = self._keypoints_on_region(frame, *face_box)
+                if prediction is not None:
+                    return prediction, face_box
+            # Detektor mordy nic nie znalazł — kadrujemy z bboxa ciała, a boks
+            # mordy odtwarzamy z samych keypoints.
+            prediction = self._keypoints_from_body_bbox(frame, x, y, w, h)
+        except Exception as error:
+            # Jedna zła klatka nie może przerwać przetwarzania całego wideo
+            print(f"  ! Błąd keypoints: {error}")
+            return None
+
+        return prediction, self._keypoints_face_region(prediction.keypoints)
+
+    def _neutral_position(
+        self,
+        frames_list: list[np.ndarray],
+        track_frames: list[TrackFrame],
+        config: VideoDatasetConfig,
+    ) -> int:
+        """
+        Wybiera klatkę neutralną treku i zwraca jej POZYCJĘ w `track_frames`.
+
+        Ręcznie wskazana klatka obowiązuje tylko dla treków, które ją zawierają —
+        pies, którego wtedy nie było w kadrze, dostaje klatkę z auto-detekcji
+        zamiast cichego podstawienia obcego kadru.
+
+        Args:
+            frames_list: Kolejne klatki wideo
+            track_frames: Klatki treku
+            config: Progi przetwarzania
+
+        Returns:
+            Pozycja klatki neutralnej w `track_frames`
+
+        Raises:
+            ValueError: Gdy nie da się wskazać klatki neutralnej
+        """
+        if config.neutral_frame_idx is not None:
+            for position, track_frame in enumerate(track_frames):
+                if track_frame.frame_idx == config.neutral_frame_idx:
+                    return position
+
+        detector = NeutralFrameDetector(
+            min_keypoint_conf=config.min_keypoint_conf,
+            max_yaw_asymmetry=config.max_yaw_asymmetry,
+            max_roll=config.max_roll,
+        )
+        return detector.detect_auto(
+            frames=[frames_list[frame.frame_idx] for frame in track_frames],
+            keypoints_list=[frame.keypoints for frame in track_frames],
+            head_poses=[frame.head_pose for frame in track_frames],
+        )
+
+    def _select_peaks(
+        self,
+        frames_list: list[np.ndarray],
+        track_frames: list[TrackFrame],
+        neutral_position: int,
+        config: VideoDatasetConfig,
+    ) -> list[int]:
+        """
+        Wybiera POZYCJE klatek szczytowych w obrębie treku.
+
+        Args:
+            frames_list: Kolejne klatki wideo
+            track_frames: Klatki treku z policzonymi delta AU
+            neutral_position: Pozycja klatki neutralnej w `track_frames`
+            config: Progi przetwarzania
+
+        Returns:
+            Pozycje peaków w `track_frames`, od najsilniejszego
+        """
+        selector = PeakFrameSelector(
+            min_separation_frames=config.peak_separation_frames,
+            # Ścisłej frontalności nie wymagamy — filtr progowy niżej wystarcza,
+            # a wymóg `is_frontal` odrzucał praktycznie cały materiał.
+            frontal_only=False,
+            min_keypoint_conf=config.min_keypoint_conf,
+            max_yaw_asymmetry=config.max_yaw_asymmetry,
+            max_roll=config.max_roll,
+            min_sharpness=config.min_sharpness,
+        )
+        return selector.select(
+            frames=[frames_list[frame.frame_idx] for frame in track_frames],
+            keypoints_list=[frame.keypoints for frame in track_frames],
+            neutral_idx=neutral_position,
+            delta_aus_list=[frame.delta_aus for frame in track_frames],
+            head_poses=[frame.head_pose for frame in track_frames],
+            num_peaks=config.num_peaks,
+        )
 
     def visualize(
         self,
@@ -1002,3 +1137,96 @@ class InferencePipeline:
                 draw.text((x, y - 20), label, fill=(255, 255, 255))
 
         return np.array(pil_image)
+
+
+# =============================================================================
+# Funkcje pomocnicze (prywatne)
+# =============================================================================
+
+def _progress_reporter(
+    callback: Optional[Callable[[int, str], None]],
+) -> Callable[[int, str], None]:
+    """
+    Zwraca funkcję raportującą postęp, obojętną na brak callbacku.
+
+    Args:
+        callback: Funkcja `(procent, etap)` albo None
+
+    Returns:
+        Funkcja `(procent, etap)` bezpieczna do wywołania zawsze
+    """
+
+    def report(percent: int, stage: str) -> None:
+        if callback is not None:
+            callback(percent, stage)
+
+    return report
+
+
+def _progress_percent(done: int, total: int, start: int, end: int) -> int:
+    """
+    Przelicza postęp etapu na procent całości.
+
+    Args:
+        done: Ile pozycji etapu zrobiono
+        total: Ile pozycji ma etap (0 → od razu koniec etapu)
+        start: Procent na początku etapu
+        end: Procent na końcu etapu
+
+    Returns:
+        Procent całości
+    """
+    if total <= 0:
+        return end
+    return start + int(done / total * (end - start))
+
+
+def _clamp_bbox(
+    bbox: tuple[int, int, int, int],
+    height: int,
+    width: int,
+) -> tuple[int, int, int, int]:
+    """
+    Przycina bounding box do granic obrazu.
+
+    Args:
+        bbox: Bounding box (x, y, w, h)
+        height: Wysokość obrazu
+        width: Szerokość obrazu
+
+    Returns:
+        Bounding box wewnątrz obrazu (bok może wyjść niedodatni, gdy boks jest poza kadrem)
+    """
+    x, y, w, h = bbox
+    x = max(0, min(int(x), width))
+    y = max(0, min(int(y), height))
+    return x, y, min(int(w), width - x), min(int(h), height - y)
+
+
+def _print_track_summary(
+    accepted: list[TrackResult],
+    rejected: list[TrackResult],
+    total_frames: int,
+) -> None:
+    """
+    Wypisuje podsumowanie treków wraz z powodami odrzuceń.
+
+    Powody odrzuceń są jedynym śladem, gdzie lejek danych traci materiał —
+    bez nich strata jest nie do odróżnienia od braku psów na wideo.
+
+    Args:
+        accepted: Treki przyjęte
+        rejected: Treki odrzucone
+        total_frames: Liczba klatek wideo
+    """
+    print(
+        f"  → Treki: {len(accepted)} przyjęte, {len(rejected)} odrzucone "
+        f"({total_frames} klatek wideo)"
+    )
+    for track in rejected:
+        print(f"    - trek {track.track_id}: {track.rejected_reason}")
+    for track in accepted:
+        print(
+            f"    + trek {track.track_id}: {len(track.frames)} klatek, "
+            f"neutralna {track.neutral_frame_idx}, peaki {track.peak_indices}"
+        )

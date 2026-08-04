@@ -16,6 +16,7 @@ from .inference import (
     FrameResult,
     InferencePipeline,
     PipelineConfig,
+    VideoDatasetConfig,
 )
 from .landmark_smoothing import KeypointSmoother
 from .temporal_processor import (
@@ -44,6 +45,7 @@ from .video import VideoInfo, VideoProcessor
 __all__ = [
     # Inference Pipeline
     "PipelineConfig",
+    "VideoDatasetConfig",
     "DogAnnotation",
     "FrameResult",
     "InferencePipeline",
