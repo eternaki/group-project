@@ -24,14 +24,18 @@ from .temporal_processor import (
     TemporalProcessor,
 )
 from .track_processing import (
+    DEFAULT_TRACK_QUALITY,
     MIN_FACE_SIZE_PX,
     MIN_KEYPOINT_CONF,
+    MIN_NOISE_SAMPLES,
     MIN_TRACK_FRAMES,
     NO_NEUTRAL_FRAME,
     TrackFrame,
+    TrackQuality,
     TrackResult,
     build_track_result,
     compute_au_noise,
+    count_au_samples,
     evaluate_track_quality,
     rejected_track,
 )
@@ -58,12 +62,16 @@ __all__ = [
     # Przetwarzanie treku (jeden pies)
     "TrackFrame",
     "TrackResult",
+    "TrackQuality",
+    "DEFAULT_TRACK_QUALITY",
     "evaluate_track_quality",
     "compute_au_noise",
+    "count_au_samples",
     "build_track_result",
     "rejected_track",
     "MIN_TRACK_FRAMES",
     "MIN_FACE_SIZE_PX",
     "MIN_KEYPOINT_CONF",
+    "MIN_NOISE_SAMPLES",
     "NO_NEUTRAL_FRAME",
 ]

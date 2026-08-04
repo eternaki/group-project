@@ -4,14 +4,20 @@ import numpy as np
 import pytest
 
 from packages.data.schemas import NUM_KEYPOINTS
-from packages.models.delta_action_units import DeltaActionUnit, DeltaActionUnitsExtractor
+from packages.models.delta_action_units import (
+    DEFAULT_ACTIVATION_THRESHOLD,
+    DeltaActionUnit,
+    DeltaActionUnitsExtractor,
+)
 from packages.models.head_pose import HeadPose
 from packages.pipeline.landmark_smoothing import KeypointSmoother
 from packages.pipeline.track_processing import (
     NO_NEUTRAL_FRAME,
     TrackFrame,
+    TrackQuality,
     build_track_result,
     compute_au_noise,
+    count_au_samples,
     evaluate_track_quality,
     rejected_track,
 )
@@ -19,9 +25,17 @@ from tests.test_pipeline.kp_fixtures import make_frontal_kp
 
 FACE_BOX: tuple[float, float, float, float] = (60.0, 60.0, 200.0, 200.0)
 FPS: float = 5.0
+# Szum 2 px przy rozstawie oczu 100 px w fixturze = NME_iod 0.02 (model idealny)
 JITTER_PX: float = 2.0
+# Szum odpowiadający realnej jakości naszego modelu keypoints: NME_iod 0.091
+REALISTIC_JITTER_PX: float = 9.1
 JITTER_FRAMES: int = 25
 BASELINE_FRAMES: int = 5
+# Próg aktywacji AU wyrażony jako delta (ratio 1.15 → 0.15)
+ACTIVATION_DELTA: float = DEFAULT_ACTIVATION_THRESHOLD - 1.0
+# AU liczone z widoczności punktów, nie z geometrii — filtr nie rusza kanału widoczności,
+# więc wygładzanie nie ma jak obniżyć ich szumu (w fixturze widoczność jest stała)
+VISIBILITY_BASED_AUS: frozenset[str] = frozenset({"AU145", "AD19"})
 
 
 def _au(name: str, ratio: float) -> DeltaActionUnit:
@@ -54,17 +68,28 @@ def _track_frame(
     )
 
 
-def _jittered_series(rng: np.random.Generator) -> list[np.ndarray]:
+def _jittered_series(
+    rng: np.random.Generator, jitter_px: float = JITTER_PX
+) -> list[np.ndarray]:
     """Nieruchoma frontalna morda z szumem gaussowskim na każdej współrzędnej."""
     base = make_frontal_kp().astype(float)
 
     series = []
     for _ in range(JITTER_FRAMES):
         frame = base.copy()
-        frame[0::3] += rng.normal(0, JITTER_PX, NUM_KEYPOINTS)
-        frame[1::3] += rng.normal(0, JITTER_PX, NUM_KEYPOINTS)
+        frame[0::3] += rng.normal(0, jitter_px, NUM_KEYPOINTS)
+        frame[1::3] += rng.normal(0, jitter_px, NUM_KEYPOINTS)
         series.append(frame)
     return series
+
+
+def _smoothed_series(series: list[np.ndarray]) -> list[np.ndarray]:
+    """Przepuszcza serię przez filtr treku (jedna instancja na trek)."""
+    smoother = KeypointSmoother()
+    return [
+        smoother.smooth(frame, FACE_BOX, timestamp=i / FPS)
+        for i, frame in enumerate(series)
+    ]
 
 
 def _noise_of_series(series: list[np.ndarray]) -> dict[str, float]:
@@ -137,6 +162,29 @@ class TestEvaluateTrackQuality:
 
         assert reason is not None and "morda" in reason
 
+    @pytest.mark.parametrize(
+        ("quality", "expected"),
+        [
+            (TrackQuality(min_frames=6), "klatek"),
+            (TrackQuality(min_face_px=200.0), "morda"),
+            (TrackQuality(min_conf=0.9), "pewność"),
+        ],
+    )
+    def test_custom_thresholds_are_respected(
+        self, quality: TrackQuality, expected: str
+    ) -> None:
+        """
+        Próg z konfiguracji pipeline'u musi dojechać do oceny treku.
+
+        Bez tego użytkownik ustawiający min_keypoint_conf=0.7 dostawał treki przyjęte
+        przy 0.4 — ten sam martwy próg, który dwa razy przeszedł w tym sprincie.
+        """
+        frames = [_track_frame(i) for i in range(5)]
+
+        reason = evaluate_track_quality(frames, quality=quality)
+
+        assert reason is not None and expected in reason
+
 
 class TestComputeAuNoise:
     """Szum AU na trek — waga wiarygodności dla przyszłego treningu."""
@@ -172,6 +220,60 @@ class TestComputeAuNoise:
     def test_empty_track_gives_empty_noise(self) -> None:
         assert compute_au_noise([]) == {}
 
+    def test_estimator_is_unbiased(self) -> None:
+        """
+        ddof=1, nie ddof=0.
+
+        Wariant populacyjny zaniża szum tym mocniej, im krótszy trek (przy 3 klatkach
+        średnio o 28%), więc dawałby najkrótszym trekom najwyższą wagę wiarygodności.
+        """
+        frames = [_track_frame(i, au_ratios={"AU101": r}) for i, r in enumerate((1.0, 2.0))]
+
+        noise = compute_au_noise(frames)
+
+        assert noise["AU101"] == pytest.approx(0.7071, abs=1e-4)
+
+    def test_single_sample_au_is_omitted(self) -> None:
+        """
+        Sigma z jednej próbki nie istnieje — zero udawałoby pomiar idealnie stabilny.
+
+        Brak klucza jest jednoznaczny i poprawnie się serializuje; ile prób było,
+        mówi `count_au_samples`.
+        """
+        frames = [_track_frame(i) for i in range(3)]
+        frames[0].delta_aus["AU25"] = _au("AU25", 1.4)
+
+        noise = compute_au_noise(frames)
+
+        assert "AU25" not in noise
+        assert count_au_samples(frames)["AU25"] == 1
+
+    def test_sample_count_reports_frames_per_au(self) -> None:
+        frames = [_track_frame(i) for i in range(4)]
+
+        assert count_au_samples(frames) == {"AU101": 4}
+
+    def test_nan_ratio_is_dropped_and_counted(self) -> None:
+        """
+        NaN nie może przeciec do zbioru: `json.dumps` zapisuje literał `NaN`
+        (niepoprawny JSON), a `allow_nan=False` wysypuje zapis. `np.clip` w
+        ekstraktorze AU NaN-a nie zatrzymuje, więc odsiewamy go tutaj.
+        """
+        ratios = [1.0, float("nan"), 1.4, float("inf")]
+        frames = [_track_frame(i, au_ratios={"AU101": r}) for i, r in enumerate(ratios)]
+
+        noise = compute_au_noise(frames)
+
+        assert np.isfinite(noise["AU101"])
+        assert count_au_samples(frames)["AU101"] == 2
+
+    def test_all_measurements_nan_gives_no_noise_but_zero_count(self) -> None:
+        nan_ratios = {"AU101": float("nan")}
+        frames = [_track_frame(i, au_ratios=nan_ratios) for i in range(3)]
+
+        assert compute_au_noise(frames) == {}
+        assert count_au_samples(frames) == {"AU101": 0}
+
     def test_noise_is_measured_on_smoothed_ratios(self) -> None:
         """
         Sedno zadania: do zbioru trafia ratio PO wygładzeniu, więc szum musi być
@@ -180,14 +282,9 @@ class TestComputeAuNoise:
         """
         rng = np.random.default_rng(0)
         raw_series = _jittered_series(rng)
-        smoother = KeypointSmoother()
-        smoothed_series = [
-            smoother.smooth(frame, FACE_BOX, timestamp=i / FPS)
-            for i, frame in enumerate(raw_series)
-        ]
 
         raw_noise = _noise_of_series(raw_series)
-        smoothed_noise = _noise_of_series(smoothed_series)
+        smoothed_noise = _noise_of_series(_smoothed_series(raw_series))
 
         raw_median = float(np.median(list(raw_noise.values())))
         smoothed_median = float(np.median(list(smoothed_noise.values())))
@@ -195,9 +292,43 @@ class TestComputeAuNoise:
             f"wygładzenie ma obniżyć szum AU, było {raw_median:.3f}, "
             f"jest {smoothed_median:.3f}"
         )
+        geometric = [name for name in raw_noise if name not in VISIBILITY_BASED_AUS]
         assert all(
-            smoothed_noise[name] <= raw_noise[name] for name in raw_noise
-        ), "żaden AU nie może po wygładzeniu zrobić się bardziej rozdygotany"
+            smoothed_noise[name] < raw_noise[name] for name in geometric
+        ), "każdy AU liczony z geometrii ma zejść z szumem, nie tylko nie urosnąć"
+        assert all(
+            smoothed_noise[name] == raw_noise[name] == 0.0
+            for name in VISIBILITY_BASED_AUS
+        ), "AU145 i AD19 liczą się z widoczności — filtr ich nie dotyka (patrz stała)"
+
+    def test_noise_at_real_model_error_still_exceeds_activation_threshold(self) -> None:
+        """
+        Test charakteryzujący (nie progowy): zapisuje, gdzie naprawdę jesteśmy.
+
+        Poprzedni test używa jitteru 2 px = NME_iod 0.02, czyli modelu idealnego.
+        Nasz model keypoints ma NME_iod 0.091 (9.1 px przy rozstawie oczu 100 px).
+        Przy tym poziomie błędu mediana sigma PO wygładzeniu wciąż przekracza próg
+        aktywacji 0.15, a wygładzanie daje już tylko ~1.5x zamiast ~2.7x. Wniosek:
+        samo wygładzanie nie wystarczy — dopóki keypoints są tej jakości, część AU
+        zapala się od szumu i `au_noise` musi ważyć te klatki w treningu.
+        """
+        rng = np.random.default_rng(0)
+        raw_series = _jittered_series(rng, jitter_px=REALISTIC_JITTER_PX)
+
+        smoothed_noise = _noise_of_series(_smoothed_series(raw_series))
+
+        smoothed_median = float(np.median(list(smoothed_noise.values())))
+        above_threshold = [
+            name for name, sigma in smoothed_noise.items() if sigma > ACTIVATION_DELTA
+        ]
+        assert smoothed_median > ACTIVATION_DELTA, (
+            f"stan faktyczny: mediana sigma {smoothed_median:.3f} przy progu "
+            f"aktywacji {ACTIVATION_DELTA:.2f}"
+        )
+        assert len(above_threshold) >= 12, (
+            f"stan faktyczny: {len(above_threshold)} z {len(smoothed_noise)} AU "
+            f"powyżej progu aktywacji: {sorted(above_threshold)}"
+        )
 
 
 class TestBuildTrackResult:
@@ -246,7 +377,7 @@ class TestBuildTrackResult:
         assert result.track_id == 3
         assert result.frames == frames
 
-    def test_au_noise_is_computed_for_track(self) -> None:
+    def test_au_noise_and_sample_count_are_computed_for_track(self) -> None:
         frames = [
             _track_frame(idx, au_ratios={"AU101": ratio})
             for idx, ratio in zip((7, 8, 11), (0.8, 1.2, 1.0))
@@ -257,15 +388,31 @@ class TestBuildTrackResult:
         )
 
         assert result.au_noise["AU101"] > 0.0
+        assert result.au_sample_count == {"AU101": 3}
 
     def test_peak_position_out_of_range_raises(self) -> None:
-        """Pomyłka pozycja/numer klatki ma wybuchnąć głośno, nie po cichu."""
+        """Pomyłka pozycja/numer klatki wybucha, o ile numer wypada poza trekiem."""
         frames = self._gapped_frames()
 
         with pytest.raises(IndexError, match="peak"):
             build_track_result(
                 track_id=3, frames=frames, neutral_position=0, peak_positions=[20]
             )
+
+    def test_frame_number_inside_range_is_not_detectable(self) -> None:
+        """
+        Granica strażnika, świadomie udokumentowana.
+
+        W długim treku numer klatki wideo bywa poprawną pozycją, więc pomyłki nie da
+        się wykryć — dlatego konwersja ma zostać wyłącznie w `build_track_result`.
+        """
+        frames = [_track_frame(idx) for idx in range(10, 40)]
+
+        result = build_track_result(
+            track_id=3, frames=frames, neutral_position=0, peak_positions=[20]
+        )
+
+        assert result.peak_indices == [30], "pozycja 20 to klatka 30, nie klatka 20"
 
     def test_neutral_position_out_of_range_raises(self) -> None:
         frames = self._gapped_frames()
@@ -275,11 +422,53 @@ class TestBuildTrackResult:
                 track_id=3, frames=frames, neutral_position=7, peak_positions=[]
             )
 
-    def test_empty_track_raises(self) -> None:
-        with pytest.raises(ValueError, match="pust"):
+    def test_duplicate_peak_positions_raise(self) -> None:
+        """Ta sama klatka trzy razy w zbiorze to potrójna waga w treningu."""
+        frames = self._gapped_frames()
+
+        with pytest.raises(ValueError, match="Powtórzone"):
             build_track_result(
-                track_id=3, frames=[], neutral_position=0, peak_positions=[]
+                track_id=3, frames=frames, neutral_position=0, peak_positions=[3, 3, 3]
             )
+
+    def test_empty_track_is_rejected_not_raised(self) -> None:
+        result = build_track_result(
+            track_id=3, frames=[], neutral_position=0, peak_positions=[]
+        )
+
+        assert result.rejected_reason is not None and "klatek" in result.rejected_reason
+        assert result.neutral_frame_idx == NO_NEUTRAL_FRAME
+
+    def test_track_below_quality_threshold_is_rejected_here(self) -> None:
+        """
+        Bramka jakości nie może być opcjonalna.
+
+        Trek 1-klatkowy przechodził jako przyjęty z szumem 0.0, czyli z najwyższą
+        wagą wiarygodności, gdyby wywołujący pominął `evaluate_track_quality`.
+        """
+        frames = [_track_frame(7)]
+
+        result = build_track_result(
+            track_id=3, frames=frames, neutral_position=0, peak_positions=[0]
+        )
+
+        assert result.rejected_reason is not None
+        assert result.au_noise == {}
+        assert result.peak_indices == []
+
+    def test_quality_thresholds_reach_the_gate(self) -> None:
+        """Próg z konfiguracji ma działać także przez `build_track_result`."""
+        frames = self._gapped_frames()
+
+        result = build_track_result(
+            track_id=3,
+            frames=frames,
+            neutral_position=0,
+            peak_positions=[2],
+            quality=TrackQuality(min_conf=0.9),
+        )
+
+        assert result.rejected_reason is not None and "pewność" in result.rejected_reason
 
 
 class TestRejectedTrack:
@@ -300,6 +489,7 @@ class TestRejectedTrack:
         assert result.neutral_frame_idx == NO_NEUTRAL_FRAME
         assert result.peak_indices == []
         assert result.au_noise == {}
+        assert result.au_sample_count == {}
 
     @pytest.mark.parametrize("reason", ["", "   "])
     def test_empty_reason_raises(self, reason: str) -> None:
