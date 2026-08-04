@@ -12,6 +12,16 @@ Obecne w pipeline dzielenie odległości przez rozstaw oczu usuwa tylko skalę i
 sprzęga AU z pozą: przy obrocie głowy rozstaw oczu maleje perspektywicznie, więc
 wszystkie ratio rosną, mimo że mimika się nie zmieniła.
 
+Metoda jest sprawdzona dokładnie na naszym zbiorze punktów: Martvel i Riemer
+(„Automated analysis of emotional expressions in dogs based on geometric
+morphometrics", Sci Rep 2025) analizują mimikę psów na landmarkach DogFLW —
+„Procrustes superimposition was applied to all the landmark coordinates to
+eliminate scaling, translation, and rotation effects between individuals and
+poses". Ta sama praca jest źródłem naszych metryk pozy głowy (packages/models/
+head_pose.py). Uwaga dla kolejnych czytelników: pracy o samym DETEKTORZE
+landmarków DogFLW (Sci Rep 2025, PMC12218811) nie należy z nią mylić — tam
+o Prokrustesie nie ma mowy.
+
 Dwie świadome decyzje:
 
 1. **Bez odbicia.** Klasyczny algorytm Kabscha dopuszcza wyznacznik ujemny, co

@@ -8,6 +8,7 @@ from packages.pipeline.landmark_smoothing import KeypointSmoother
 
 FACE_BOX: tuple[float, float, float, float] = (100.0, 100.0, 200.0, 200.0)
 FPS: float = 5.0
+VIDEO_FPS: float = 25.0
 NOISE_PX: float = 3.0
 NOISE_STEPS: int = 30
 WARMUP_FRAMES: int = 5
@@ -138,3 +139,73 @@ class TestKeypointSmoother:
 
         with pytest.raises(ValueError, match="138"):
             smoother.smooth(np.zeros(100, dtype=float), FACE_BOX, timestamp=0.0)
+
+    def test_zly_uklad_o_poprawnej_liczbie_wartosci_konczy_wyjatkiem(self) -> None:
+        """Tablica (3, 46) ma 138 wartości, ale to inny układ — nie wolno jej milcząco przyjąć."""
+        smoother = KeypointSmoother()
+
+        with pytest.raises(ValueError, match="kształcie"):
+            smoother.smooth(np.zeros((3, NUM_KEYPOINTS), dtype=float), FACE_BOX, timestamp=0.0)
+
+    def test_cofniety_czas_restartuje_filtr(self) -> None:
+        """
+        Regresja: czas cofnięty (sklejone segmenty, reset numeracji klatek) nie może
+        zamrozić filtra aż do przekroczenia poprzedniego maksimum czasu.
+        """
+        smoother = KeypointSmoother()
+        frame = _static_frame()
+        for i in range(6):
+            smoother.smooth(frame, FACE_BOX, timestamp=i / FPS)
+
+        moved = frame.copy()
+        moved[0::3] = 250.0
+        result = smoother.smooth(moved, FACE_BOX, timestamp=0.0)
+
+        assert np.allclose(result[0::3], 250.0), "po restarcie pierwsza klatka wraca bez zmian"
+
+    def test_kanaly_nie_przeciekaja(self) -> None:
+        """Skok w jednej współrzędnej nie może poruszyć pozostałych."""
+        smoother = KeypointSmoother()
+        frame = _static_frame()
+        for i in range(6):
+            smoother.smooth(frame, FACE_BOX, timestamp=i / FPS)
+
+        jumped = frame.copy()
+        jumped[0] = 400.0
+        result = smoother.smooth(jumped, FACE_BOX, timestamp=6 / FPS)
+
+        assert result[0] > 300.0
+        assert np.allclose(result[3::3], 150.0)
+
+    def test_tlumi_szum_takze_przy_pelnym_fps(self) -> None:
+        """Kalibracja domyślna jest robiona przy 5 fps — przy 25 fps też ma tłumić."""
+        rng = np.random.default_rng(1)
+        series = _noisy_series(rng, steps=NOISE_STEPS, noise=NOISE_PX)
+        smoother = KeypointSmoother()
+
+        smoothed = [
+            smoother.smooth(frame, FACE_BOX, timestamp=i / VIDEO_FPS)
+            for i, frame in enumerate(series)
+        ]
+
+        raw_std = _mean_coordinate_std(series)
+        smooth_std = _mean_coordinate_std(smoothed[WARMUP_FRAMES:])
+
+        assert smooth_std < raw_std / 2
+
+
+class TestSmootherParameters:
+    """Walidacja parametrów filtra."""
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"min_cutoff": 0.0}, {"min_cutoff": -1.0}, {"d_cutoff": 0.0}, {"beta": -5.0}],
+    )
+    def test_niepoprawne_parametry_koncza_wyjatkiem(self, kwargs: dict) -> None:
+        """
+        Bez walidacji `min_cutoff=0` dawało ciche `RuntimeWarning: divide by zero`,
+        `d_cutoff=0` gołe `ZeroDivisionError`, a ujemna beta niestabilność
+        (skok 150→250 przestrzeliwał do 296).
+        """
+        with pytest.raises(ValueError):
+            KeypointSmoother(**kwargs)
