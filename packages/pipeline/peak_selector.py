@@ -11,6 +11,7 @@ import numpy as np
 
 from packages.data.schemas import NUM_KEYPOINTS
 from packages.models.delta_action_units import DeltaActionUnit
+from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
 from packages.pipeline.neutral_frame import HeadPose
 
 # Weights for TFM computation (expressive AUs weighted higher)
@@ -83,8 +84,8 @@ class PeakFrameSelector:
         min_tfm_threshold: float = 0.15,   # Minimum movement
         frontal_only: bool = False,  # Zmieniono na False - zbyt restrykcyjne
         min_keypoint_conf: float = 0.5,  # Zmniejszono z 0.7 na 0.5
-        max_yaw_asymmetry: float = 0.35,  # Maks. asymetria kącik oka <-> nos
-        max_roll: float = 30.0,  # Maks. przechylenie (stopnie)
+        max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+        max_roll: float = DEFAULT_MAX_ROLL,
         min_sharpness: float = 60.0,  # Min. ostrość mordy (var Laplacian) — filtr rozmycia
     ):
         """
@@ -93,10 +94,10 @@ class PeakFrameSelector:
         Args:
             min_separation_frames: Minimum frames between selected peaks
             min_tfm_threshold: Minimum TFM score to consider
-            frontal_only: Only select strictly frontal poses (<20°)
+            frontal_only: Only select poses within max_yaw_asymmetry and max_roll
             min_keypoint_conf: Minimum keypoint confidence
-            max_yaw_asymmetry: Maximum yaw asymmetry (used when frontal_only=False)
-            max_roll: Maximum roll angle in degrees (used when frontal_only=False)
+            max_yaw_asymmetry: Maximum yaw asymmetry (eye corner <-> nose)
+            max_roll: Maximum roll angle in degrees
         """
         self.min_separation = min_separation_frames
         self.min_tfm = min_tfm_threshold
@@ -132,7 +133,16 @@ class PeakFrameSelector:
         # Estimate head poses if not provided
         if head_poses is None:
             from packages.pipeline.neutral_frame import estimate_head_pose
-            head_poses = [estimate_head_pose(kp) for kp in keypoints_list]
+            # Progi z konstruktora muszą trafić do estymatora — inaczej
+            # `is_frontal` (używane przy frontal_only) liczy się na domyślnych.
+            head_poses = [
+                estimate_head_pose(
+                    kp,
+                    max_yaw_asymmetry=self.max_yaw_asymmetry,
+                    max_roll=self.max_roll,
+                )
+                for kp in keypoints_list
+            ]
 
         # Step 1: Compute TFM for valid candidates.
         # Zbieramy WSZYSTKIE poprawne kadry (z TFM). Kadry powyżej progu min_tfm
@@ -211,7 +221,16 @@ class PeakFrameSelector:
         # Estimate head poses if needed
         if head_poses is None:
             from packages.pipeline.neutral_frame import estimate_head_pose
-            head_poses = [estimate_head_pose(kp) for kp in keypoints_list]
+            # Progi z konstruktora muszą trafić do estymatora — inaczej
+            # `is_frontal` (używane przy frontal_only) liczy się na domyślnych.
+            head_poses = [
+                estimate_head_pose(
+                    kp,
+                    max_yaw_asymmetry=self.max_yaw_asymmetry,
+                    max_roll=self.max_roll,
+                )
+                for kp in keypoints_list
+            ]
 
         # Group candidates by emotion
         emotion_groups = {}

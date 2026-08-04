@@ -100,3 +100,35 @@ def make_turned_kp(shift_x: float) -> np.ndarray:
     kp = flat.reshape(NUM_KEYPOINTS, 3)
     kp[KP.NOSE_TIP, 0] += shift_x
     return kp.flatten()
+
+
+def make_tilted_kp(shift_y: float) -> np.ndarray:
+    """
+    Tworzy twarz przechyloną — prawe oko przesunięte w pionie o `shift_y`.
+
+    Args:
+        shift_y: Przesunięcie prawego oka w pikselach. Ujemne = prawe oko wyżej
+            (roll < 0), dodatnie = prawe oko niżej (roll > 0).
+
+    Returns:
+        Tablica (138,) z wartościami [x0, y0, v0, ...]
+    """
+    kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+    kp[KP.RIGHT_EYE_INNER, 1] += shift_y
+    kp[KP.RIGHT_EYE_OUTER, 1] += shift_y
+    return kp.flatten()
+
+
+def make_low_visibility_kp(visibility: float = 0.1) -> np.ndarray:
+    """
+    Tworzy frontalną twarz z jednakowo niską widocznością wszystkich punktów.
+
+    Args:
+        visibility: Widoczność wpisana we wszystkie 46 punktów
+
+    Returns:
+        Tablica (138,) z wartościami [x0, y0, v0, ...]
+    """
+    kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+    kp[:, 2] = visibility
+    return kp.flatten()

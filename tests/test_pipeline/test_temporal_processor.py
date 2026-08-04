@@ -4,47 +4,46 @@ Testy dla temporalnej agregacji delta AU (TemporalAUBuffer, TemporalProcessor).
 Główny nacisk na filtr pozy głowy: progi podane w konstruktorze muszą realnie
 docierać do estymatora pozy. Wcześniej `TemporalProcessor` przekazywał jeden
 próg pozycyjnie do `validate_head_pose`, przez co skonfigurowany próg był
-martwy — klatki filtrowała wyłącznie domyślna wartość w `estimate_head_pose`.
+martwy — klatki filtrowała wyłącznie wartość domyślna w `estimate_head_pose`.
+Dlatego testy sprawdzają obie strony: zaostrzenie progu ma odrzucać, a jego
+poluzowanie ma przepuszczać.
 
 Uruchomienie:
     pytest tests/test_pipeline/test_temporal_processor.py -v
 """
 
-import numpy as np
-
-from packages.data.schemas import KP, NUM_KEYPOINTS
 from packages.models.delta_action_units import ACTION_UNIT_NAMES
+from packages.models.head_pose import (
+    DEFAULT_MAX_ROLL,
+    DEFAULT_MAX_YAW_ASYMMETRY,
+    estimate_head_pose,
+)
 from packages.pipeline.temporal_processor import TemporalAUBuffer, TemporalProcessor
-from tests.test_pipeline.kp_fixtures import make_frontal_kp, make_turned_kp
+from tests.test_pipeline.kp_fixtures import (
+    make_frontal_kp,
+    make_low_visibility_kp,
+    make_tilted_kp,
+    make_turned_kp,
+)
 
-# Przesunięcia nosa dobrane pod progi frontalności (patrz head_pose.py):
-# 20 px → asymetria ~0.19 (poniżej domyślnych 0.35), 60 px → ~0.38 (powyżej).
-SHIFT_LEKKI_OBROT = 20.0
-SHIFT_MOCNY_OBROT = 60.0
-
-
-def make_tilted_kp(dy: float) -> np.ndarray:
-    """Tworzy twarz przechyloną — prawe oko przesunięte w pionie o `dy`."""
-    kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
-    kp[KP.RIGHT_EYE_INNER, 1] += dy
-    kp[KP.RIGHT_EYE_OUTER, 1] += dy
-    return kp.flatten()
-
-
-def make_low_visibility_kp() -> np.ndarray:
-    """Tworzy klatkę z niską widocznością wszystkich punktów."""
-    kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
-    kp[:, 2] = 0.1
-    return kp.flatten()
+# Przesunięcia dobrane pod progi frontalności (patrz head_pose.py). Metryka
+# nasyca się przy dużych przesunięciach (~0.38 to maksimum dla tej fikstury),
+# dlatego testy jawnie asertują samą wartość — zmiana geometrii fikstury ma
+# oblać test wprost, a nie po cichu odwrócić jego wynik.
+NOSE_SHIFT_SMALL_TURN = 20.0
+NOSE_SHIFT_LARGE_TURN = 65.0
+EYE_SHIFT_SMALL_TILT = -20.0
+LOOSE_YAW_THRESHOLD = 0.9
+STRICT_YAW_THRESHOLD = 0.05
+STRICT_ROLL_THRESHOLD = 5.0
 
 
 class TestTemporalProcessorPoseFilter:
     """Testy filtra pozy głowy w TemporalProcessor."""
 
-    def test_akceptuje_klatki_frontalne(self) -> None:
+    def test_accepts_frontal_frames(self) -> None:
         """Frontalne klatki trafiają do bufora, nic nie jest odrzucane."""
-        neutral = make_frontal_kp()
-        processor = TemporalProcessor(neutral_keypoints=neutral)
+        processor = TemporalProcessor(neutral_keypoints=make_frontal_kp())
 
         for _ in range(5):
             processor.process_frame(make_frontal_kp())
@@ -53,49 +52,69 @@ class TestTemporalProcessorPoseFilter:
         assert stats["accepted_frames"] == 5
         assert stats["rejected_head_pose"] == 0
 
-    def test_odrzuca_mocno_obrocona_klatke(self) -> None:
+    def test_rejects_strongly_turned_frame(self) -> None:
         """Asymetria powyżej domyślnego progu → klatka odrzucona przez pozę."""
-        processor = TemporalProcessor(neutral_keypoints=make_frontal_kp())
+        turned = make_turned_kp(NOSE_SHIFT_LARGE_TURN)
+        assert abs(estimate_head_pose(turned).yaw_asymmetry) > DEFAULT_MAX_YAW_ASYMMETRY
 
-        processor.process_frame(make_turned_kp(SHIFT_MOCNY_OBROT))
+        processor = TemporalProcessor(neutral_keypoints=make_frontal_kp())
+        processor.process_frame(turned)
 
         stats = processor.get_statistics()
         assert stats["accepted_frames"] == 0
         assert stats["rejected_head_pose"] == 1
 
-    def test_zaostrzony_prog_yaw_odrzuca_lekki_obrot(self) -> None:
-        """Regresja: próg z konstruktora musi działać, nie tylko wartość domyślna.
+    def test_loosened_yaw_threshold_accepts_turned_frame(self) -> None:
+        """Regresja: poluzowany próg musi dotrzeć do estymatora, nie tylko do walidacji.
 
-        Lekki obrót (asymetria ~0.19) mieści się w domyślnych 0.35, więc przy
-        martwym parametrze klatka byłaby zaakceptowana.
+        Klatka przekracza domyślne 0.35, więc `is_frontal` policzone na wartościach
+        domyślnych odrzuciłoby ją mimo jawnie poluzowanego progu.
         """
         processor = TemporalProcessor(
             neutral_keypoints=make_frontal_kp(),
-            max_yaw_asymmetry=0.05,
+            max_yaw_asymmetry=LOOSE_YAW_THRESHOLD,
         )
 
-        processor.process_frame(make_turned_kp(SHIFT_LEKKI_OBROT))
+        processor.process_frame(make_turned_kp(NOSE_SHIFT_LARGE_TURN))
+
+        assert processor.get_statistics()["accepted_frames"] == 1
+
+    def test_tightened_yaw_threshold_rejects_small_turn(self) -> None:
+        """Zaostrzony próg odrzuca obrót, który mieści się w wartości domyślnej."""
+        turned = make_turned_kp(NOSE_SHIFT_SMALL_TURN)
+        assert abs(estimate_head_pose(turned).yaw_asymmetry) < DEFAULT_MAX_YAW_ASYMMETRY
+
+        processor = TemporalProcessor(
+            neutral_keypoints=make_frontal_kp(),
+            max_yaw_asymmetry=STRICT_YAW_THRESHOLD,
+        )
+        processor.process_frame(turned)
 
         stats = processor.get_statistics()
         assert stats["accepted_frames"] == 0
         assert stats["rejected_head_pose"] == 1
 
-    def test_zaostrzony_prog_roll_odrzuca_lekkie_przechylenie(self) -> None:
-        """Regresja: próg przechylenia z konstruktora też musi docierać do estymatora."""
-        tilted = make_tilted_kp(-20.0)
+    def test_tightened_roll_threshold_rejects_small_tilt(self) -> None:
+        """Regresja: próg przechylenia z konstruktora też musi docierać do estymatora.
 
-        domyslny = TemporalProcessor(neutral_keypoints=make_frontal_kp())
-        domyslny.process_frame(tilted)
-        assert domyslny.get_statistics()["accepted_frames"] == 1
+        `validate_head_pose` nie sprawdza rolla, więc jedyną drogą tego progu
+        jest `estimate_head_pose`.
+        """
+        tilted = make_tilted_kp(EYE_SHIFT_SMALL_TILT)
+        assert abs(estimate_head_pose(tilted).roll) < DEFAULT_MAX_ROLL
 
-        zaostrzony = TemporalProcessor(
+        default_processor = TemporalProcessor(neutral_keypoints=make_frontal_kp())
+        default_processor.process_frame(tilted)
+        assert default_processor.get_statistics()["accepted_frames"] == 1
+
+        strict_processor = TemporalProcessor(
             neutral_keypoints=make_frontal_kp(),
-            max_roll=5.0,
+            max_roll=STRICT_ROLL_THRESHOLD,
         )
-        zaostrzony.process_frame(tilted)
-        assert zaostrzony.get_statistics()["rejected_head_pose"] == 1
+        strict_processor.process_frame(tilted)
+        assert strict_processor.get_statistics()["rejected_head_pose"] == 1
 
-    def test_odrzuca_klatke_o_niskiej_widocznosci(self) -> None:
+    def test_rejects_low_visibility_frame(self) -> None:
         """Widoczność poniżej progu → odrzucenie przed estymacją pozy."""
         processor = TemporalProcessor(neutral_keypoints=make_frontal_kp())
 
@@ -105,7 +124,7 @@ class TestTemporalProcessorPoseFilter:
         assert stats["rejected_visibility"] == 1
         assert stats["rejected_head_pose"] == 0
 
-    def test_reset_czysci_statystyki(self) -> None:
+    def test_reset_clears_statistics(self) -> None:
         """reset() zeruje liczniki i bufor."""
         processor = TemporalProcessor(neutral_keypoints=make_frontal_kp())
         for _ in range(3):
@@ -120,7 +139,7 @@ class TestTemporalProcessorPoseFilter:
 class TestTemporalAUBuffer:
     """Testy bufora agregującego ratio AU."""
 
-    def test_nie_agreguje_przed_min_frames(self) -> None:
+    def test_does_not_aggregate_below_min_frames(self) -> None:
         """Poniżej min_frames bufor nie zwraca wyniku."""
         buffer = TemporalAUBuffer(window_size=10, min_frames=3)
         buffer.add_frame({name: 1.0 for name in ACTION_UNIT_NAMES})
@@ -128,7 +147,7 @@ class TestTemporalAUBuffer:
         assert buffer.is_ready() is False
         assert buffer.get_aggregated() is None
 
-    def test_usrednia_ratio_z_okna(self) -> None:
+    def test_averages_ratios_over_window(self) -> None:
         """Średnia ważona ratio przy równych wagach to zwykła średnia."""
         buffer = TemporalAUBuffer(window_size=10, min_frames=2)
         buffer.add_frame({name: 1.0 for name in ACTION_UNIT_NAMES})
@@ -140,7 +159,7 @@ class TestTemporalAUBuffer:
         assert result.num_frames == 2
         assert abs(result.values[ACTION_UNIT_NAMES[0]] - 1.2) < 1e-6
 
-    def test_okno_odrzuca_najstarsze_klatki(self) -> None:
+    def test_window_drops_oldest_frames(self) -> None:
         """Bufor trzyma najwyżej window_size klatek."""
         buffer = TemporalAUBuffer(window_size=3, min_frames=1)
         for value in (1.0, 1.0, 2.0, 2.0):
@@ -151,7 +170,7 @@ class TestTemporalAUBuffer:
         assert result is not None
         assert result.num_frames == 3
 
-    def test_wektor_cech_ma_dlugosc_liczby_au(self) -> None:
+    def test_feature_vector_has_one_value_per_au(self) -> None:
         """to_feature_vector zwraca jedną wartość na AU."""
         buffer = TemporalAUBuffer(window_size=5, min_frames=1)
         buffer.add_frame({name: 1.0 for name in ACTION_UNIT_NAMES})

@@ -30,6 +30,7 @@ import numpy as np
 import torch
 
 from packages.data.coco import au_analysis_from_delta_aus
+from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
 
 # Konfiguracja logowania
 logging.basicConfig(
@@ -56,8 +57,8 @@ class BatchConfig:
     num_peaks: int = 10  # liczba peak frames na wideo do anotacji emocji
     peak_min_separation: int = 3  # min. separacja peak frames (w klatkach ekstrakcji)
     min_keypoint_conf: float = 0.3  # min. pewność keypoints dla peak frame
-    max_yaw_asymmetry: float = 0.35  # maks. asymetria kącik oka <-> nos dla peak frame
-    max_roll: float = 30.0  # maks. przechylenie głowy (stopnie) dla peak frame
+    max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY  # dla peak frame
+    max_roll: float = DEFAULT_MAX_ROLL  # dla peak frame
 
     # Parametry przetwarzania
     batch_size: int = 4  # rozmiar batcha dla GPU

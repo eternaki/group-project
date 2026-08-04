@@ -250,6 +250,12 @@ class TemporalProcessor:
             max_yaw_asymmetry=self.max_yaw_asymmetry,
             max_roll=self.max_roll,
         )
+        # Próg yaw trzeba podać jawnie: `validate_head_pose` ma własną wartość
+        # domyślną, która przy poluzowanym progu procesora odrzucałaby klatki
+        # mimo `is_frontal=True`. Roll sprawdza wyłącznie `is_frontal` (policzone
+        # wyżej na tych samych progach). `min_visibility` jest tu świadomie użyta
+        # ponownie — HeadPose.confidence to średnia widoczność 5 punktów
+        # kluczowych, czyli ta sama skala co średnia widoczność wszystkich.
         if not validate_head_pose(
             head_pose,
             max_yaw_asymmetry=self.max_yaw_asymmetry,

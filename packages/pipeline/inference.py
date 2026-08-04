@@ -26,6 +26,7 @@ from packages.models import (
     KeypointsModel,
     KeypointsPrediction,
 )
+from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
 
 
 @dataclass
@@ -600,8 +601,8 @@ class InferencePipeline:
         neutral_idx: Optional[int] = None,
         min_separation_frames: int = 30,
         min_keypoint_conf: float = 0.5,  # filtr: tylko pewne keypoints (było 0.3)
-        max_yaw_asymmetry: float = 0.35,  # filtr: maks. asymetria kącik oka <-> nos
-        max_roll: float = 30.0,  # filtr: maks. przechylenie (stopnie)
+        max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+        max_roll: float = DEFAULT_MAX_ROLL,
         min_sharpness: float = 60.0,  # filtr: odrzuca rozmyte/ruchowe kadry
         progress_callback: Optional[object] = None,
     ) -> dict:
@@ -745,7 +746,13 @@ class InferencePipeline:
         head_poses = []
         for kp in keypoints_list:
             if kp is not None:
-                head_pose = estimate_head_pose(kp)
+                # Te same progi, co w selektorze peaków — inaczej `is_frontal`
+                # w statystyce poniżej opisywałoby inną granicę niż filtrowanie.
+                head_pose = estimate_head_pose(
+                    kp,
+                    max_yaw_asymmetry=max_yaw_asymmetry,
+                    max_roll=max_roll,
+                )
                 head_poses.append(head_pose)
             else:
                 head_poses.append(None)
