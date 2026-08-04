@@ -29,10 +29,18 @@ import cv2
 import numpy as np
 import torch
 
-from packages.data.coco import au_analysis_from_delta_aus
+from packages.data.coco import (
+    FRAME_ROLE_NEUTRAL,
+    FRAME_ROLE_PEAK,
+    LABEL_SOURCE_AUTO_RULES,
+    TrackAnnotation,
+    au_analysis_from_delta_aus,
+)
+from packages.data.schemas import NUM_KEYPOINTS
 from packages.models.breed import BreedPrediction
 from packages.models.emotion import EmotionPrediction, classify_emotion_from_delta_aus
 from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
+from packages.models.shape_normalization import NUM_SHAPE_DIMS, procrustes_align
 from packages.pipeline.inference import VideoDatasetConfig
 from packages.pipeline.peak_selector import compute_tfm
 from packages.pipeline.track_processing import TrackFrame, TrackResult
@@ -53,6 +61,8 @@ class BatchConfig:
     output_dir: Path = field(default_factory=lambda: Path("data/annotations"))
     frames_dir: Path = field(default_factory=lambda: Path("data/frames"))
     progress_file: Path = field(default_factory=lambda: Path("data/annotations/progress.json"))
+    # Kanoniczny kształt DogFLW (GPA z 3853 obrazów) — baza superpozycji Prokrustesa
+    mean_shape_file: Path = field(default_factory=lambda: Path("models/dogflw_mean_shape.json"))
 
     # Parametry ekstrakcji
     fps: float = 1.0  # klatki na sekundę do ekstrakcji
@@ -102,12 +112,20 @@ class VideoContext:
 
 @dataclass
 class ProcessingProgress:
-    """Stan postępu przetwarzania."""
+    """
+    Stan postępu przetwarzania.
+
+    Attributes:
+        rejected_tracks: Treki odrzucone przed zapisem, z powodem. Do zbioru COCO
+            nie trafiają (anotacja w COCO jest z definicji próbką treningową),
+            ale bez ich spisu nie wiadomo, gdzie lejek danych traci materiał.
+    """
 
     processed_videos: list[str] = field(default_factory=list)
     total_frames: int = 0
     total_detections: int = 0
     low_confidence_frames: list[str] = field(default_factory=list)
+    rejected_tracks: list[dict] = field(default_factory=list)
     errors: list[dict] = field(default_factory=list)
     start_time: str = ""
     last_update: str = ""
@@ -119,6 +137,8 @@ class ProcessingProgress:
             "total_frames": self.total_frames,
             "total_detections": self.total_detections,
             "low_confidence_count": len(self.low_confidence_frames),
+            "rejected_tracks": self.rejected_tracks,
+            "rejected_track_count": len(self.rejected_tracks),
             "error_count": len(self.errors),
             "start_time": self.start_time,
             "last_update": self.last_update,
@@ -132,6 +152,7 @@ class ProcessingProgress:
             total_frames=data.get("total_frames", 0),
             total_detections=data.get("total_detections", 0),
             low_confidence_frames=data.get("low_confidence_frames", []),
+            rejected_tracks=data.get("rejected_tracks", []),
             errors=data.get("errors", []),
             start_time=data.get("start_time", ""),
             last_update=data.get("last_update", ""),
@@ -158,6 +179,11 @@ class BatchAnnotator:
         self.progress = ProcessingProgress()
         self.pipeline = None
         self.coco_dataset = None
+
+        # Kanoniczny kształt wczytujemy leniwie i raz — plik jest wspólny dla wszystkich
+        # wideo, a jego brak nie może wywracać konstruktora (raport, dry-run).
+        self._mean_shape: Optional[np.ndarray] = None
+        self._mean_shape_loaded = False
 
         # Utwórz katalogi
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -323,9 +349,10 @@ class BatchAnnotator:
 
         Wykorzystuje process_video_for_dataset(): trekowanie psów, własna klatka
         neutralna każdego psa, delta Action Units względem niej i wybór peak frames.
-        Do COCO trafiają peak frames każdego przyjętego treku (boks mordy, keypoints,
-        rasa, emocja, AU). Treki odrzucone lądują w logu z powodem — bez tego nie
-        wiadomo, gdzie lejek danych traci materiał.
+        Do COCO trafiają klatka neutralna i peak frames każdego przyjętego treku
+        (boks mordy, keypoints, rasa, emocja, AU). Treki odrzucone lądują w logu
+        i w pliku postępu z powodem — bez tego nie wiadomo, gdzie lejek danych
+        traci materiał — ale nie w zbiorze, żeby nie udawały próbek treningowych.
 
         Args:
             video_path: Ścieżka do pliku wideo
@@ -376,9 +403,15 @@ class BatchAnnotator:
 
         for track in dataset_result["rejected_tracks"]:
             logger.info(f"  Trek {track.track_id} odrzucony: {track.rejected_reason}")
+            self.progress.rejected_tracks.append({
+                "video": video_id,
+                "track_id": track.track_id,
+                "reason": track.rejected_reason,
+                "frames": len(track.frames),
+            })
 
         for track in dataset_result["tracks"]:
-            self._save_track_peaks(track, context, stats)
+            self._save_track_frames(track, context, stats)
 
         self.progress.total_detections += stats["detections"]
 
@@ -403,14 +436,18 @@ class BatchAnnotator:
             max_roll=self.config.max_roll,
         )
 
-    def _save_track_peaks(
+    def _save_track_frames(
         self,
         track: TrackResult,
         context: VideoContext,
         stats: dict,
     ) -> None:
         """
-        Zapisuje klatki szczytowe jednego treku (jednego psa) do zbioru.
+        Zapisuje klatkę neutralną i klatki szczytowe jednego treku (jednego psa).
+
+        Klatka neutralna jest bazą AU całego treku — bez niej sieć nie ma odniesienia
+        dla żadnego ratio — więc trafia do zbioru razem z peakami i idzie pierwsza:
+        jej image_id wskazują pozostałe anotacje treku.
 
         Nazwa pliku niesie track_id, bo na wideo z kilkoma psami ta sama klatka
         trafia do zbioru raz na psa — bez tego pliki nadpisywałyby się nawzajem.
@@ -420,12 +457,17 @@ class BatchAnnotator:
             context: Dane wideo
             stats: Statystyki przetwarzania (modyfikowane w miejscu)
         """
-        peak_indices = set(track.peak_indices)
+        if track.rejected_reason is not None:
+            # Pusty au_noise NIE znaczy „trek odrzucony" — jedynym poprawnym
+            # dyskryminatorem jest rejected_reason (patrz TrackResult).
+            logger.warning(
+                f"  Trek {track.track_id} odrzucony ({track.rejected_reason}) — nie zapisuję"
+            )
+            return
 
-        for track_frame in track.frames:
-            if track_frame.frame_idx not in peak_indices:
-                continue
+        neutral_image_id: Optional[int] = None
 
+        for track_frame in self._frames_to_save(track):
             frame_number = context.frame_numbers[track_frame.frame_idx]
             frame_id = f"{context.video_id}_t{track.track_id}_{frame_number:06d}"
             frame_path = context.frames_dir / f"{frame_id}.jpg"
@@ -435,7 +477,11 @@ class BatchAnnotator:
             if self.coco_dataset is None:
                 continue
 
-            emotion_pred = self._add_track_annotation(track_frame, context, frame_path)
+            emotion_pred, image_id = self._add_track_annotation(
+                track_frame, track, context, frame_path, neutral_image_id
+            )
+            if track_frame.frame_idx == track.neutral_frame_idx:
+                neutral_image_id = image_id
             stats["detections"] += 1
 
             # Flaguj niską pewność emocji
@@ -448,22 +494,54 @@ class BatchAnnotator:
             if self.progress.total_frames % self.config.save_interval == 0:
                 self._save_intermediate()
 
+    @staticmethod
+    def _frames_to_save(track: TrackResult) -> list[TrackFrame]:
+        """
+        Wybiera klatki treku idące do zbioru: neutralną (pierwsza), potem szczytowe.
+
+        Klatka będąca jednocześnie neutralną i szczytową (trek o znikomej mimice)
+        trafia do zbioru raz — dwa wpisy podwoiłyby jej wagę w treningu i wskazywały
+        ten sam plik.
+
+        Args:
+            track: Przyjęty trek
+
+        Returns:
+            Klatki do zapisu w kolejności: neutralna, potem peaki chronologicznie
+        """
+        peak_indices = set(track.peak_indices)
+        neutral = [
+            frame for frame in track.frames if frame.frame_idx == track.neutral_frame_idx
+        ]
+        peaks = [
+            frame
+            for frame in track.frames
+            if frame.frame_idx in peak_indices
+            and frame.frame_idx != track.neutral_frame_idx
+        ]
+        return neutral + peaks
+
     def _add_track_annotation(
         self,
         track_frame: TrackFrame,
+        track: TrackResult,
         context: VideoContext,
         frame_path: Path,
-    ) -> EmotionPrediction:
+        neutral_image_id: Optional[int],
+    ) -> tuple[EmotionPrediction, int]:
         """
-        Dopisuje anotację jednej klatki szczytowej treku do zbioru COCO.
+        Dopisuje anotację jednej klatki treku do zbioru COCO.
 
         Args:
             track_frame: Klatka treku z policzonymi delta AU
+            track: Trek, do którego należy klatka
             context: Dane wideo
             frame_path: Ścieżka zapisanej klatki
+            neutral_image_id: image_id klatki neutralnej treku (None dla niej samej —
+                anotacja klatki neutralnej wskazuje wtedy siebie, bo to jej własna baza)
 
         Returns:
-            Predykcja emocji tej klatki
+            Predykcja emocji tej klatki oraz image_id dodanego obrazu
         """
         frame_img = context.frames[track_frame.frame_idx]
         height, width = frame_img.shape[:2]
@@ -489,9 +567,11 @@ class BatchAnnotator:
 
         # Keypoints są już w układzie pełnego obrazu, format [x, y, v, ...]
         keypoints = [float(v) for v in track_frame.keypoints]
+        is_neutral = track_frame.frame_idx == track.neutral_frame_idx
 
-        # Zapisujemy komplet (ratio + is_active + confidence), bo samo ratio
-        # nie odróżnia realnej aktywacji od klamrowanego, niewiarygodnego pomiaru.
+        # Zapisujemy komplet (ratio + is_active + confidence + szum treku), bo ani
+        # samo ratio nie odróżnia realnej aktywacji od klamrowanego pomiaru, ani samo
+        # is_active od drgania keypoints (mediana szumu 0.166 wobec progu 0.15).
         self.coco_dataset.add_annotation(
             image_id=image_id,
             bbox=[int(v) for v in track_frame.face_box],
@@ -502,11 +582,88 @@ class BatchAnnotator:
             emotion_id=int(emotion_pred.emotion_id),
             emotion_name=emotion_pred.emotion,
             confidence=confidence,
-            au_analysis=au_analysis_from_delta_aus(track_frame.delta_aus),
+            au_analysis=au_analysis_from_delta_aus(track_frame.delta_aus, track.au_noise),
+            neutral_frame_id=image_id if is_neutral else neutral_image_id,
             emotion_rule_applied=emotion_pred.rule_applied,
+            track=self._track_fields(track, track_frame),
             tfm_score=float(compute_tfm(track_frame.delta_aus)),
         )
-        return emotion_pred
+        return emotion_pred, image_id
+
+    def _track_fields(self, track: TrackResult, track_frame: TrackFrame) -> TrackAnnotation:
+        """
+        Buduje pola treku dla anotacji jednej klatki.
+
+        Args:
+            track: Przyjęty trek
+            track_frame: Klatka tego treku
+
+        Returns:
+            Pola treku gotowe do zapisu w COCO
+        """
+        is_neutral = track_frame.frame_idx == track.neutral_frame_idx
+        return TrackAnnotation(
+            track_id=track.track_id,
+            frame_role=FRAME_ROLE_NEUTRAL if is_neutral else FRAME_ROLE_PEAK,
+            au_noise=dict(track.au_noise),
+            au_sample_count=dict(track.au_sample_count),
+            label_source=LABEL_SOURCE_AUTO_RULES,
+            procrustes_keypoints=self._procrustes_keypoints(track_frame.keypoints),
+        )
+
+    def _procrustes_keypoints(self, keypoints: np.ndarray) -> Optional[list[float]]:
+        """
+        Sprowadza keypoints do kanonicznego kształtu (superpozycja Prokrustesa).
+
+        Args:
+            keypoints: Keypoints klatki [x0, y0, v0, ...] w układzie obrazu
+
+        Returns:
+            138 wartości w przestrzeni kształtu albo None, gdy kształtu
+            referencyjnego nie ma lub punkty są niepoliczalne
+        """
+        reference = self._reference_shape()
+        if reference is None:
+            return None
+
+        try:
+            aligned = procrustes_align(keypoints, reference)
+        except ValueError as e:
+            logger.warning(f"Pominięto kanoniczny kształt klatki: {e}")
+            return None
+
+        return [float(value) for value in aligned]
+
+    def _reference_shape(self) -> Optional[np.ndarray]:
+        """
+        Wczytuje (jednorazowo) kanoniczny kształt DogFLW z pliku.
+
+        Brak pliku nie może przerwać anotacji — pozostałe pola są nadal wartościowe,
+        a `procrustes_keypoints` da się dopisać później z samych keypoints.
+
+        Returns:
+            Kształt referencyjny (46, 2) albo None, gdy pliku nie ma lub jest zepsuty
+        """
+        if self._mean_shape_loaded:
+            return self._mean_shape
+
+        self._mean_shape_loaded = True
+        path = self.config.mean_shape_file
+        try:
+            reference = np.array(json.loads(path.read_text(encoding="utf-8")), dtype=float)
+        except (OSError, ValueError) as e:
+            logger.warning(f"Brak kanonicznego kształtu ({path}): {e}")
+            return None
+
+        if reference.shape != (NUM_KEYPOINTS, NUM_SHAPE_DIMS):
+            logger.warning(
+                f"Kanoniczny kształt w {path} ma wymiary {reference.shape}, "
+                f"oczekiwano ({NUM_KEYPOINTS}, {NUM_SHAPE_DIMS})"
+            )
+            return None
+
+        self._mean_shape = reference
+        return self._mean_shape
 
     def _classify_breed(
         self,
