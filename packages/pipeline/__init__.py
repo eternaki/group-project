@@ -6,6 +6,7 @@ Zawiera:
 - VideoProcessor: Procesor do ekstrakcji klatek z wideo
 - YouTubeDownloader: Pobieranie wideo z YouTube i innych źródeł
 - TemporalProcessor: Procesor do agregacji czasowej dla wideo
+- KeypointSmoother: Wygładzanie keypoints w obrębie treku (filtr One Euro)
 """
 
 from .downloader import DownloadResult, YouTubeDownloader
@@ -15,6 +16,7 @@ from .inference import (
     InferencePipeline,
     PipelineConfig,
 )
+from .landmark_smoothing import KeypointSmoother
 from .temporal_processor import (
     TemporalAUBuffer,
     TemporalAUResult,
@@ -38,4 +40,6 @@ __all__ = [
     "TemporalAUBuffer",
     "TemporalAUResult",
     "TemporalProcessor",
+    # Wygładzanie keypoints (dla treków)
+    "KeypointSmoother",
 ]
