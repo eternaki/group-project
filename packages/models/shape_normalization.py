@@ -162,7 +162,39 @@ def _prepare_reference(reference_shape: np.ndarray) -> np.ndarray:
             f"otrzymano {reference.shape}"
         )
     _require_finite(reference, "Współrzędne kształtu referencyjnego")
-    return _center_and_scale(reference, np.ones(NUM_KEYPOINTS, dtype=float))
+
+    uniform = np.ones(NUM_KEYPOINTS, dtype=float)
+    normalized = _center_and_scale(reference, uniform)
+    if float(np.sqrt(np.sum(normalized**2))) < MIN_CENTROID_SIZE:
+        # Referencja bez rozpiętości nie definiuje orientacji — dopasowanie byłoby
+        # dowolnym obrotem, a wynik wyglądałby na poprawny. Lepiej powiedzieć wprost.
+        raise ValueError("Kształt referencyjny jest zdegenerowany (zerowy rozmiar centroidu)")
+    return normalized
+
+
+def _weighted_mean(aligned: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """
+    Uśrednia dopasowane kształty punkt po punkcie, ważąc widocznością.
+
+    Samo ważenie dopasowania nie wystarcza: punkt niewidoczny ma współrzędne
+    bliskie (0, 0) i wpuszczony do średniej z pełną wagą przesuwa nie tylko
+    siebie, ale — przez centroid i rozmiar — cały kształt referencyjny.
+
+    Args:
+        aligned: Dopasowane kształty (N, 46, 2)
+        weights: Wagi z widoczności (N, 46)
+
+    Returns:
+        Uśredniony kształt (46, 2)
+    """
+    totals = weights.sum(axis=0)
+    weighted = (weights[:, :, np.newaxis] * aligned).sum(axis=0)
+    fallback = aligned.mean(axis=0)
+    usable = totals > MIN_WEIGHT_SUM
+    safe_totals = np.where(usable, totals, 1.0)[:, np.newaxis]
+    return np.asarray(
+        np.where(usable[:, np.newaxis], weighted / safe_totals, fallback), dtype=float
+    )
 
 
 def procrustes_align(
@@ -230,15 +262,25 @@ def mean_shape(
         prepared.append((_center_and_scale(coords, weights), weights))
 
     uniform = np.ones(NUM_KEYPOINTS, dtype=float)
+    weights_stack = np.array([weights for _, weights in prepared], dtype=float)
+
+    # GPA wyznacza średni kształt tylko z dokładnością do obrotu, więc orientacja
+    # wyniku bierze się z punktu startowego — pierwszy kształt jest tu wygodną,
+    # deterministyczną kotwicą. Jego niewidoczne punkty są jednak niewiarygodne,
+    # więc na starcie ważymy referencję jego własną widocznością; po pierwszej
+    # iteracji referencją jest już czysta średnia ważona.
     reference = prepared[0][0]
+    reference_weights = prepared[0][1]
 
     for _ in range(max_iterations):
         aligned = [
-            shape @ _optimal_rotation(shape, reference, weights) for shape, weights in prepared
+            shape @ _optimal_rotation(shape, reference, weights * reference_weights)
+            for shape, weights in prepared
         ]
-        updated = _center_and_scale(np.mean(aligned, axis=0), uniform)
+        updated = _center_and_scale(_weighted_mean(np.array(aligned), weights_stack), uniform)
         shift = float(np.sqrt(np.sum((updated - reference) ** 2)))
         reference = updated
+        reference_weights = uniform
         if shift < tolerance:
             break
 

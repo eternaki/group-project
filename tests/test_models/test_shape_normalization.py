@@ -169,8 +169,50 @@ class TestProcrustesAlign:
         assert _centroid_size(result) == pytest.approx(1.0, abs=1e-9)
 
 
+    def test_zdegenerowana_referencja_podnosi_blad(self):
+        """Referencja bez rozpiętości nie definiuje orientacji — dopasowanie byłoby dowolne."""
+        with pytest.raises(ValueError, match="zdegenerowany"):
+            procrustes_align(_shape_to_flat(_random_shape(14)), np.zeros((NUM_KEYPOINTS, 2)))
+
+
 class TestMeanShape:
     """Kształt referencyjny metodą GPA."""
+
+    def test_wspolrzedne_niewidocznych_punktow_nie_wchodza_do_sredniej(self):
+        """
+        Regresja: ważenie widocznością musi objąć także uśrednianie, nie tylko
+        dopasowanie. Punkt zgubiony wpada w (0, 0) i z pełną wagą przesuwał nie
+        tylko siebie, ale — przez centroid i rozmiar — cały kształt referencyjny.
+
+        Test wprost: te same kształty, ta sama widoczność, różne śmieci pod
+        punktem niewidocznym. Referencja musi wyjść identyczna.
+        """
+        rng = np.random.default_rng(3)
+        base = _random_shape(15)
+        hidden = 0
+
+        with_zeros: list[np.ndarray] = []
+        with_outliers: list[np.ndarray] = []
+        for index in range(20):
+            coords = base + rng.normal(0, 2.0, (NUM_KEYPOINTS, 2))
+            if index % 2 == 0:
+                zeroed = coords.copy()
+                zeroed[hidden] = 0.0
+                far = coords.copy()
+                far[hidden] = 9999.0
+
+                first = _shape_to_flat(zeroed)
+                second = _shape_to_flat(far)
+                first[hidden * 3 + 2] = 0.0
+                second[hidden * 3 + 2] = 0.0
+            else:
+                first = _shape_to_flat(coords)
+                second = _shape_to_flat(coords)
+
+            with_zeros.append(first)
+            with_outliers.append(second)
+
+        assert np.allclose(mean_shape(with_zeros), mean_shape(with_outliers), atol=1e-9)
 
     def test_srednia_z_jednego_ksztaltu_to_ten_ksztalt_po_normalizacji(self):
         coords = _random_shape(8)
