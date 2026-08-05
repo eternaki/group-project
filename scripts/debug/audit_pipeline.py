@@ -99,26 +99,36 @@ def extract_frames(video_path: Path, fps: float, max_frames: int) -> list[np.nda
     return frames
 
 
-def audit_detection(
-    pipeline: InferencePipeline, frames: list[np.ndarray], stats: AuditStats
-) -> int:
+class CountingBBoxModel:
     """
-    Etap 1: detekcja psa — braki i wielopsie klatki.
+    Detektor psów zliczający swoje wyniki po drodze (etap 1 audytu).
 
-    Returns:
-        Liczba detekcji psów w tym wideo (suma po klatkach)
+    Statystyki etapu 1 zbierane są z TEGO SAMEGO przebiegu detektora, którego
+    używa pipeline. Osobny przebieg audytu podwajał koszt (YOLO na każdej klatce
+    dwa razy) i pozwalał rozjechać się licznikom liczonym jako różnica dwóch
+    przebiegów — a to na tej różnicy opiera się „ile detekcji nie dało mordy".
     """
-    detections_total = 0
-    for frame in frames:
-        detections = pipeline.bbox_model.predict(frame)
-        detections_total += len(detections)
+
+    def __init__(self, model: object, stats: AuditStats) -> None:
+        """
+        Args:
+            model: Właściwy detektor psów
+            stats: Zliczenia audytu (modyfikowane w miejscu)
+        """
+        self.model = model
+        self.stats = stats
+
+    def predict(self, frame: np.ndarray) -> list:
+        """Zwraca detekcje psa, dopisując po drodze statystyki etapu 1."""
+        detections = self.model.predict(frame)
+        self.stats.detections_total += len(detections)
         if not detections:
-            stats.frames_no_dog += 1
-            continue
+            self.stats.frames_no_dog += 1
+            return detections
         if len(detections) > 1:
-            stats.frames_multi_dog += 1
-        stats.dog_conf.append(float(detections[0].confidence))
-    return detections_total
+            self.stats.frames_multi_dog += 1
+        self.stats.dog_conf.append(float(detections[0].confidence))
+        return detections
 
 
 def audit_track(track: TrackResult, stats: AuditStats) -> None:
@@ -178,11 +188,13 @@ def audit_video(
         return
 
     stats.frames_total += len(frames)
-    detections_total = audit_detection(pipeline, frames, stats)
-    stats.detections_total += detections_total
+    detections_before = stats.detections_total
 
+    # Detektor jest opakowany (patrz `main`), więc statystyki etapu 1 powstają
+    # w tym samym przebiegu, w którym pipeline szuka psów
     result = pipeline.process_video_for_dataset(frames, config=config)
 
+    detections_total = stats.detections_total - detections_before
     measured_frames = sum(
         len(track.frames) for track in result["tracks"] + result["rejected_tracks"]
     )
@@ -329,6 +341,7 @@ def main() -> int:
     config = VideoDatasetConfig(num_peaks=args.num_peaks, fps=args.fps)
 
     stats = AuditStats()
+    pipeline.bbox_model = CountingBBoxModel(pipeline.bbox_model, stats)
     start = time.time()
 
     for i, video_path in enumerate(videos, 1):

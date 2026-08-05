@@ -30,6 +30,8 @@ from .track_processing import (
     MIN_KEYPOINT_CONF,
     MIN_NOISE_SAMPLES,
     MIN_TRACK_FRAMES,
+    NEUTRAL_SOURCE_AUTO,
+    NEUTRAL_SOURCE_MANUAL,
     NO_NEUTRAL_FRAME,
     TrackFrame,
     TrackQuality,
@@ -76,4 +78,6 @@ __all__ = [
     "MIN_KEYPOINT_CONF",
     "MIN_NOISE_SAMPLES",
     "NO_NEUTRAL_FRAME",
+    "NEUTRAL_SOURCE_AUTO",
+    "NEUTRAL_SOURCE_MANUAL",
 ]

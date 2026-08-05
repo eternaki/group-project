@@ -556,7 +556,7 @@ class BatchAnnotator:
         )
 
         emotion_pred = classify_emotion_from_delta_aus(track_frame.delta_aus)
-        breed_pred = self._classify_breed(frame_img, track_frame.face_box)
+        breed_pred = self._classify_breed(frame_img, track_frame.body_box)
 
         confidence = {"emotion": float(emotion_pred.confidence)}
         breed_id = breed_name = None
@@ -572,9 +572,11 @@ class BatchAnnotator:
         # Zapisujemy komplet (ratio + is_active + confidence + szum treku), bo ani
         # samo ratio nie odróżnia realnej aktywacji od klamrowanego pomiaru, ani samo
         # is_active od drgania keypoints (mediana szumu 0.166 wobec progu 0.15).
+        # bbox anotacji to boks PSA (jak w poprzednich wersjach zbioru), nie mordy —
+        # konsumenci (webapp, statystyki, trening detektora) czytają go jako psa.
         self.coco_dataset.add_annotation(
             image_id=image_id,
-            bbox=[int(v) for v in track_frame.face_box],
+            bbox=[int(v) for v in track_frame.body_box],
             keypoints=keypoints,
             num_keypoints=int(sum(1 for v in keypoints[2::3] if v > 0)),
             breed_id=breed_id,
@@ -668,18 +670,17 @@ class BatchAnnotator:
     def _classify_breed(
         self,
         frame: np.ndarray,
-        face_box: tuple[float, float, float, float],
+        body_box: tuple[int, int, int, int],
     ) -> Optional[BreedPrediction]:
         """
-        Klasyfikuje rasę psa z kadru mordy.
+        Klasyfikuje rasę psa z kadru CAŁEGO psa.
 
-        UWAGA: to kadr MORDY, nie całego psa — trek nie niesie boksu ciała.
-        Rasa z samej mordy jest słabsza niż z sylwetki; docelowo trek powinien
-        nieść też boks ciała (patrz raport zadania 6).
+        Kadr musi obejmować sylwetkę, nie mordę: EfficientNet-B4 uczono na całych
+        psach (91.5% top-1) i na samej mordzie ta liczba przestaje obowiązywać.
 
         Args:
             frame: Pełna klatka wideo
-            face_box: Boks mordy (x, y, w, h)
+            body_box: Boks psa (x, y, w, h)
 
         Returns:
             Predykcja rasy albo None, gdy model niedostępny lub kadr pusty
@@ -687,7 +688,7 @@ class BatchAnnotator:
         if self.pipeline is None or self.pipeline.breed_model is None:
             return None
 
-        x, y, w, h = (int(v) for v in face_box)
+        x, y, w, h = (int(v) for v in body_box)
         cropped = frame[max(0, y) : y + h, max(0, x) : x + w]
         if cropped.size == 0:
             return None

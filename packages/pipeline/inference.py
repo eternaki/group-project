@@ -13,6 +13,7 @@ i własne peaki. Wcześniej brana była detekcja o najwyższej pewności, więc 
 z wieloma psami baza AU mogła należeć do innego psa niż klatka docelowa.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,12 +45,22 @@ from packages.pipeline.landmark_smoothing import KeypointSmoother
 from packages.pipeline.neutral_frame import NeutralFrameDetector, collect_neutral_baseline
 from packages.pipeline.peak_selector import PeakFrameSelector
 from packages.pipeline.track_processing import (
+    DEFAULT_TRACK_QUALITY,
+    NEUTRAL_SOURCE_AUTO,
+    NEUTRAL_SOURCE_MANUAL,
     TrackFrame,
     TrackQuality,
     TrackResult,
     build_track_result,
     rejected_track,
 )
+
+logger = logging.getLogger(__name__)
+
+# Awarie pojedynczego treku, które wolno zamienić na odrzucenie z powodem.
+# Celowo NIE ma tu `Exception`: błąd typu czy braku atrybutu to pomyłka w kodzie
+# i ma być widoczny od razu, a nie ukryty jako „trek odrzucony".
+_TRACK_FAILURES = (ValueError, IndexError, KeyError, ArithmeticError)
 
 # Domyślne próbkowanie klatek wideo [kl./s] — takie, przy jakim zbierany jest zbiór
 DEFAULT_SAMPLING_FPS: float = 5.0
@@ -59,7 +70,9 @@ DEFAULT_MIN_PEAK_SEPARATION_S: float = 1.0
 DEFAULT_MIN_KEYPOINT_CONF: float = 0.5
 # Minimalna ostrość mordy (wariancja Laplaciana) — filtr rozmycia ruchowego
 DEFAULT_MIN_SHARPNESS: float = 60.0
-# Promień okna klatek wokół neutralnej, z których liczona jest baza median
+# Promień okna wokół klatki neutralnej, z którego liczona jest baza median.
+# UWAGA: to promień w POZYCJACH treku, nie w klatkach wideo — na treku dziurawym
+# (pies wychodzi z kadru) okno ±2 pozycje może objąć klatki oddalone o sekundy.
 NEUTRAL_BASELINE_WINDOW: int = 2
 
 # Podział paska postępu między etapy (procenty)
@@ -68,26 +81,52 @@ _PROGRESS_TRACKS_END: int = 99
 
 
 @dataclass(frozen=True)
+class _FrameMeasurement:
+    """
+    Surowy pomiar keypoints jednej klatki treku (przed wygładzeniem).
+
+    Attributes:
+        frame_idx: Numer klatki wideo
+        keypoints: 138 wartości [x0, y0, v0, ...] w układzie obrazu
+        face_box: Boks mordy, w którym zmierzono keypoints
+        body_box: Boks psa z detektora, przycięty do kadru
+    """
+
+    frame_idx: int
+    keypoints: np.ndarray
+    face_box: tuple[float, float, float, float]
+    body_box: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
 class VideoDatasetConfig:
     """
     Progi przetwarzania wideo na treki.
 
     Trzymane w jednym obiekcie, bo lista parametrów `process_video_for_dataset`
-    urosła ponad czytelność. Każdy próg ma dokładnie jedno miejsce ustawienia —
-    `min_keypoint_conf` decyduje zarówno o godności treku, jak i o wyborze klatki
-    neutralnej i peaków, więc nie da się ustawić go „w połowie pipeline'u".
+    urosła ponad czytelność.
+
+    `min_keypoint_conf` i `track_quality.min_conf` to CELOWO dwie gałki, mimo że
+    obie dotyczą pewności keypoints. Pierwsza odsiewa pojedyncze klatki (wybór
+    peaków i klatki neutralnej), druga decyduje o losie całego treku. Gdy jedna
+    sterowała obiema, luźny filtr klatek (0.3 w batchu) obniżał bramkę godności
+    treku poniżej modułowego minimum 0.4 — czyli poluzowanie doboru klatek po
+    cichu wpuszczało do zbioru treki uznane przez moduł za niewiarygodne.
 
     Attributes:
         num_peaks: Liczba klatek szczytowych do wybrania na trek
         fps: Próbkowanie klatek wejściowych [kl./s]; wchodzi w znaczniki czasu
             filtra wygładzającego i w przeliczenie odstępu peaków na klatki
         neutral_frame_idx: Ręcznie wskazany numer klatki wideo jako neutralna;
-            trek, który tej klatki nie zawiera, dostaje klatkę neutralną z auto-detekcji
-        min_peak_separation_s: Minimalny odstęp między peakami [s]
-        min_keypoint_conf: Minimalna średnia pewność keypoints klatki
+            trek, który tej klatki nie zawiera, dostaje klatkę neutralną z
+            auto-detekcji (odnotowane w `TrackResult.neutral_source`)
+        min_peak_separation_s: Minimalny odstęp między peakami [s] — twardy
+        min_keypoint_conf: Minimalna średnia pewność keypoints POJEDYNCZEJ klatki
         max_yaw_asymmetry: Maks. asymetria kącik oka <-> nos (obrót głowy)
         max_roll: Maks. przechylenie głowy [stopnie]
         min_sharpness: Minimalna ostrość mordy; 0 wyłącza filtr rozmycia
+        track_quality: Progi godności CAŁEGO treku (liczba klatek, rozmiar mordy,
+            mediana pewności)
     """
 
     num_peaks: int = 10
@@ -98,6 +137,7 @@ class VideoDatasetConfig:
     max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY
     max_roll: float = DEFAULT_MAX_ROLL
     min_sharpness: float = DEFAULT_MIN_SHARPNESS
+    track_quality: TrackQuality = DEFAULT_TRACK_QUALITY
 
     def __post_init__(self) -> None:
         """
@@ -131,24 +171,14 @@ class VideoDatasetConfig:
     @property
     def peak_separation_frames(self) -> int:
         """
-        Odstęp peaków w klatkach przy zadanym próbkowaniu.
+        Odstęp peaków w pozycjach treku przy zadanym próbkowaniu.
 
         Odstęp liczony jest w pozycjach w obrębie treku, a trek bywa dziurawy
         (pies wychodzi z kadru), więc realna przerwa czasowa jest nie mniejsza
-        niż zamówiona — nigdy krótsza.
+        niż zamówiona — nigdy krótsza. Selektor traktuje ten odstęp jako TWARDY:
+        wideo bez dość odległych szczytów daje ich po prostu mniej.
         """
         return max(1, round(self.min_peak_separation_s * self.fps))
-
-    @property
-    def track_quality(self) -> TrackQuality:
-        """
-        Progi godności treku z progiem pewności wspólnym z filtrem klatek.
-
-        Bez tego próg godności zostawał na wartości domyślnej modułu, także gdy
-        wywołujący prosił o ostrzejszy filtr — i trek zbudowany z niepewnych
-        keypoints trafiał do zbioru.
-        """
-        return TrackQuality(min_conf=self.min_keypoint_conf)
 
 
 @dataclass
@@ -428,8 +458,10 @@ class InferencePipeline:
 
         # 4. Emotion classification (Rule-based only, NO ML)
         print("\n[4/4] Konfiguracja klasyfikacji emocji...")
-        print("  → Używam RULE-BASED classification (DogFACS)")
-        print("  → Nie wymaga wytrenowanego modelu!")
+        # Bez znaków spoza cp1250: przy przekierowanym stdout konsola Windows
+        # wywracała przetwarzanie na UnicodeEncodeError
+        print("  Używam RULE-BASED classification (DogFACS)")
+        print("  Nie wymaga wytrenowanego modelu!")
 
         self._models_loaded = True
         print("\n" + "=" * 60)
@@ -750,9 +782,10 @@ class InferencePipeline:
         """
         Przetwarza sekwencję wideo na treki psów gotowe do zapisu w zbiorze.
 
-        Dla każdego psa osobno: klatki treku → wygładzone keypoints → własna
-        klatka neutralna → delta AU względem TEJ klatki → peaki. Trek, który nie
-        przechodzi progu godności, trafia do `rejected_tracks` z zapisanym
+        Dla każdego psa osobno: klatki treku (odsiane progiem pewności) →
+        wygładzone keypoints → własna klatka neutralna → delta AU względem TEJ
+        klatki → peaki. Trek, który nie przechodzi progu godności ALBO którego
+        przetwarzanie się wywróciło, trafia do `rejected_tracks` z zapisanym
         powodem — wideo bez godnych treków nie kończy się wyjątkiem, bo cichy
         brak wyniku i błąd to dwie różne informacje dla audytu.
 
@@ -792,7 +825,7 @@ class InferencePipeline:
                 "Processing dog tracks...",
             )
 
-        _print_track_summary(accepted, rejected, len(frames_list))
+        _log_track_summary(accepted, rejected, len(frames_list))
         return {
             "tracks": accepted,
             "rejected_tracks": rejected,
@@ -839,7 +872,11 @@ class InferencePipeline:
         config: VideoDatasetConfig,
     ) -> TrackResult:
         """
-        Przetwarza jeden trek: keypoints → klatka neutralna → delta AU → peaki.
+        Przetwarza jeden trek, zamieniając jego awarię w odrzucenie z powodem.
+
+        Bez tej izolacji jeden zepsuty trek (np. zdegenerowana geometria w
+        ekstraktorze AU) wywracał przetwarzanie CAŁEGO wideo, a `batch_annotate`
+        pomijał wtedy nagranie w całości — razem ze wszystkimi pozostałymi psami.
 
         Args:
             frames_list: Kolejne klatki wideo
@@ -853,7 +890,48 @@ class InferencePipeline:
         track_frames = self._build_track_frames(frames_list, entries, config)
 
         try:
-            neutral_position = self._neutral_position(frames_list, track_frames, config)
+            return self._finish_track(frames_list, track_id, track_frames, config)
+        except _TRACK_FAILURES as error:
+            return rejected_track(
+                track_id,
+                track_frames,
+                f"błąd przetwarzania treku: {type(error).__name__}: {error}",
+            )
+
+    def _finish_track(
+        self,
+        frames_list: list[np.ndarray],
+        track_id: int,
+        track_frames: list[TrackFrame],
+        config: VideoDatasetConfig,
+    ) -> TrackResult:
+        """
+        Domyka trek: klatka neutralna → delta AU → peaki → wynik.
+
+        Args:
+            frames_list: Kolejne klatki wideo
+            track_id: Identyfikator treku z `DogTracker`
+            track_frames: Klatki treku z wygładzonymi keypoints
+            config: Progi przetwarzania
+
+        Returns:
+            Wynik treku — przyjęty albo odrzucony z wypełnionym `rejected_reason`
+
+        Raises:
+            ValueError: Gdy dane treku są niepoliczalne (np. zdegenerowana geometria)
+            IndexError: Gdy pozycja wykracza poza trek
+            KeyError: Gdy brakuje oczekiwanego AU
+            ArithmeticError: Gdy pomiar prowadzi do dzielenia przez zero
+        """
+        if not track_frames:
+            # Bramka godności zna właściwy komunikat („za mało klatek z mordą"),
+            # a detektor klatki neutralnej rzuciłby tylko „sekwencja jest pusta".
+            return build_track_result(track_id, track_frames, 0, [], quality=config.track_quality)
+
+        try:
+            neutral_position, neutral_source = self._neutral_position(
+                frames_list, track_frames, config
+            )
         except ValueError as error:
             return rejected_track(track_id, track_frames, f"brak klatki neutralnej: {error}")
 
@@ -874,6 +952,7 @@ class InferencePipeline:
             neutral_position,
             self._select_peaks(frames_list, track_frames, neutral_position, config),
             quality=config.track_quality,
+            neutral_source=neutral_source,
         )
 
     def _build_track_frames(
@@ -883,11 +962,10 @@ class InferencePipeline:
         config: VideoDatasetConfig,
     ) -> list[TrackFrame]:
         """
-        Wykrywa i wygładza keypoints wszystkich klatek jednego treku.
+        Mierzy i wygładza keypoints wszystkich klatek jednego treku.
 
-        Filtr wygładzający ma stan, więc jedna instancja przypada na JEDEN trek —
-        współdzielenie mieszałoby ruch dwóch psów. Znacznik czasu liczony jest
-        z numeru klatki i próbkowania, więc luki w treku nie udają ciągłości.
+        Dwa przebiegi, bo wygładzanie potrzebuje skali znanej dla CAŁEGO treku
+        (patrz `_smooth_track`).
 
         Args:
             frames_list: Kolejne klatki wideo
@@ -895,28 +973,122 @@ class InferencePipeline:
             config: Progi przetwarzania
 
         Returns:
-            Klatki treku z wykrytą mordą (klatki bez keypoints są pominięte)
+            Klatki treku z pewnym pomiarem mordy (pozostałe są odsiane)
         """
-        smoother = KeypointSmoother()
-        track_frames: list[TrackFrame] = []
+        measurements, low_confidence = self._measure_track(frames_list, entries, config)
+
+        # Diagnostyka lejka: bez niej „trek ma 3 klatki" nie mówi, czy pies wyszedł
+        # z kadru, czy pomiary odsiał próg pewności.
+        logger.info(
+            "Filtr jakości: %d/%d klatek z pewnymi keypoints (prog conf %.2f); "
+            "bez pomiaru mordy: %d, ponizej progu: %d",
+            len(measurements),
+            len(entries),
+            config.min_keypoint_conf,
+            len(entries) - len(measurements) - low_confidence,
+            low_confidence,
+        )
+        return self._smooth_track(measurements, config)
+
+    def _measure_track(
+        self,
+        frames_list: list[np.ndarray],
+        entries: list[tuple[int, Detection]],
+        config: VideoDatasetConfig,
+    ) -> tuple[list["_FrameMeasurement"], int]:
+        """
+        Przebieg 1: surowe keypoints klatek treku wraz z odsiewem niepewnych.
+
+        Klatka poniżej progu pewności jest odrzucana TU, przed wygładzaniem i przed
+        liczeniem AU. Wcześniej trafiała do treku i mimo że nigdy nie weszłaby do
+        zbioru, współtworzyła medianową bazę AU, zawyżała zmierzony szum treku
+        (czyli obniżała wagę wiarygodności pozostałych klatek) i ciągnęła w dół
+        medianę pewności w progu godności.
+
+        Args:
+            frames_list: Kolejne klatki wideo
+            entries: Klatki tego treku jako (numer klatki wideo, detekcja)
+            config: Progi przetwarzania
+
+        Returns:
+            (pomiary klatek, liczba klatek odrzuconych przez próg pewności)
+        """
+        measurements: list[_FrameMeasurement] = []
+        low_confidence = 0
 
         for frame_idx, detection in entries:
             frame = frames_list[frame_idx]
-            measured = self._face_keypoints(frame, detection.bbox)
+            body_box = _clamp_bbox(detection.bbox, frame.shape[0], frame.shape[1])
+            if body_box[2] <= 0 or body_box[3] <= 0:
+                continue
+
+            measured = self._face_keypoints(frame, body_box)
             if measured is None:
                 continue
 
             prediction, face_box = measured
+            keypoints = np.asarray(prediction.to_coco_format(), dtype=float)
+            if _mean_visibility(keypoints) < config.min_keypoint_conf:
+                low_confidence += 1
+                continue
+
+            measurements.append(
+                _FrameMeasurement(
+                    frame_idx=frame_idx,
+                    keypoints=keypoints,
+                    face_box=face_box,
+                    body_box=body_box,
+                )
+            )
+
+        return measurements, low_confidence
+
+    def _smooth_track(
+        self,
+        measurements: list["_FrameMeasurement"],
+        config: VideoDatasetConfig,
+    ) -> list[TrackFrame]:
+        """
+        Przebieg 2: wygładzanie keypoints treku przy STAŁEJ skali odniesienia.
+
+        Filtr wygładzający ma stan, więc jedna instancja przypada na JEDEN trek —
+        współdzielenie mieszałoby ruch dwóch psów. Znacznik czasu liczony jest
+        z numeru klatki i próbkowania, więc luki w treku nie udają ciągłości.
+
+        Skala normalizacji to MEDIANA rozmiarów boksu mordy w treku, a nie boks
+        z bieżącej klatki. Boks per klatka miał dwa źródła (detektor mordy albo
+        otoczka keypoints, systematycznie ciaśniejsza) i sam drgał — przełączenie
+        źródła dawało skokową zmianę układu współrzędnych bez ruchu psa, którą
+        filtr czytał jako dużą prędkość i przestawał tłumić dokładnie tam, gdzie
+        pomiar był najtrudniejszy. Przesunięcie zostaje per klatka (od środka
+        boksu mordy), bo ono ma podążać za psem.
+
+        Args:
+            measurements: Pomiary klatek treku z przebiegu 1
+            config: Progi przetwarzania
+
+        Returns:
+            Klatki treku z wygładzonymi keypoints
+        """
+        if not measurements:
+            return []
+
+        smoother = KeypointSmoother()
+        scale = _median_face_scale(measurements)
+        track_frames: list[TrackFrame] = []
+
+        for measurement in measurements:
             smoothed = smoother.smooth(
-                np.asarray(prediction.to_coco_format(), dtype=float),
-                face_box,
-                timestamp=frame_idx / config.fps,
+                measurement.keypoints,
+                _normalisation_box(measurement.face_box, scale),
+                timestamp=measurement.frame_idx / config.fps,
             )
             track_frames.append(
                 TrackFrame(
-                    frame_idx=frame_idx,
+                    frame_idx=measurement.frame_idx,
                     keypoints=smoothed,
-                    face_box=face_box,
+                    face_box=measurement.face_box,
+                    body_box=measurement.body_box,
                     head_pose=estimate_head_pose(
                         smoothed,
                         max_yaw_asymmetry=config.max_yaw_asymmetry,
@@ -930,7 +1102,7 @@ class InferencePipeline:
     def _face_keypoints(
         self,
         frame: np.ndarray,
-        bbox: tuple[int, int, int, int],
+        body_box: tuple[int, int, int, int],
     ) -> Optional[tuple[KeypointsPrediction, tuple[float, float, float, float]]]:
         """
         Wykrywa keypoints mordy psa wraz z boksem, w którym zostały zmierzone.
@@ -940,7 +1112,7 @@ class InferencePipeline:
 
         Args:
             frame: Pełna klatka wideo
-            bbox: Bounding box psa (x, y, w, h)
+            body_box: Bounding box psa (x, y, w, h) przycięty do kadru
 
         Returns:
             (predykcja keypoints, boks mordy) albo None, gdy pomiar się nie udał
@@ -948,10 +1120,7 @@ class InferencePipeline:
         if self.keypoints_model is None:
             return None
 
-        x, y, w, h = _clamp_bbox(bbox, frame.shape[0], frame.shape[1])
-        if w <= 0 or h <= 0:
-            return None
-
+        x, y, w, h = body_box
         try:
             face_box = (
                 self._detect_face(frame, x, y, w, h) if self.face_model is not None else None
@@ -965,7 +1134,7 @@ class InferencePipeline:
             prediction = self._keypoints_from_body_bbox(frame, x, y, w, h)
         except Exception as error:
             # Jedna zła klatka nie może przerwać przetwarzania całego wideo
-            print(f"  ! Błąd keypoints: {error}")
+            logger.warning("Blad keypoints w klatce: %s", error)
             return None
 
         return prediction, self._keypoints_face_region(prediction.keypoints)
@@ -975,13 +1144,14 @@ class InferencePipeline:
         frames_list: list[np.ndarray],
         track_frames: list[TrackFrame],
         config: VideoDatasetConfig,
-    ) -> int:
+    ) -> tuple[int, str]:
         """
         Wybiera klatkę neutralną treku i zwraca jej POZYCJĘ w `track_frames`.
 
         Ręcznie wskazana klatka obowiązuje tylko dla treków, które ją zawierają —
         pies, którego wtedy nie było w kadrze, dostaje klatkę z auto-detekcji
-        zamiast cichego podstawienia obcego kadru.
+        zamiast cichego podstawienia obcego kadru. Które źródło zadziałało, mówi
+        druga wartość — inaczej przy dwóch psach nie da się tego odczytać z wyniku.
 
         Args:
             frames_list: Kolejne klatki wideo
@@ -989,7 +1159,7 @@ class InferencePipeline:
             config: Progi przetwarzania
 
         Returns:
-            Pozycja klatki neutralnej w `track_frames`
+            (pozycja klatki neutralnej w `track_frames`, źródło wyboru)
 
         Raises:
             ValueError: Gdy nie da się wskazać klatki neutralnej
@@ -997,18 +1167,19 @@ class InferencePipeline:
         if config.neutral_frame_idx is not None:
             for position, track_frame in enumerate(track_frames):
                 if track_frame.frame_idx == config.neutral_frame_idx:
-                    return position
+                    return position, NEUTRAL_SOURCE_MANUAL
 
         detector = NeutralFrameDetector(
             min_keypoint_conf=config.min_keypoint_conf,
             max_yaw_asymmetry=config.max_yaw_asymmetry,
             max_roll=config.max_roll,
         )
-        return detector.detect_auto(
+        position = detector.detect_auto(
             frames=[frames_list[frame.frame_idx] for frame in track_frames],
             keypoints_list=[frame.keypoints for frame in track_frames],
             head_poses=[frame.head_pose for frame in track_frames],
         )
+        return position, NEUTRAL_SOURCE_AUTO
 
     def _select_peaks(
         self,
@@ -1203,30 +1374,95 @@ def _clamp_bbox(
     return x, y, min(int(w), width - x), min(int(h), height - y)
 
 
-def _print_track_summary(
+def _log_track_summary(
     accepted: list[TrackResult],
     rejected: list[TrackResult],
     total_frames: int,
 ) -> None:
     """
-    Wypisuje podsumowanie treków wraz z powodami odrzuceń.
+    Loguje podsumowanie treków wraz z powodami odrzuceń.
 
     Powody odrzuceń są jedynym śladem, gdzie lejek danych traci materiał —
     bez nich strata jest nie do odróżnienia od braku psów na wideo.
+
+    Komunikaty idą przez `logging`, nie przez `print`: przy przekierowanym
+    stdout konsola Windows (cp1250) wywracała przetwarzanie na `UnicodeEncodeError`
+    przy pierwszym znaku spoza strony kodowej.
 
     Args:
         accepted: Treki przyjęte
         rejected: Treki odrzucone
         total_frames: Liczba klatek wideo
     """
-    print(
-        f"  → Treki: {len(accepted)} przyjęte, {len(rejected)} odrzucone "
-        f"({total_frames} klatek wideo)"
+    logger.info(
+        "Treki: %d przyjete, %d odrzucone (%d klatek wideo)",
+        len(accepted),
+        len(rejected),
+        total_frames,
     )
     for track in rejected:
-        print(f"    - trek {track.track_id}: {track.rejected_reason}")
+        logger.info("Trek %d odrzucony: %s", track.track_id, track.rejected_reason)
     for track in accepted:
-        print(
-            f"    + trek {track.track_id}: {len(track.frames)} klatek, "
-            f"neutralna {track.neutral_frame_idx}, peaki {track.peak_indices}"
+        logger.info(
+            "Trek %d przyjety: %d klatek, neutralna %d (%s), peaki %s",
+            track.track_id,
+            len(track.frames),
+            track.neutral_frame_idx,
+            track.neutral_source,
+            track.peak_indices,
         )
+
+
+def _mean_visibility(keypoints: np.ndarray) -> float:
+    """
+    Średnia pewność wszystkich keypoints klatki.
+
+    Args:
+        keypoints: 138 wartości [x0, y0, v0, ...]
+
+    Returns:
+        Średnia widoczność w zakresie [0, 1]
+    """
+    return float(np.mean(np.asarray(keypoints).reshape(NUM_KEYPOINTS, 3)[:, 2]))
+
+
+def _median_face_scale(measurements: list[_FrameMeasurement]) -> tuple[float, float]:
+    """
+    Mediana rozmiarów boksu mordy w treku — stała skala odniesienia.
+
+    Args:
+        measurements: Pomiary klatek treku (niepuste)
+
+    Returns:
+        (szerokość, wysokość) skali normalizacji
+    """
+    widths = [measurement.face_box[2] for measurement in measurements]
+    heights = [measurement.face_box[3] for measurement in measurements]
+    return float(np.median(widths)), float(np.median(heights))
+
+
+def _normalisation_box(
+    face_box: tuple[float, float, float, float],
+    scale: tuple[float, float],
+) -> tuple[float, float, float, float]:
+    """
+    Buduje boks normalizacji: środek z bieżącej klatki, rozmiar stały dla treku.
+
+    Środek podąża za psem (to ruch, który filtr ma śledzić), a rozmiar jest stały,
+    bo drgania i przeskoki skali boksu wracały do wygładzonych współrzędnych.
+
+    Args:
+        face_box: Boks mordy bieżącej klatki (x, y, w, h)
+        scale: Stała skala treku (szerokość, wysokość)
+
+    Returns:
+        Boks (x, y, w, h) do normalizacji współrzędnych
+    """
+    x, y, width, height = face_box
+    scale_width, scale_height = scale
+    return (
+        x + width / 2 - scale_width / 2,
+        y + height / 2 - scale_height / 2,
+        scale_width,
+        scale_height,
+    )

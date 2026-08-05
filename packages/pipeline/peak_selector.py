@@ -128,7 +128,9 @@ class PeakFrameSelector:
             num_peaks: Number of peak frames to select
 
         Returns:
-            List of selected frame indices (sorted by TFM, descending)
+            Wybrane pozycje, od najwyższego TFM. Może być ich MNIEJ niż `num_peaks`
+            — separacja `min_separation_frames` jest twarda i ma pierwszeństwo
+            przed zamówioną liczbą.
         """
         # Estimate head poses if not provided
         if head_poses is None:
@@ -166,28 +168,19 @@ class PeakFrameSelector:
         # Step 2: Sort by TFM (descending)
         tfm_scores.sort(key=lambda x: x[1], reverse=True)
 
-        # Step 3: Non-maximum suppression z ADAPTACYJNĄ separacją.
-        # Najpierw próbujemy z pełną separacją; jeśli zebraliśmy mniej niż num_peaks,
-        # a są jeszcze kandydaci, stopniowo zmniejszamy separację — żeby uszanować
-        # żądaną liczbę peaków na krótkich filmach (zamiast zwracać 1 kadr).
-        def _nms(separation: int) -> list[int]:
-            sel: list[int] = []
-            for idx, _ in tfm_scores:
-                if all(abs(idx - s) >= separation for s in sel):
-                    sel.append(idx)
-                if len(sel) >= num_peaks:
-                    break
-            return sel
-
-        selected_indices = _nms(self.min_separation)
-        separation = self.min_separation
-        while (
-            len(selected_indices) < num_peaks
-            and len(tfm_scores) > len(selected_indices)
-            and separation > 1
-        ):
-            separation = max(1, separation // 2)
-            selected_indices = _nms(separation)
+        # Step 3: Non-maximum suppression z TWARDĄ separacją.
+        # Wcześniej separacja była adaptacyjna — połowiona aż do 1, gdy nie
+        # uzbierało się `num_peaks`. Przy zamówionych 5 klatkach i 12 peakach
+        # wychodziły kadry sąsiadujące (odstępy same jedynki), czyli dokładnie
+        # duplikaty, przed którymi separacja miała bronić. Przy naszym rozmiarze
+        # zbioru duplikat jest gorszy niż brak próbki: zawyża pozorną liczebność
+        # i wagę jednej chwili. Wideo bez dość odległych szczytów daje ich mniej.
+        selected_indices: list[int] = []
+        for idx, _ in tfm_scores:
+            if all(abs(idx - selected) >= self.min_separation for selected in selected_indices):
+                selected_indices.append(idx)
+            if len(selected_indices) >= num_peaks:
+                break
 
         return selected_indices
 

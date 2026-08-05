@@ -38,6 +38,10 @@ MIN_NOISE_SAMPLES: int = 2
 # Znacznik "trek nie ma klatki neutralnej" (trek odrzucony)
 NO_NEUTRAL_FRAME: int = -1
 
+# Skąd wzięła się klatka neutralna treku
+NEUTRAL_SOURCE_AUTO: str = "auto"
+NEUTRAL_SOURCE_MANUAL: str = "manual"
+
 # Układ tablicy keypoints: [x0, y0, v0, x1, ...]
 _VISIBILITY_STRIDE: int = 3
 _VISIBILITY_OFFSET: int = 2
@@ -97,10 +101,16 @@ class TrackFrame:
     """
     Jedna klatka w obrębie treku.
 
+    Boksy są DWA i nie wolno ich mylić: `body_box` to detekcja psa (to on trafia
+    do zbioru jako `bbox` anotacji i to z niego liczy się rasa — klasyfikator rasy
+    uczono na całych psach), a `face_box` to kadr mordy, w którym zmierzono
+    keypoints (służy do wygładzania i do progu godności treku).
+
     Attributes:
         frame_idx: Numer klatki wideo (nie pozycja w treku)
         keypoints: 138 wartości [x0, y0, v0, ...] po wygładzeniu, w układzie obrazu
         face_box: Boks mordy (x, y, w, h) w układzie obrazu
+        body_box: Boks całego psa (x, y, w, h) z detektora, w układzie obrazu
         head_pose: Poza głowy policzona z wygładzonych keypoints
         delta_aus: Delta AU względem klatki neutralnej TEGO treku
     """
@@ -108,6 +118,7 @@ class TrackFrame:
     frame_idx: int
     keypoints: np.ndarray
     face_box: tuple[float, float, float, float]
+    body_box: tuple[int, int, int, int]
     head_pose: HeadPose
     delta_aus: dict[str, DeltaActionUnit] = field(default_factory=dict)
 
@@ -132,6 +143,10 @@ class TrackResult:
         au_sample_count: Liczba poprawnych pomiarów ratio, z których policzono szum.
             Bez niej nie da się skorygować obciążenia krótkich treków (patrz
             `compute_au_noise`) ani odróżnić braku pomiaru od pomiaru stabilnego.
+        neutral_source: `NEUTRAL_SOURCE_MANUAL` gdy użyto klatki wskazanej ręcznie,
+            `NEUTRAL_SOURCE_AUTO` gdy wybrał ją detektor. Przy kilku psach ręcznie
+            wskazana klatka trafia tylko w treki, które ją zawierają — bez tego
+            pola nie widać po wyniku, który pies dostał czyj wybór.
         rejected_reason: None gdy trek przyjęty, inaczej powód odrzucenia
     """
 
@@ -141,6 +156,7 @@ class TrackResult:
     peak_indices: list[int]
     au_noise: dict[str, float]
     au_sample_count: dict[str, int] = field(default_factory=dict)
+    neutral_source: str = NEUTRAL_SOURCE_AUTO
     rejected_reason: Optional[str] = None
 
 
@@ -234,6 +250,7 @@ def build_track_result(
     peak_positions: Sequence[int],
     *,
     quality: TrackQuality = DEFAULT_TRACK_QUALITY,
+    neutral_source: str = NEUTRAL_SOURCE_AUTO,
 ) -> TrackResult:
     """
     Składa wynik treku, zamieniając pozycje w treku na numery klatek wideo.
@@ -253,15 +270,24 @@ def build_track_result(
         neutral_position: Pozycja klatki neutralnej w `frames`
         peak_positions: Pozycje klatek peak w `frames`, w kolejności od najsilniejszej
         quality: Progi godności treku (domyślnie stałe modułowe)
+        neutral_source: Skąd wzięła się klatka neutralna — `NEUTRAL_SOURCE_MANUAL`
+            (wskazana ręcznie) albo `NEUTRAL_SOURCE_AUTO` (detektor)
 
     Returns:
         TrackResult z numerami klatek wideo i zmierzonym szumem AU, albo wynik
         odrzucony z wypełnionym `rejected_reason`, gdy trek nie przechodzi progu
 
     Raises:
-        ValueError: Gdy ta sama pozycja peak podana jest więcej niż raz
+        ValueError: Gdy ta sama pozycja peak podana jest więcej niż raz albo gdy
+            `neutral_source` ma nieznaną wartość
         IndexError: Gdy pozycja wykracza poza trek
     """
+    if neutral_source not in (NEUTRAL_SOURCE_AUTO, NEUTRAL_SOURCE_MANUAL):
+        raise ValueError(
+            f"Nieznane źródło klatki neutralnej: {neutral_source!r} "
+            f"(dozwolone: {NEUTRAL_SOURCE_AUTO!r}, {NEUTRAL_SOURCE_MANUAL!r})"
+        )
+
     reason = evaluate_track_quality(frames, quality=quality)
     if reason is not None:
         return rejected_track(track_id, frames, reason)
@@ -273,6 +299,7 @@ def build_track_result(
         peak_indices=_peak_video_indices(frames, peak_positions),
         au_noise=compute_au_noise(frames),
         au_sample_count=count_au_samples(frames),
+        neutral_source=neutral_source,
     )
 
 

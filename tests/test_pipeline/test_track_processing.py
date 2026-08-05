@@ -25,6 +25,8 @@ from packages.pipeline.track_processing import (
 from tests.test_pipeline.kp_fixtures import make_frontal_kp
 
 FACE_BOX: tuple[float, float, float, float] = (60.0, 60.0, 200.0, 200.0)
+# Boks całego psa — szerszy niż morda (to on trafia do zbioru jako bbox anotacji)
+BODY_BOX: tuple[int, int, int, int] = (20, 20, 300, 320)
 FPS: float = 5.0
 # Szum 2 px przy rozstawie oczu 100 px w fixturze = NME_iod 0.02 (model idealny)
 JITTER_PX: float = 2.0
@@ -67,6 +69,7 @@ def _track_frame(
         frame_idx=frame_idx,
         keypoints=keypoints,
         face_box=(0.0, 0.0, face_size, face_size),
+        body_box=BODY_BOX,
         head_pose=HeadPose(yaw_asymmetry=0.0, roll=0.0, is_frontal=True, confidence=0.9),
         delta_aus={name: _au(name, ratio) for name, ratio in ratios.items()},
     )
@@ -104,6 +107,7 @@ def _noise_of_series(series: list[np.ndarray]) -> dict[str, float]:
             frame_idx=idx,
             keypoints=keypoints,
             face_box=FACE_BOX,
+            body_box=BODY_BOX,
             head_pose=HeadPose(
                 yaw_asymmetry=0.0, roll=0.0, is_frontal=True, confidence=0.9
             ),

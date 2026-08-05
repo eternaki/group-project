@@ -22,6 +22,9 @@ FRAME_SIZE: int = 64
 NEUTRAL_IDX: int = 0
 PEAK_IDX: int = 2
 PEAK_RATIO: float = 1.40
+# Boks mordy i boks całego psa — do zbioru ma iść ten drugi
+FACE_BOX: tuple[float, float, float, float] = (10.0, 10.0, 20.0, 20.0)
+BODY_BOX: tuple[int, int, int, int] = (2, 4, 50, 55)
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 
 
@@ -45,7 +48,8 @@ def _track_frame(frame_idx: int, ratio: float = 1.0) -> TrackFrame:
     return TrackFrame(
         frame_idx=frame_idx,
         keypoints=keypoints,
-        face_box=(0.0, 0.0, 120.0, 120.0),
+        face_box=FACE_BOX,
+        body_box=BODY_BOX,
         head_pose=HeadPose(yaw_asymmetry=0.0, roll=0.0, is_frontal=True, confidence=0.9),
         delta_aus={"AU101": _au("AU101", ratio)},
     )
@@ -136,6 +140,17 @@ class TestZapisTreku:
         track = rejected_track(3, [_track_frame(0)], "za mała morda: 30 px < 64 px")
 
         assert _save(annotator, context, track) == []
+
+    def test_bbox_anotacji_to_boks_psa_nie_mordy(self, annotator, context):
+        """
+        Konsumenci czytają `bbox` jako psa (tak było w poprzednich wersjach zbioru).
+
+        Zapisanie tam boksu mordy zmieniłoby znaczenie pola po cichu — starych
+        i nowych anotacji nie dałoby się już rozróżnić.
+        """
+        annotations = _save(annotator, context, _track())
+
+        assert all(ann["bbox"] == list(BODY_BOX) for ann in annotations)
 
 
 class TestSzumWZapisie:
