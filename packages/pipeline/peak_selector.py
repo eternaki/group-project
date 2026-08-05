@@ -30,6 +30,11 @@ TFM_WEIGHTS = {
     "AD37": 1.0,      # Nose lick
 }
 
+# Minimalny TFM, przy którym kadr uznajemy za mający mimikę wartą anotacji.
+# Stała, a nie liczba w domyślnym argumencie: audyt musi mierzyć peaki względem
+# TEGO SAMEGO progu, którego używa selektor.
+DEFAULT_MIN_TFM: float = 0.15
+
 
 def compute_tfm(delta_aus: dict[str, DeltaActionUnit]) -> float:
     """
@@ -81,7 +86,7 @@ class PeakFrameSelector:
     def __init__(
         self,
         min_separation_frames: int = 30,  # 1 second @ 30fps
-        min_tfm_threshold: float = 0.15,   # Minimum movement
+        min_tfm_threshold: float = DEFAULT_MIN_TFM,   # Minimum movement
         frontal_only: bool = False,  # Zmieniono na False - zbyt restrykcyjne
         min_keypoint_conf: float = 0.5,  # Zmniejszono z 0.7 na 0.5
         max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,

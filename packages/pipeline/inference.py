@@ -887,16 +887,24 @@ class InferencePipeline:
         Returns:
             Wynik treku — przyjęty albo odrzucony z wypełnionym `rejected_reason`
         """
-        track_frames = self._build_track_frames(frames_list, entries, config)
+        track_frames, dropped_low_conf = self._build_track_frames(
+            frames_list, entries, config
+        )
 
         try:
-            return self._finish_track(frames_list, track_id, track_frames, config)
+            track = self._finish_track(frames_list, track_id, track_frames, config)
         except _TRACK_FAILURES as error:
-            return rejected_track(
+            track = rejected_track(
                 track_id,
                 track_frames,
                 f"błąd przetwarzania treku: {type(error).__name__}: {error}",
             )
+
+        # Licznik doklejamy po złożeniu wyniku, bo to diagnostyka lejka, a nie dana
+        # wejściowa treku — przeciskanie go przez `build_track_result` rozdęłoby
+        # listę parametrów funkcji, która i tak ma ich już sześć.
+        track.frames_dropped_low_conf = dropped_low_conf
+        return track
 
     def _finish_track(
         self,
@@ -960,7 +968,7 @@ class InferencePipeline:
         frames_list: list[np.ndarray],
         entries: list[tuple[int, Detection]],
         config: VideoDatasetConfig,
-    ) -> list[TrackFrame]:
+    ) -> tuple[list[TrackFrame], int]:
         """
         Mierzy i wygładza keypoints wszystkich klatek jednego treku.
 
@@ -973,7 +981,8 @@ class InferencePipeline:
             config: Progi przetwarzania
 
         Returns:
-            Klatki treku z pewnym pomiarem mordy (pozostałe są odsiane)
+            (klatki treku z pewnym pomiarem mordy, liczba klatek odsianych
+            progiem pewności keypoints)
         """
         measurements, low_confidence = self._measure_track(frames_list, entries, config)
 
@@ -988,7 +997,7 @@ class InferencePipeline:
             len(entries) - len(measurements) - low_confidence,
             low_confidence,
         )
-        return self._smooth_track(measurements, config)
+        return self._smooth_track(measurements, config), low_confidence
 
     def _measure_track(
         self,

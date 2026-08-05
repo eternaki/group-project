@@ -148,6 +148,10 @@ class TrackResult:
             wskazana klatka trafia tylko w treki, które ją zawierają — bez tego
             pola nie widać po wyniku, który pies dostał czyj wybór.
         rejected_reason: None gdy trek przyjęty, inaczej powód odrzucenia
+        frames_dropped_low_conf: Ile klatek treku odsiał próg pewności keypoints
+            PRZED wygładzaniem. Czysta diagnostyka lejka: bez niej „trek ma 2
+            klatki" nie mówi, czy pies wyszedł z kadru, czy pomiary odrzucił
+            filtr. Wypełnia ją pipeline po złożeniu wyniku (domyślnie 0).
     """
 
     track_id: int
@@ -158,6 +162,7 @@ class TrackResult:
     au_sample_count: dict[str, int] = field(default_factory=dict)
     neutral_source: str = NEUTRAL_SOURCE_AUTO
     rejected_reason: Optional[str] = None
+    frames_dropped_low_conf: int = 0
 
 
 def evaluate_track_quality(
