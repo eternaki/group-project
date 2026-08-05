@@ -24,10 +24,12 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from session_store import (
+    AmbiguousFrameError,
     FrameAnnotation,
     FrameNotFoundError,
     SessionNotFoundError,
     SessionStore,
+    delta_aus_to_dict,
 )
 
 from packages.data.schemas import (
@@ -90,6 +92,7 @@ class AddFrameRequest(BaseModel):
     frame_idx: int
     image_url: str
     source: str = "manual"
+    track_id: Optional[int] = None
 
 
 # =============================================================================
@@ -105,29 +108,38 @@ def _load_session_or_404(session_id: str):
         raise HTTPException(status_code=404, detail=f"Sesja {session_id!r} nie istnieje")
 
 
-def _get_frame_or_404(session_id: str, frame_idx: int) -> FrameAnnotation:
-    """Wczytuje klatkę lub rzuca HTTP 404."""
+def _get_frame_or_404(
+    session_id: str,
+    frame_idx: int,
+    track_id: Optional[int] = None,
+) -> FrameAnnotation:
+    """
+    Wczytuje anotację klatki wskazanego psa lub zwraca błąd HTTP.
+
+    Args:
+        session_id: ID sesji
+        frame_idx: Numer klatki
+        track_id: Który pies w klatce (wymagany, gdy jest ich kilku)
+
+    Returns:
+        FrameAnnotation
+
+    Raises:
+        HTTPException: 404 gdy nie ma sesji/klatki, 409 gdy klatka opisuje
+            kilku psów, a `track_id` nie wskazano
+    """
     try:
-        return _store.get_frame(session_id, frame_idx)
+        return _store.get_frame(session_id, frame_idx, track_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Sesja {session_id!r} nie istnieje")
+    except AmbiguousFrameError as error:
+        # 409, nie 404: klatka istnieje, ale żądanie nie mówi, którego psa dotyczy.
+        # Ciche wybranie pierwszego nadpisałoby anotację niewłaściwego psa.
+        raise HTTPException(status_code=409, detail=str(error.args[0]))
     except FrameNotFoundError:
         raise HTTPException(
             status_code=404, detail=f"Klatka {frame_idx} nie istnieje w sesji {session_id!r}"
         )
-
-
-def _delta_aus_to_dict(delta_aus: dict[str, DeltaActionUnit]) -> dict:
-    """Konwertuje DeltaActionUnit do słownika do serializacji JSON."""
-    return {
-        name: {
-            "ratio": float(au.ratio),
-            "delta": float(au.delta),
-            "is_active": bool(au.is_active),
-            "confidence": float(au.confidence),
-        }
-        for name, au in delta_aus.items()
-    }
 
 
 def _dict_to_delta_aus(aus_dict: dict) -> dict[str, DeltaActionUnit]:
@@ -157,10 +169,25 @@ async def get_session(session_id: str):
 
 
 @router.get("/{session_id}/frames")
-async def list_frames(session_id: str):
-    """Zwraca listę klatek z anotacjami dla danej sesji."""
+async def list_frames(session_id: str, track_id: Optional[int] = None):
+    """
+    Zwraca klatki z anotacjami — wszystkie albo tylko jednego psa.
+
+    Args:
+        session_id: ID sesji
+        track_id: Gdy podany, zwraca klatki wyłącznie tego psa
+
+    Returns:
+        `{"frames": [...], "dogs": [...], "rejected_tracks": [...]}` — odrzucone
+        treki jadą razem z klatkami, żeby anotator wiedział, dlaczego pies zniknął
+    """
     session = _load_session_or_404(session_id)
-    return {"frames": [asdict(f) for f in session.frames]}
+    frames = [f for f in session.frames if track_id is None or f.track_id == track_id]
+    return {
+        "frames": [asdict(f) for f in frames],
+        "dogs": [asdict(dog) for dog in session.dogs],
+        "rejected_tracks": [asdict(track) for track in session.rejected_tracks],
+    }
 
 
 # =============================================================================
@@ -173,15 +200,16 @@ async def update_keypoints(
     session_id: str,
     frame_idx: int,
     request: UpdateKeypointsRequest,
+    track_id: Optional[int] = None,
 ):
-    """Aktualizuje keypoints klatki (DOG-S9-2)."""
+    """Aktualizuje keypoints klatki wskazanego psa (DOG-S9-2)."""
     expected = NUM_KEYPOINTS * 3
     if len(request.keypoints) != expected:
         raise HTTPException(
             status_code=422,
             detail=f"Oczekiwano {expected} wartości keypoints, otrzymano {len(request.keypoints)}",
         )
-    frame = _get_frame_or_404(session_id, frame_idx)
+    frame = _get_frame_or_404(session_id, frame_idx, track_id)
     frame.keypoints = request.keypoints
     frame.annotation_status = "reviewed"
     _store.update_frame(session_id, frame)
@@ -193,9 +221,10 @@ async def update_aus(
     session_id: str,
     frame_idx: int,
     request: UpdateAUsRequest,
+    track_id: Optional[int] = None,
 ):
-    """Aktualizuje Action Units klatki (DOG-S9-3)."""
-    frame = _get_frame_or_404(session_id, frame_idx)
+    """Aktualizuje Action Units klatki wskazanego psa (DOG-S9-3)."""
+    frame = _get_frame_or_404(session_id, frame_idx, track_id)
     frame.aus = {name: au.model_dump() for name, au in request.aus.items()}
     frame.annotation_status = "reviewed"
     _store.update_frame(session_id, frame)
@@ -207,14 +236,15 @@ async def update_emotion(
     session_id: str,
     frame_idx: int,
     request: UpdateEmotionRequest,
+    track_id: Optional[int] = None,
 ):
-    """Aktualizuje emocję klatki (DOG-S9-4)."""
+    """Aktualizuje emocję klatki wskazanego psa (DOG-S9-4)."""
     if request.emotion not in EMOTION_CLASSES:
         raise HTTPException(
             status_code=422,
             detail=f"Nieznana emocja {request.emotion!r}. Dozwolone: {EMOTION_CLASSES}",
         )
-    frame = _get_frame_or_404(session_id, frame_idx)
+    frame = _get_frame_or_404(session_id, frame_idx, track_id)
     frame.emotion = request.emotion
     frame.emotion_confidence = request.emotion_confidence
     frame.emotion_rule_applied = request.emotion_rule_applied
@@ -228,9 +258,10 @@ async def update_breed(
     session_id: str,
     frame_idx: int,
     request: UpdateBreedRequest,
+    track_id: Optional[int] = None,
 ):
-    """Aktualizuje rasę psa na klatce (DOG-S9-5)."""
-    frame = _get_frame_or_404(session_id, frame_idx)
+    """Aktualizuje rasę wskazanego psa na klatce (DOG-S9-5)."""
+    frame = _get_frame_or_404(session_id, frame_idx, track_id)
     frame.breed = request.breed
     frame.breed_confidence = request.breed_confidence
     frame.annotation_status = "reviewed"
@@ -244,31 +275,38 @@ async def update_breed(
 
 
 @router.post("/{session_id}/frames/{frame_idx}/recompute_aus")
-async def recompute_aus(session_id: str, frame_idx: int):
-    """Przelicza AU z keypoints klatki i klatki neutralnej (DOG-S9-6)."""
+async def recompute_aus(session_id: str, frame_idx: int, track_id: Optional[int] = None):
+    """
+    Przelicza AU z keypoints klatki i klatki neutralnej TEGO psa (DOG-S9-6).
+
+    Baza AU jest per pies — liczenie delty względem klatki neutralnej innego psa
+    dałoby aktywacje wynikające z różnicy budowy pysków, nie z mimiki.
+    """
     session = _load_session_or_404(session_id)
 
-    frame = _get_frame_or_404(session_id, frame_idx)
+    frame = _get_frame_or_404(session_id, frame_idx, track_id)
     if frame.keypoints is None:
         raise HTTPException(status_code=422, detail="Klatka nie ma keypoints")
-    if session.neutral_keypoints is None:
+
+    neutral = session.neutral_keypoints_for(frame.track_id)
+    if neutral is None:
         raise HTTPException(status_code=422, detail="Sesja nie ma neutral keypoints")
 
     keypoints = np.array(frame.keypoints, dtype=np.float32)
-    neutral_kp = np.array(session.neutral_keypoints, dtype=np.float32)
+    neutral_kp = np.array(neutral, dtype=np.float32)
 
     extractor = DeltaActionUnitsExtractor(neutral_kp)
     delta_aus = extractor.extract(keypoints)
 
-    frame.aus = _delta_aus_to_dict(delta_aus)
+    frame.aus = delta_aus_to_dict(delta_aus)
     _store.update_frame(session_id, frame)
     return {"ok": True, "aus": frame.aus}
 
 
 @router.post("/{session_id}/frames/{frame_idx}/recompute_emotion")
-async def recompute_emotion(session_id: str, frame_idx: int):
-    """Przelicza emocję z AU klatki (DOG-S9-7)."""
-    frame = _get_frame_or_404(session_id, frame_idx)
+async def recompute_emotion(session_id: str, frame_idx: int, track_id: Optional[int] = None):
+    """Przelicza emocję z AU klatki wskazanego psa (DOG-S9-7)."""
+    frame = _get_frame_or_404(session_id, frame_idx, track_id)
     if not frame.aus:
         raise HTTPException(status_code=422, detail="Klatka nie ma AU")
 
@@ -300,11 +338,12 @@ async def add_frame(session_id: str, request: AddFrameRequest):
     frame = FrameAnnotation(
         frame_idx=request.frame_idx,
         image_url=request.image_url,
+        track_id=request.track_id,
         source=request.source,
         annotation_status="auto",
     )
     _store.add_frame(session_id, frame)
-    return {"ok": True, "frame_idx": request.frame_idx}
+    return {"ok": True, "frame_idx": request.frame_idx, "track_id": request.track_id}
 
 
 # =============================================================================
@@ -315,6 +354,23 @@ async def add_frame(session_id: str, request: AddFrameRequest):
 def _count_visible_keypoints(keypoints: list[float]) -> int:
     """Liczy widoczne keypoints (visibility > 0.3)."""
     return sum(1 for i in range(2, len(keypoints), 3) if keypoints[i] > 0.3)
+
+
+def _neutral_frame_id(session, track_id: Optional[int]) -> int:
+    """
+    Zwraca numer klatki neutralnej psa, którego dotyczy anotacja.
+
+    Args:
+        session: Dane sesji (`SessionData`)
+        track_id: Identyfikator psa albo None (sesja sprzed obsługi wielu psów)
+
+    Returns:
+        Numer klatki neutralnej tego psa; gdy psa nie ma w `dogs` — wartość sesyjna
+    """
+    for dog in session.dogs:
+        if dog.track_id == track_id:
+            return dog.neutral_frame_idx
+    return session.neutral_frame_idx
 
 
 def _build_coco_annotation(
@@ -328,6 +384,8 @@ def _build_coco_annotation(
         "id": annotation_id,
         "image_id": image_id,
         "category_id": 1,
+        # Bez track_id anotacje dwóch psów z tej samej klatki są nieodróżnialne
+        "track_id": frame.track_id,
         "annotation_status": frame.annotation_status,
         "source": frame.source,
         "neutral_frame_id": neutral_frame_id,
@@ -400,7 +458,8 @@ async def export_coco(session_id: str):
             frame=frame,
             annotation_id=image_id,
             image_id=image_id,
-            neutral_frame_id=session.neutral_frame_idx,
+            # Klatka neutralna psa, którego dotyczy anotacja — nie sesyjna
+            neutral_frame_id=_neutral_frame_id(session, frame.track_id),
         )
         coco["annotations"].append(ann)
 
