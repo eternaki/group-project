@@ -152,11 +152,13 @@ class PeakFrameSelector:
             ]
 
         # Step 1: Compute TFM for valid candidates.
-        # Zbieramy WSZYSTKIE poprawne kadry (z TFM). Kadry powyżej progu min_tfm
-        # są preferowane, ale jeśli jest ich za mało (np. spokojny pies), dobieramy
-        # z pozostałych poprawnych — żeby uszanować żądaną liczbę peaków.
-        strong: list[tuple[int, float]] = []
-        valid_all: list[tuple[int, float]] = []
+        # Kandydatem jest wyłącznie kadr powyżej progu TFM. Wcześniej, gdy takich
+        # kadrów było mniej niż `num_peaks`, dobierane były kadry SPOD progu —
+        # czyli klatki, o których z definicji wiadomo, że nie mają mimiki wartej
+        # anotacji. Audyt na 40 wideo zmierzył koszt usunięcia tego dobierania:
+        # 39 peaków spada do 38, bo tylko 1 (2.6%) pochodził spod progu.
+        # Wpuszczanie takiej klatki do zbioru treningowego to etykieta bez zjawiska.
+        tfm_scores: list[tuple[int, float]] = []
         for i, delta_aus in enumerate(delta_aus_list):
             if i == neutral_idx or delta_aus is None:
                 continue
@@ -164,11 +166,8 @@ class PeakFrameSelector:
             if not self._is_valid_peak(keypoints_list[i], head_poses[i], frame_i):
                 continue
             tfm = compute_tfm(delta_aus)
-            valid_all.append((i, tfm))
             if tfm >= self.min_tfm:
-                strong.append((i, tfm))
-
-        tfm_scores = strong if len(strong) >= num_peaks else valid_all
+                tfm_scores.append((i, tfm))
 
         # Step 2: Sort by TFM (descending)
         tfm_scores.sort(key=lambda x: x[1], reverse=True)

@@ -45,6 +45,14 @@ DEFAULT_FRAMES: int = 6
 _WIDE_CROP_PX: int = 250
 # Średnia widoczność punktów w fixturze (make_frontal_kp) jest w okolicy 0.93
 _ABOVE_FIXTURE_CONF: float = 0.99
+# Otwarcie pyska na WSKAZANYCH klatkach. Selektor peaków przyjmuje wyłącznie kadry
+# powyżej progu TFM, więc pies bez ANI JEDNEJ zmiany mimiki nie ma peaków — i tak
+# ma być. Testy peaków muszą więc dać psu realny ruch, a nie polegać na dobieraniu
+# kadrów spod progu (mechanizm usunięty po audycie: dawał 1 peak na 39).
+# Klatka 0 zostaje bez mimiki, żeby detektor klatki neutralnej miał co wybrać —
+# gdyby bazą została morda z otwartym pyskiem, wszystkie delty wyszłyby ujemne
+# i TFM (suma DODATNICH delt) byłby zerowy w całym treku.
+MOUTH_OPEN_PX: float = 25.0
 
 
 def _frame_with_two_dogs() -> np.ndarray:
@@ -97,6 +105,9 @@ class _FakeKeypointsModel:
       normalizacji boksem mordy i niczego by nie sprawdzało,
     - `scale_jitter` rusza czubkiem prawego ucha, czyli punktem SKRAJNYM otoczki —
       zmienia ROZMIAR boksu mordy odtwarzanego z punktów, czyli skalę normalizacji.
+
+    `expression_frames` numeruje WYWOŁANIA atrapy, nie klatki wideo — przy psie
+    znikającym z kadru te numeracje się rozjeżdżają.
     """
 
     def __init__(
@@ -105,11 +116,13 @@ class _FakeKeypointsModel:
         scale_jitter: float = 0.0,
         nose_shift: float = 0.0,
         eye_tilt: float = 0.0,
+        expression_frames: Optional[set[int]] = None,
     ) -> None:
         self.jitter = jitter
         self.scale_jitter = scale_jitter
         self.nose_shift = nose_shift
         self.eye_tilt = eye_tilt
+        self.expression_frames = expression_frames or set()
         self.calls = 0
 
     def predict(self, crop: np.ndarray) -> KeypointsPrediction:
@@ -118,6 +131,10 @@ class _FakeKeypointsModel:
         if crop.shape[1] >= _WIDE_CROP_PX:
             keypoints[KP.LOWER_LIP_CENTER, 1] += 20.0
             keypoints[KP.CHIN, 1] += 20.0
+
+        if self.calls in self.expression_frames:
+            for point in (KP.LOWER_LIP_CENTER, KP.CHIN, KP.JAW_CENTER):
+                keypoints[point, 1] += MOUTH_OPEN_PX
 
         sign = 1.0 if self.calls % 2 else -1.0
         keypoints[KP.NOSE_TIP, 0] += self.jitter * sign + self.nose_shift
@@ -226,7 +243,13 @@ class TestDziurawyTrek:
 
     def _track(self, **overrides):
         result = _run(
-            _pipeline(boxes=[LEFT_DOG_BOX], gaps=self.GAPS),
+            _pipeline(
+                boxes=[LEFT_DOG_BOX],
+                gaps=self.GAPS,
+                # Numeracja WYWOŁAŃ atrapy, nie klatek wideo: pies znika na
+                # klatkach 2-3, więc wywołania 2, 3, 5 to klatki 4, 5, 7.
+                expression_frames={2, 3, 5},
+            ),
             frames=self.FRAMES,
             **overrides,
         )
@@ -293,7 +316,7 @@ class TestProgiDocierajaDoDecyzji:
     def test_odstep_peakow_jest_twardy(self) -> None:
         """Selektor woli oddać mniej peaków niż dosypać sąsiadujące klatki."""
         track = _run(
-            _pipeline(boxes=[LEFT_DOG_BOX]),
+            _pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}),
             frames=8,
             fps=5.0,
             min_peak_separation_s=1.0,
@@ -311,7 +334,9 @@ class TestProgiDocierajaDoDecyzji:
     def test_luzniejszy_odstep_daje_wiecej_peakow(self) -> None:
         def peaks(separation_s: float) -> int:
             result = _run(
-                _pipeline(boxes=[LEFT_DOG_BOX]),
+                # Mimika na kilku SĄSIEDNICH klatkach: przy luźnej separacji
+                # selektor weźmie kilka, przy twardej tylko najsilniejszą.
+                _pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 4, 7}),
                 frames=8,
                 num_peaks=8,
                 min_peak_separation_s=separation_s,
@@ -324,9 +349,9 @@ class TestProgiDocierajaDoDecyzji:
         """Nos przesunięty w bok = morda w profilu; przy domyślnym progu odpada."""
         turned = {"nose_shift": 60.0}
 
-        strict = _run(_pipeline(boxes=[LEFT_DOG_BOX], **turned), min_peak_separation_s=0.2)
+        strict = _run(_pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}, **turned), min_peak_separation_s=0.2)
         loose = _run(
-            _pipeline(boxes=[LEFT_DOG_BOX], **turned),
+            _pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}, **turned),
             min_peak_separation_s=0.2,
             max_yaw_asymmetry=0.5,
         )
@@ -337,9 +362,9 @@ class TestProgiDocierajaDoDecyzji:
     def test_prog_przechylenia_glowy_dociera_do_wyboru_peakow(self) -> None:
         tilted = {"eye_tilt": 60.0}
 
-        strict = _run(_pipeline(boxes=[LEFT_DOG_BOX], **tilted), min_peak_separation_s=0.2)
+        strict = _run(_pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}, **tilted), min_peak_separation_s=0.2)
         loose = _run(
-            _pipeline(boxes=[LEFT_DOG_BOX], **tilted),
+            _pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}, **tilted),
             min_peak_separation_s=0.2,
             max_roll=45.0,
         )
