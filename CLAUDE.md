@@ -82,18 +82,19 @@ mypy packages/                                    # typy
 ### Pipeline AI
 ```
 Obraz/Klatka → BBox (YOLOv8) → Crop → Rasa
-                                     → Keypoints → AU → Emocje
+                                     → Detektor mordy → Keypoints → AU → Emocje
 → COCO JSON
 ```
 
 ### Modele
-| Model | Architektura | Cel |
-|-------|--------------|-----|
-| BBox | YOLOv8m | Detekcja psów |
-| Rasa | EfficientNet-B4 | Klasyfikacja rasy (120 klas) |
-| Keypoints | ResNet34 | 46 punktów twarzy (DogFLW) |
-| AU | DeltaActionUnitsExtractor | 21 AU (DogFACS) |
-| Emocje | Rule-based na AU | 9 emocji (DogFACS) |
+| Model | Architektura | Cel | Wynik |
+|-------|--------------|-----|-------|
+| BBox | YOLOv8m | Detekcja psów | — |
+| Rasa | EfficientNet-B4 @380 | Klasyfikacja rasy (120 klas) | Top-1 91.5% |
+| Morda | YOLOv8n | Kadrowanie mordy przed keypoints | mAP50 0.99 |
+| Keypoints | HRNet-W48 (320→80) | 46 punktów twarzy (DogFLW) | NME_iod 0.091, PCK 0.748 |
+| AU | DeltaActionUnitsExtractor | 21 AU (DogFACS), geometria vs klatka neutralna | brak metryki (brak danych GT) |
+| Emocje | Rule-based na AU | 9 emocji (DogFACS) | brak metryki (brak danych GT) |
 
 ### Katalogi danych
 `data/raw/`, `data/frames/`, `data/annotations/` — w `.gitignore` (duże pliki lokalne). Tymczasowe podglądy w korzeniu `data/` też ignorowane.
@@ -106,7 +107,8 @@ Obraz/Klatka → BBox (YOLOv8) → Crop → Rasa
 - **pyproject**: `pythonpath = [".", "apps/webapp/backend"]` — testy importują backend.
 - **Testy API**: `starlette.testclient.TestClient` niekompatybilny z httpx ≥0.28. Używaj `httpx.AsyncClient(transport=ASGITransport(app=app))` + `@pytest.mark.anyio`.
 - **Środowisko uruchomienia**: `.venv` (Python 3.12), `node` dla yt-dlp, `ffmpeg` w PATH.
-- **Keypoints**: pipeline robi square-crop przed Resize (fix zniekształceń); model wciąż słaby (~0.37).
+- **Keypoints**: pipeline robi square-crop przed Resize (fix zniekształceń) i kadruje mordę osobnym detektorem. Trudne pozostają profil i wiszące uszy.
+- **AU w COCO**: pole `au_analysis` to `{ratio, is_active, confidence}` — samo `ratio` nie odróżnia realnej aktywacji od klamrowanego (niewiarygodnego) pomiaru. Odczyt starych zbiorów (samo `ratio` jako liczba) przez `packages.data.coco.au_ratio()`.
 
 ---
 
@@ -122,8 +124,8 @@ DPP (proces projektowania), Specyfikacja Oprogramowania (funkcje, interfejs, kod
 | # | Sprint | Status |
 |---|--------|--------|
 | 1-7 | Setup, Detection, Breed, Keypoints, Emotion, Pipeline, Webapp | Done |
-| 8-12 | Ulepszenia modeli (Detection/Breed/Keypoints/AU/Emotion) | W toku |
-| 13-14 | Data Collection (YouTube), Batch Annotation | W toku |
-| 15 | Manual Verification (webapp) | Planowane |
+| 8-12 | Ulepszenia modeli (Detection/Breed/Keypoints/AU/Emotion) | Done (AU/emocje bez metryki — brak GT) |
+| 13-14 | Data Collection, Batch Annotation | Done — 1491 wideo → 2826 peak → 549 czystych klatek |
+| 15 | Manual Verification (webapp) | Blokada: brak importu COCO do sesji i eksportu CSV |
 | 16 | AU Neural Network (MLP 138→21 AU) | Planowane |
 | 17-18 | Dataset Finalization, Statistics & Reporting | Planowane |

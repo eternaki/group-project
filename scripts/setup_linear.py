@@ -9,10 +9,10 @@
 Или укажи ключ напрямую в переменной LINEAR_API_KEY ниже.
 """
 
-import os
 import json
-import urllib.request
+import os
 import urllib.error
+import urllib.request
 
 LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY", "")  # ← или вставь сюда
 LINEAR_TEAM_KEY = "DOG"
@@ -104,7 +104,7 @@ def get_label_ids(team_id: str, label_names: list[str]) -> list[str]:
     }
     """
     data = graphql(query, {"teamId": team_id})
-    labels = {l["name"]: l["id"] for l in data["data"]["issueLabels"]["nodes"]}
+    labels = {lab["name"]: lab["id"] for lab in data["data"]["issueLabels"]["nodes"]}
     return [labels[n] for n in label_names if n in labels]
 
 
@@ -361,8 +361,6 @@ def main() -> None:
     print(f"Состояния: {list(states.keys())}")
 
     todo_state_id = states.get("Todo") or states.get("Backlog") or list(states.values())[0]
-
-    priority_map = {"Urgent": 1, "High": 2, "Medium": 3, "Low": 4}
 
     for sprint_data in SPRINTS:
         print(f"\nСоздаю спринт: {sprint_data['name']}")

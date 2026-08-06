@@ -12,7 +12,12 @@ from typing import Optional
 import numpy as np
 
 from packages.data.schemas import KP, NUM_KEYPOINTS
-from packages.models.head_pose import HeadPose, estimate_head_pose
+from packages.models.head_pose import (
+    DEFAULT_MAX_ROLL,
+    DEFAULT_MAX_YAW_ASYMMETRY,
+    HeadPose,
+    estimate_head_pose,
+)
 
 
 class NeutralFrameDetector:
@@ -37,9 +42,8 @@ class NeutralFrameDetector:
         self,
         window_size: int = 10,
         min_keypoint_conf: float = 0.5,
-        max_yaw: float = 35.0,
-        max_pitch: float = 40.0,
-        max_roll: float = 20.0,
+        max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+        max_roll: float = DEFAULT_MAX_ROLL,
     ) -> None:
         """
         Inicjalizuje detektor.
@@ -47,14 +51,12 @@ class NeutralFrameDetector:
         Args:
             window_size: Rozmiar okna do obliczania stabilności
             min_keypoint_conf: Minimalna pewność keypoints (domyślnie 0.5)
-            max_yaw: Maks. kąt yaw dla frontalnej pozy (stopnie)
-            max_pitch: Maks. kąt pitch dla frontalnej pozy (stopnie)
+            max_yaw_asymmetry: Maks. asymetria kącik oka <-> nos dla frontalnej pozy
             max_roll: Maks. kąt roll dla frontalnej pozy (stopnie)
         """
         self.window_size = window_size
         self.min_keypoint_conf = min_keypoint_conf
-        self.max_yaw = max_yaw
-        self.max_pitch = max_pitch
+        self.max_yaw_asymmetry = max_yaw_asymmetry
         self.max_roll = max_roll
 
     def detect_auto(
@@ -114,7 +116,9 @@ class NeutralFrameDetector:
             (
                 idx,
                 self._compute_stability_score(keypoints_list, idx)
-                * _frontal_factor(head_poses[idx]),
+                * _frontal_factor(
+                    head_poses[idx], self.max_yaw_asymmetry, self.max_roll
+                ),
             )
             for idx in candidates
         ]
@@ -171,10 +175,11 @@ class NeutralFrameDetector:
         kp = keypoints.reshape(NUM_KEYPOINTS, 3)
 
         # Sprawdź frontalność
-        if not _is_frontal_pose(head_pose, self.max_yaw, self.max_pitch, self.max_roll):
+        if not _is_frontal_pose(head_pose, self.max_yaw_asymmetry, self.max_roll):
             if debug:
                 print(f"  Klatka {frame_idx}: odrzucona — nie frontalna "
-                      f"(yaw={head_pose.yaw:.1f}, pitch={head_pose.pitch:.1f})")
+                      f"(yaw_asymmetry={head_pose.yaw_asymmetry:.3f}, "
+                      f"roll={head_pose.roll:.1f})")
             return False
 
         # Sprawdź ogólną widoczność
@@ -202,7 +207,8 @@ class NeutralFrameDetector:
         Szuka kandydatów z poluzowanymi kryteriami (fallback).
 
         Poluzowane kryteria:
-        - Kąt do 60° (zamiast max_yaw/max_pitch)
+        - Asymetria yaw do _RELAXED_YAW_ASYMMETRY i roll do _RELAXED_ROLL
+          (zamiast max_yaw_asymmetry/max_roll)
         - Pewność 0.4 (zamiast min_keypoint_conf)
         - Co najmniej 3 krytyczne keypoints widoczne
 
@@ -213,8 +219,11 @@ class NeutralFrameDetector:
         Returns:
             Lista indeksów kandydatów
         """
-        relaxed_angle = 60.0
-        relaxed_conf = 0.4
+        # Ścieżka awaryjna nie ma prawa być surowsza od ścisłej: przy
+        # min_keypoint_conf = 0.3 (batch) sztywne 0.4 odrzucało kandydatów, których
+        # ścieżka ścisła by przyjęła, i wybór spadał na ostatnią deskę ratunku —
+        # pierwszą z brzegu klatkę, bez oceny stabilności i frontalności.
+        relaxed_conf = min(_RELAXED_MIN_CONF, self.min_keypoint_conf)
 
         candidates = []
         for i in range(len(keypoints_list)):
@@ -224,7 +233,10 @@ class NeutralFrameDetector:
             kp = keypoints_list[i].reshape(NUM_KEYPOINTS, 3)
             pose = head_poses[i]
 
-            if abs(pose.yaw) > relaxed_angle or abs(pose.pitch) > relaxed_angle:
+            if (
+                abs(pose.yaw_asymmetry) > _RELAXED_YAW_ASYMMETRY
+                or abs(pose.roll) > _RELAXED_ROLL
+            ):
                 continue
 
             if float(np.mean(kp[:, 2])) < relaxed_conf:
@@ -272,6 +284,13 @@ class NeutralFrameDetector:
 # =============================================================================
 # Funkcje pomocnicze (prywatne)
 # =============================================================================
+
+# Poluzowane progi frontalności dla fallbacku (_find_relaxed_candidates)
+# Górna granica progu pewności na ścieżce awaryjnej — realny próg to minimum z tej
+# wartości i skonfigurowanego min_keypoint_conf (patrz _find_relaxed_candidates)
+_RELAXED_MIN_CONF: float = 0.4
+_RELAXED_YAW_ASYMMETRY: float = 0.7
+_RELAXED_ROLL: float = 60.0
 
 # Indeksy krytycznych keypoints (oczy, nos, uszy)
 _CRITICAL_KP_INDICES: list[int] = [
@@ -322,37 +341,46 @@ def collect_neutral_baseline(
     return baseline
 
 
-def _frontal_factor(pose: Optional[HeadPose]) -> float:
+def _frontal_factor(
+    pose: Optional[HeadPose],
+    max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+    max_roll: float = DEFAULT_MAX_ROLL,
+) -> float:
     """
-    Współczynnik frontalności do oceny kandydata na neutralną klatkę.
+    Współczynnik frontalności kandydata na klatkę neutralną.
 
-    Im mniejsze sumaryczne odchylenie głowy (|yaw|+|pitch|+|roll|), tym wyższy
-    współczynnik (max 1.0). Spada ku 0 dla mocno odwróconej głowy.
+    Liczony z obrotu i przechylenia; miara „nos poniżej oczu" nie jest używana,
+    bo odzwierciedla długość pyska, nie pozę.
+
+    Odchylenia normalizowane są progami, KTÓRE OBOWIĄZUJĄ W TYM WYWOŁANIU. Dotąd
+    szły tu stałe modułowe, więc wywołujący z surowszym progiem (np. max_roll=10)
+    dostawał ranking ważony po staremu: kandydat z przechyleniem 9 stopni miał
+    niemal ten sam bonus co kandydat z przechyleniem 1 stopnia. Progi decydowały
+    o kandydowaniu, ale nie o wyborze — a to ranking wybiera klatkę neutralną.
 
     Args:
         pose: Poza głowy (None → neutralny współczynnik 0.5)
+        max_yaw_asymmetry: Próg obrotu, którym normalizujemy odchylenie
+        max_roll: Próg przechylenia, którym normalizujemy odchylenie
 
     Returns:
         Współczynnik w (0, 1]
     """
     if pose is None:
         return 0.5
-    total_deviation = abs(pose.yaw) + abs(pose.pitch) + abs(pose.roll)
-    return 1.0 / (1.0 + total_deviation / 30.0)
+    deviation = (
+        abs(pose.yaw_asymmetry) / max_yaw_asymmetry + abs(pose.roll) / max_roll
+    )
+    return 1.0 / (1.0 + deviation)
 
 
 def _is_frontal_pose(
     pose: HeadPose,
-    max_yaw: float,
-    max_pitch: float,
+    max_yaw_asymmetry: float,
     max_roll: float,
 ) -> bool:
     """Sprawdza czy poza głowy jest frontalna."""
-    return (
-        abs(pose.yaw) <= max_yaw
-        and abs(pose.pitch) <= max_pitch
-        and abs(pose.roll) <= max_roll
-    )
+    return abs(pose.yaw_asymmetry) <= max_yaw_asymmetry and abs(pose.roll) <= max_roll
 
 
 def _critical_keypoints_visible(kp: np.ndarray, threshold: float) -> bool:

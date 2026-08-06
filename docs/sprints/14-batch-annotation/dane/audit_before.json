@@ -1,0 +1,113 @@
+{
+  "wideo": {
+    "przetworzone": 33,
+    "nieudane": 7,
+    "czas_s": 1322.8,
+    "s_na_wideo": 40.1
+  },
+  "etap_1_detekcja_psa": {
+    "klatki": 672,
+    "bez_psa_proc": 26.5,
+    "wiele_psow_proc": 12.5,
+    "confidence": {
+      "n": 494,
+      "p10": 0.633,
+      "median": 0.904,
+      "p90": 0.96,
+      "mean": 0.851
+    }
+  },
+  "etap_2_keypoints": {
+    "bez_keypoints_proc": 12.6,
+    "confidence": {
+      "n": 454,
+      "p10": 0.158,
+      "median": 0.541,
+      "p90": 0.888,
+      "mean": 0.53
+    },
+    "ponizej_0_5_proc": 47.6
+  },
+  "etap_3_poza_glowy": {
+    "yaw_abs": {
+      "n": 454,
+      "p10": 4.06,
+      "median": 19.727,
+      "p90": 51.652,
+      "mean": 24.801
+    },
+    "pitch_abs": {
+      "n": 454,
+      "p10": 11.7,
+      "median": 43.024,
+      "p90": 61.4,
+      "mean": 39.525
+    },
+    "poza_limitem_30_proc": 75.8
+  },
+  "etap_4_klatka_neutralna": {
+    "suma_katow_abs": {
+      "n": 33,
+      "p10": 29.707,
+      "median": 55.858,
+      "p90": 88.822,
+      "mean": 58.22
+    }
+  },
+  "etap_5_au": {
+    "klatki_z_au": 454,
+    "klamrowane_proc_srednio": 17.3,
+    "top_klamrowane": {
+      "AU25": 34.6,
+      "AD35": 34.6,
+      "EAD103": 33.0,
+      "AU27": 30.8,
+      "AD137": 25.8,
+      "AU116": 25.6
+    },
+    "top_aktywne": {
+      "EAD104": 41.2,
+      "AD137": 35.0,
+      "AD35": 33.9,
+      "AU110": 31.7,
+      "AU109": 31.7,
+      "AD19": 24.2
+    },
+    "au_nigdy_aktywne": [],
+    "podloga_szumu_std_ratio": {
+      "AU109": 0.764,
+      "AU116": 0.75,
+      "AU26": 0.734,
+      "AD137": 0.708,
+      "AU25": 0.667,
+      "AD35": 0.667,
+      "EAD103": 0.667,
+      "AU143": 0.647,
+      "AU27": 0.628,
+      "AU101": 0.6,
+      "AU110": 0.592,
+      "EAD101": 0.582,
+      "EAD102": 0.581,
+      "AD33": 0.56,
+      "AD37": 0.53,
+      "EAD105": 0.503,
+      "AU12": 0.499,
+      "AU118": 0.495,
+      "EAD104": 0.438,
+      "AU145": 0.363,
+      "AD19": 0.351
+    },
+    "ponizej_progu_conf_proc": 32.9
+  },
+  "etap_6_emocje": {
+    "peaki": 3,
+    "rozklad": {
+      "neutral": 2,
+      "relaxed": 1
+    },
+    "reguly": {
+      "neutral_priority_50": 2,
+      "relaxed_priority_70": 1
+    }
+  }
+}

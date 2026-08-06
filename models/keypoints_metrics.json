@@ -1,6 +1,13 @@
 {
-  "best_val_pck": 0.746603264258458,
-  "test_pck": 0.754179819424947,
+  "model": "keypoints_dogflw.pt",
+  "architecture": "HRNet-W48",
+  "input_size": 320,
+  "heatmap_size": 80,
   "num_keypoints": 46,
-  "epochs": 50
+  "dataset": "DogFLW",
+  "nme_iod": 0.091,
+  "pck": 0.748,
+  "reference_nme_iod_paper_eld": 0.0652,
+  "training_notes": "AdaptiveWing loss, DARK subpixel, poprawny flip (FLIP_PAIRS), waga uszu, multi-crop TTA",
+  "updated": "2026-06-18"
 }

@@ -274,9 +274,15 @@ class COCOValidator:
                 if not isinstance(au_analysis, dict):
                     result.add_error(f"Anotacja {ann_id}: au_analysis powinno być dict")
                 elif self.strict:
-                    # Sprawdź czy wszystkie wartości są float
+                    # Dozwolone: nowy format {"ratio", "is_active", "confidence"}
+                    # oraz stary (samo ratio jako liczba)
                     for au_name, au_value in au_analysis.items():
-                        if not isinstance(au_value, (int, float)):
+                        if isinstance(au_value, dict):
+                            if not isinstance(au_value.get("ratio"), (int, float)):
+                                result.add_warning(
+                                    f"Anotacja {ann_id}: {au_name}.ratio powinno być numeryczne"
+                                )
+                        elif not isinstance(au_value, (int, float)):
                             result.add_warning(f"Anotacja {ann_id}: {au_name} powinno być numeryczne")
 
             if "neutral_frame_id" in ann:
@@ -413,7 +419,6 @@ class COCOValidator:
 
         # Zbierz prawidłowe ID
         valid_image_ids = {img["id"] for img in data.get("images", [])}
-        valid_category_ids = {cat["id"] for cat in data.get("categories", [])}
 
         # Napraw anotacje
         fixed_annotations = []

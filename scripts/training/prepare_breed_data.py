@@ -12,12 +12,10 @@ Użycie:
 import argparse
 import json
 import shutil
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
 from tqdm import tqdm
-
 
 # Ścieżki domyślne
 DATA_DIR = Path("data")

@@ -6,12 +6,259 @@ dla breed_id, emotion_id i keypoints.
 """
 
 import json
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
-from packages.data.schemas import KEYPOINT_NAMES, SKELETON_CONNECTIONS
+from packages.data.schemas import KEYPOINT_NAMES, NUM_KEYPOINTS, SKELETON_CONNECTIONS
+
+# Typ pojedynczej wartości w polu au_analysis: nowy format (słownik z wiarygodnością)
+# lub stary (samo ratio) — zbiory sprzed wprowadzenia is_active/confidence.
+AUValue = Union[float, dict]
+
+# Liczba wartości na jeden punkt w zapisie COCO: x, y, widoczność
+KEYPOINT_VALUES_PER_POINT: int = 3
+
+# Długość płaskiego zapisu keypoints (46 punktów DogFLW po 3 wartości)
+FLAT_KEYPOINTS_LENGTH: int = NUM_KEYPOINTS * KEYPOINT_VALUES_PER_POINT
+
+# Ratio AU równe 1.0 oznacza brak zmiany względem klatki neutralnej
+NEUTRAL_RATIO: float = 1.0
+
+# Rola klatki w obrębie treku: baza AU albo szczyt mimiki
+FRAME_ROLE_NEUTRAL: str = "neutral"
+FRAME_ROLE_PEAK: str = "peak"
+FRAME_ROLES: frozenset[str] = frozenset({FRAME_ROLE_NEUTRAL, FRAME_ROLE_PEAK})
+
+# Źródło etykiety: pre-etykieta z reguł albo weryfikacja ręczna (Sprint 15)
+LABEL_SOURCE_AUTO_RULES: str = "auto_rules"
+LABEL_SOURCE_HUMAN_VERIFIED: str = "human_verified"
+LABEL_SOURCES: frozenset[str] = frozenset(
+    {LABEL_SOURCE_AUTO_RULES, LABEL_SOURCE_HUMAN_VERIFIED}
+)
+
+# Próg odsiewu aktywacji AU: sygnał musi być co najmniej równy jednemu odchyleniu
+# standardowemu szumu zmierzonego w tym treku. Niżej nie da się odróżnić mimiki od
+# drgania keypoints — mediana szumu ratio po wygładzaniu wynosi 0.166, a próg
+# aktywacji AU to 0.15, więc samo `is_active` zapala się od szumu.
+MIN_SIGNAL_TO_NOISE: float = 1.0
+
+
+def au_ratio(value: AUValue) -> float:
+    """
+    Zwraca ratio AU niezależnie od formatu zapisu.
+
+    Args:
+        value: Wartość z au_analysis — float (stary format) lub słownik z kluczem "ratio"
+
+    Returns:
+        Ratio (stosunek cel/neutral)
+    """
+    if isinstance(value, dict):
+        return float(value.get("ratio", 0.0))
+    return float(value)
+
+
+def au_analysis_from_delta_aus(
+    delta_aus: dict,
+    au_noise: Optional[Mapping[str, float]] = None,
+) -> dict[str, dict]:
+    """
+    Serializuje Action Units do pola au_analysis wraz z wiarygodnością pomiaru.
+
+    Sam ratio nie wystarcza: klamrowana wartość (np. ruchome ucho przy limicie 3.0)
+    wygląda jak silna aktywacja, choć pomiar jest niewiarygodny. Nie wystarcza też
+    `is_active`: przy błędzie naszego modelu keypoints (NME_iod 0.091) mediana szumu
+    ratio PO wygładzeniu wynosi 0.166, a próg aktywacji to 0.15, więc dla typowo 13 z
+    21 AU flaga zapala się od drgania punktów. Dlatego przy podanym `au_noise` obok
+    ratio jedzie zmierzony szum tego AU w tym treku i stosunek sygnału do szumu.
+
+    Args:
+        delta_aus: Słownik {nazwa AU: DeltaActionUnit}
+        au_noise: Odchylenie standardowe ratio na trek (`TrackResult.au_noise`).
+            AU o zbyt małej liczbie pomiarów NIE ma tam klucza — dostaje wtedy
+            `noise=None` i `snr=None`, czyli „nie zmierzono", a nie „szum zerowy".
+            Pominięcie argumentu daje dokładnie stary zestaw pól.
+
+    Returns:
+        Słownik {nazwa AU: {"ratio", "is_active", "confidence"}}, a przy podanym
+        `au_noise` dodatkowo {"noise": float | None, "snr": float | None}
+    """
+    return {name: _au_entry(name, au, au_noise) for name, au in delta_aus.items()}
+
+
+def au_signal_above_noise(value: AUValue) -> Optional[bool]:
+    """
+    Mówi, czy sygnał AU przewyższa zmierzony szum treku.
+
+    Trójstanowa odpowiedź jest celowa: brak zmierzonego szumu (stary zbiór, AU o zbyt
+    małej liczbie pomiarów, szum poniżej rozdzielczości) to brak wiedzy, a nie „szum
+    zerowy". Zwrócenie w takim wypadku `False` po cichu wyrzuciłoby dobre próbki,
+    a `True` — wpuściło do treningu etykiety z drgania punktów.
+
+    Args:
+        value: Wartość z au_analysis (nowy format słownikowy albo stary float)
+
+    Returns:
+        True/False gdy szum zmierzono, None gdy nie ma jak porównać
+    """
+    if not isinstance(value, dict):
+        return None
+    snr = value.get("snr")
+    if not isinstance(snr, (int, float)):
+        return None
+    return bool(snr >= MIN_SIGNAL_TO_NOISE)
+
+
+def _au_entry(
+    name: str,
+    au: "DeltaActionUnit",  # type: ignore[name-defined]  # noqa: F821
+    au_noise: Optional[Mapping[str, float]],
+) -> dict:
+    """
+    Buduje wpis jednego AU w polu au_analysis.
+
+    Args:
+        name: Nazwa AU (klucz w delta_aus — to ona wiąże pomiar ze słownikiem szumu)
+        au: Pomiar AU
+        au_noise: Szum ratio na trek albo None, gdy szumu nie mierzono
+
+    Returns:
+        Słownik pól tego AU
+    """
+    entry: dict = {
+        "ratio": float(au.ratio),
+        "is_active": bool(au.is_active),
+        "confidence": float(au.confidence),
+    }
+    if au_noise is None:
+        return entry
+
+    noise = au_noise.get(name)
+    entry["noise"] = None if noise is None else float(noise)
+    entry["snr"] = _signal_to_noise(entry["ratio"], noise)
+    return entry
+
+
+def _signal_to_noise(ratio: float, noise: Optional[float]) -> Optional[float]:
+    """
+    Liczy stosunek sygnału AU do szumu treku: |ratio - 1| / sigma.
+
+    None oznacza „nie da się policzyć": szumu nie zmierzono albo wyszedł zerowy
+    (ratio stałe w całym treku, np. klamrowane). Dzielenie przez zero dałoby
+    `Infinity`, czyli niepoprawny JSON i pozorną pewność najgorszego pomiaru.
+
+    Args:
+        ratio: Stosunek cel/neutral z pomiaru AU
+        noise: Odchylenie standardowe ratio w treku albo None
+
+    Returns:
+        Stosunek sygnału do szumu albo None
+    """
+    if noise is None or not math.isfinite(ratio):
+        return None
+    noise_value = float(noise)
+    if not math.isfinite(noise_value) or noise_value <= 0.0:
+        return None
+    return abs(ratio - NEUTRAL_RATIO) / noise_value
+
+
+@dataclass(frozen=True)
+class TrackAnnotation:
+    """
+    Pola anotacji wynikające z przynależności klatki do treku jednego psa.
+
+    Zebrane w jednym obiekcie, bo `add_annotation` ma już kilkanaście parametrów —
+    dokładanie pięciu kolejnych rozjechałoby się z limitem z CLAUDE.md. Ten sam
+    wzorzec zastosowano dla `TrackQuality` i `VideoDatasetConfig`.
+
+    Attributes:
+        track_id: Identyfikator psa w obrębie wideo (`TrackResult.track_id`)
+        frame_role: `neutral` (baza AU treku) albo `peak` (szczyt mimiki)
+        au_noise: Odchylenie standardowe ratio na trek, per AU. Pusty słownik znaczy
+            „nie zmierzono" (np. trek za krótki), a NIE „szum zerowy".
+        au_sample_count: Liczba pomiarów, z których policzono szum. Bez niej nie da
+            się skorygować obciążenia krótkich treków (sigma z 3 klatek ma ~11%
+            obciążenia i CV ~50%), więc jest wymagana razem z `au_noise`.
+        label_source: `auto_rules` (pre-etykieta z reguł) albo `human_verified`
+            (po weryfikacji ręcznej, Sprint 15)
+        neutral_source: Skąd wzięła się klatka neutralna treku (`auto` albo `manual`).
+            Przy kilku psach ręcznie wskazana klatka trafia tylko w treki, które ją
+            zawierają — bez tego pola trening miesza dwa różne reżimy wyboru bazy AU,
+            nie mając jak ich rozdzielić.
+        procrustes_keypoints: Kanoniczny kształt twarzy (138 wartości) — planowane
+            wejście sieci AU. Punkty niewidoczne są tam przekształcone, ale
+            niewiarygodne; konsument ma je odfiltrować po widoczności.
+    """
+
+    track_id: int
+    frame_role: str
+    au_noise: dict[str, float] = field(default_factory=dict)
+    au_sample_count: dict[str, int] = field(default_factory=dict)
+    label_source: str = LABEL_SOURCE_AUTO_RULES
+    neutral_source: Optional[str] = None
+    procrustes_keypoints: Optional[list[float]] = None
+
+    def __post_init__(self) -> None:
+        """
+        Sprawdza spójność pól treku.
+
+        Raises:
+            ValueError: Gdy rola, źródło etykiety, komplet szumu albo długość
+                kanonicznego kształtu są nieprawidłowe
+        """
+        if self.frame_role not in FRAME_ROLES:
+            raise ValueError(
+                f"Nieznana rola klatki: {self.frame_role!r} (dozwolone: {sorted(FRAME_ROLES)})"
+            )
+        if self.label_source not in LABEL_SOURCES:
+            raise ValueError(
+                f"Nieznane źródło etykiety: {self.label_source!r} "
+                f"(dozwolone: {sorted(LABEL_SOURCES)})"
+            )
+
+        missing_counts = sorted(set(self.au_noise) - set(self.au_sample_count))
+        if missing_counts:
+            raise ValueError(
+                f"Szum AU bez liczby prób dla: {missing_counts}. Sigma z kilku klatek "
+                "jest obciążona, więc bez liczby prób nie da się jej skorygować."
+            )
+
+        if (
+            self.procrustes_keypoints is not None
+            and len(self.procrustes_keypoints) != FLAT_KEYPOINTS_LENGTH
+        ):
+            raise ValueError(
+                f"Kanoniczny kształt musi mieć {FLAT_KEYPOINTS_LENGTH} wartości, "
+                f"otrzymano {len(self.procrustes_keypoints)}"
+            )
+
+    def to_dict(self) -> dict:
+        """
+        Zwraca pola treku do dopisania w anotacji COCO.
+
+        `au_noise` i `au_sample_count` zapisujemy zawsze — również puste. Brak pola
+        i pusty słownik znaczyłyby to samo dla czytnika, ale pusty słownik jawnie
+        mówi, że trek przez pomiar szumu przeszedł.
+
+        Returns:
+            Słownik pól COCO
+        """
+        fields: dict = {
+            "track_id": self.track_id,
+            "frame_role": self.frame_role,
+            "label_source": self.label_source,
+            "au_noise": dict(self.au_noise),
+            "au_sample_count": dict(self.au_sample_count),
+        }
+        if self.neutral_source is not None:
+            fields["neutral_source"] = self.neutral_source
+        if self.procrustes_keypoints is not None:
+            fields["procrustes_keypoints"] = list(self.procrustes_keypoints)
+        return fields
 
 
 @dataclass
@@ -184,9 +431,10 @@ class COCODataset:
         emotion_name: Optional[str] = None,
         confidence: Optional[dict[str, float]] = None,
         iscrowd: int = 0,
-        au_analysis: Optional[dict[str, float]] = None,
+        au_analysis: Optional[dict[str, AUValue]] = None,
         neutral_frame_id: Optional[int] = None,
         emotion_rule_applied: Optional[str] = None,
+        track: Optional[TrackAnnotation] = None,
         **extra_fields,
     ) -> int:
         """
@@ -203,9 +451,14 @@ class COCODataset:
             emotion_name: Nazwa emocji
             confidence: Słownik z pewnością {"bbox": 0.95, ...}
             iscrowd: Czy to tłum (domyślnie 0)
-            au_analysis: Analiza Action Units {"AU101": 0.15, "AU12": 0.25, ...}
+            au_analysis: Analiza Action Units
+                {"AU101": {"ratio": 1.15, "is_active": True, "confidence": 0.9}, ...}
+                (stary format — samo ratio jako float — jest nadal odczytywany)
             neutral_frame_id: ID neutral frame (reference do image_id)
             emotion_rule_applied: Nazwa zastosowanej reguły emocji
+            track: Pola treku psa (`TrackAnnotation`) — który pies, rola klatki,
+                źródło etykiety, zmierzony szum AU i kanoniczny kształt.
+                Anotacje spoza pipeline'u wideo zostają bez tych pól.
             **extra_fields: Dodatkowe pola
 
         Returns:
@@ -262,6 +515,10 @@ class COCODataset:
             ann_dict["neutral_frame_id"] = neutral_frame_id
         if emotion_rule_applied:
             ann_dict["emotion_rule_applied"] = emotion_rule_applied
+
+        # Pola treku psa — potrzebne do trenowania własnej sieci AU (Sprint 16)
+        if track is not None:
+            ann_dict.update(track.to_dict())
 
         ann_dict.update(extra_fields)
         self._annotations.append(ann_dict)
@@ -362,7 +619,12 @@ class COCODataset:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=indent, ensure_ascii=False)
+            # allow_nan=False: NaN/Infinity to NIEPOPRAWNY JSON — część parserów
+            # odrzuci taki plik, a cichy zapis oznaczałby zbiór nie do wczytania.
+            # Moduł broni się przed NaN przy liczeniu szumu; to ostatnia bramka.
+            json.dump(
+                self.to_dict(), f, indent=indent, ensure_ascii=False, allow_nan=False
+            )
 
         print(f"Dataset zapisany: {output_path}")
         print(f"  Obrazów: {self.num_images}")
@@ -527,7 +789,7 @@ class COCODataset:
                         "avg_delta": 0.0,
                     }
                 stats["action_units"][au_name]["count"] += 1
-                stats["action_units"][au_name]["total_delta"] += au_value
+                stats["action_units"][au_name]["total_delta"] += au_ratio(au_value)
 
         # Oblicz średnie dla AU
         for au_name in stats["action_units"]:
