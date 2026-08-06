@@ -24,14 +24,23 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from session_store import (
+    ANNOTATION_STATUS_VERIFIED,
     AmbiguousFrameError,
+    DogTrack,
     FrameAnnotation,
     FrameNotFoundError,
+    SessionData,
     SessionNotFoundError,
     SessionStore,
     delta_aus_to_dict,
 )
 
+from packages.data.coco import (
+    FRAME_ROLE_NEUTRAL,
+    FRAME_ROLE_PEAK,
+    LABEL_SOURCE_AUTO_RULES,
+    LABEL_SOURCE_HUMAN_VERIFIED,
+)
 from packages.data.schemas import (
     EMOTION_CLASSES,
     KEYPOINT_NAMES,
@@ -373,11 +382,58 @@ def _neutral_frame_id(session, track_id: Optional[int]) -> int:
     return session.neutral_frame_idx
 
 
+def _dog_for(session: SessionData, track_id: Optional[int]) -> Optional[DogTrack]:
+    """Zwraca trek o podanym identyfikatorze albo None (sesja sprzed wielu psów)."""
+    for dog in session.dogs:
+        if dog.track_id == track_id:
+            return dog
+    return None
+
+
+def _track_fields_for_export(
+    frame: FrameAnnotation,
+    dog: Optional[DogTrack],
+) -> dict:
+    """
+    Pola treku, bez których zbiór z webappu nie daje się scalić ze zbiorem z batcha.
+
+    Sprint 15 (weryfikacja ręczna) produkuje anotacje, które Sprint 16 ma połączyć
+    z pre-etykietami z batch annotation. Bez `label_source` nie da się odsiać jednych
+    od drugich, bez `au_noise`/`au_sample_count` nie da się ich zważyć, a bez
+    `frame_role` nie wiadomo, która klatka jest bazą AU swojego treku.
+
+    Args:
+        frame: Anotacja klatki z sesji
+        dog: Trek psa, którego dotyczy klatka (None dla sesji sprzed obsługi wielu psów)
+
+    Returns:
+        Słownik pól treku gotowy do dopisania w anotacji COCO
+    """
+    fields: dict = {
+        "label_source": (
+            LABEL_SOURCE_HUMAN_VERIFIED
+            if frame.annotation_status == ANNOTATION_STATUS_VERIFIED
+            else LABEL_SOURCE_AUTO_RULES
+        ),
+    }
+    if dog is None:
+        return fields
+
+    fields["frame_role"] = (
+        FRAME_ROLE_NEUTRAL if frame.frame_idx == dog.neutral_frame_idx else FRAME_ROLE_PEAK
+    )
+    fields["neutral_source"] = dog.neutral_source
+    fields["au_noise"] = dict(dog.au_noise)
+    fields["au_sample_count"] = dict(dog.au_sample_count)
+    return fields
+
+
 def _build_coco_annotation(
     frame: FrameAnnotation,
     annotation_id: int,
     image_id: int,
     neutral_frame_id: int,
+    dog: Optional[DogTrack] = None,
 ) -> dict:
     """Buduje obiekt anotacji COCO dla jednej klatki."""
     ann: dict = {
@@ -413,6 +469,7 @@ def _build_coco_annotation(
     if frame.keypoints is not None:
         ann["keypoints"] = frame.keypoints
         ann["num_keypoints"] = _count_visible_keypoints(frame.keypoints)
+    ann.update(_track_fields_for_export(frame, dog))
     return ann
 
 
@@ -460,6 +517,7 @@ async def export_coco(session_id: str):
             image_id=image_id,
             # Klatka neutralna psa, którego dotyczy anotacja — nie sesyjna
             neutral_frame_id=_neutral_frame_id(session, frame.track_id),
+            dog=_dog_for(session, frame.track_id),
         )
         coco["annotations"].append(ann)
 

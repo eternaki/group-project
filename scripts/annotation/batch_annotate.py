@@ -41,7 +41,11 @@ from packages.models.breed import BreedPrediction
 from packages.models.emotion import EmotionPrediction, classify_emotion_from_delta_aus
 from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
 from packages.models.shape_normalization import NUM_SHAPE_DIMS, procrustes_align
-from packages.pipeline.inference import VideoDatasetConfig
+from packages.pipeline.inference import (
+    DATASET_MIN_KEYPOINT_CONF,
+    DATASET_PEAK_SEPARATION_S,
+    VideoDatasetConfig,
+)
 from packages.pipeline.peak_selector import compute_tfm
 from packages.pipeline.track_processing import TrackFrame, TrackResult
 
@@ -70,8 +74,8 @@ class BatchConfig:
 
     # Parametry generowania datasetu (peak frames + emocje/AU)
     num_peaks: int = 10  # liczba peak frames na wideo do anotacji emocji
-    peak_min_separation_s: float = 3.0  # min. odstęp peak frames w SEKUNDACH nagrania
-    min_keypoint_conf: float = 0.3  # min. pewność keypoints dla peak frame
+    peak_min_separation_s: float = DATASET_PEAK_SEPARATION_S  # w SEKUNDACH nagrania
+    min_keypoint_conf: float = DATASET_MIN_KEYPOINT_CONF  # min. pewność keypoints
     max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY  # dla peak frame
     max_roll: float = DEFAULT_MAX_ROLL  # dla peak frame
 
@@ -221,7 +225,10 @@ class BatchAnnotator:
         try:
             from packages.pipeline import InferencePipeline, PipelineConfig
 
-            pipeline_config = PipelineConfig(device=self.config.device)
+            pipeline_config = PipelineConfig(
+                device=self.config.device,
+                confidence_threshold=self.config.min_confidence,
+            )
             self.pipeline = InferencePipeline(pipeline_config)
             self.pipeline.load()  # Załaduj wagi wszystkich modeli
             logger.info(f"Pipeline zainicjalizowany na urządzeniu: {self.config.device}")
@@ -610,6 +617,7 @@ class BatchAnnotator:
             au_noise=dict(track.au_noise),
             au_sample_count=dict(track.au_sample_count),
             label_source=LABEL_SOURCE_AUTO_RULES,
+            neutral_source=track.neutral_source,
             procrustes_keypoints=self._procrustes_keypoints(track_frame.keypoints),
         )
 

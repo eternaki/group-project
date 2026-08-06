@@ -1,0 +1,166 @@
+{
+  "wideo": {
+    "przetworzone": 40,
+    "nieudane": 0,
+    "czas_s": 988.0,
+    "s_na_wideo": 24.7
+  },
+  "etap_0_treki": {
+    "przyjete": 26,
+    "odrzucone": 32,
+    "powody": {
+      "za mało klatek z mordą": 22,
+      "za mała morda": 10
+    },
+    "klatki_odsiane_progiem_conf": 320,
+    "treki_krotkie_dopiero_po_filtrze": 11
+  },
+  "etap_1_detekcja_psa": {
+    "klatki": 672,
+    "detekcje": 596,
+    "bez_psa_proc": 26.5,
+    "wiele_psow_proc": 12.5,
+    "confidence": {
+      "n": 494,
+      "p10": 0.633,
+      "median": 0.904,
+      "p90": 0.96,
+      "mean": 0.851
+    }
+  },
+  "etap_2_keypoints": {
+    "detekcje_bez_mordy_proc": 0.0,
+    "confidence": {
+      "n": 224,
+      "p10": 0.588,
+      "median": 0.818,
+      "p90": 0.913,
+      "mean": 0.782
+    },
+    "ponizej_0_5_proc": 0.0
+  },
+  "etap_3_poza_glowy": {
+    "yaw_asymmetry_abs": {
+      "n": 224,
+      "p10": 0.017,
+      "median": 0.081,
+      "p90": 0.187,
+      "mean": 0.096
+    },
+    "roll_abs": {
+      "n": 224,
+      "p10": 1.687,
+      "median": 7.132,
+      "p90": 27.811,
+      "mean": 13.141
+    },
+    "poza_limitem_proc": 9.4
+  },
+  "etap_4_klatka_neutralna": {
+    "suma_katow_abs": {
+      "n": 26,
+      "p10": 0.121,
+      "median": 0.339,
+      "p90": 0.687,
+      "mean": 0.383
+    }
+  },
+  "etap_5_au": {
+    "klatki_z_au": 224,
+    "klamrowane_proc_srednio": 4.6,
+    "top_klamrowane": {
+      "EAD103": 19.6,
+      "AU25": 13.8,
+      "AD35": 13.8,
+      "AU27": 10.3,
+      "AU26": 8.5,
+      "AU116": 7.6
+    },
+    "top_aktywne": {
+      "EAD104": 40.6,
+      "AU110": 33.9,
+      "AD35": 33.5,
+      "AD137": 29.0,
+      "AU109": 27.7,
+      "AU116": 25.9
+    },
+    "au_nigdy_aktywne": [],
+    "podloga_szumu_std_ratio": {
+      "AU116": 0.412,
+      "AU25": 0.404,
+      "AD35": 0.404,
+      "AU27": 0.38,
+      "EAD103": 0.363,
+      "AD137": 0.36,
+      "AU26": 0.329,
+      "EAD104": 0.328,
+      "AU109": 0.297,
+      "AU110": 0.254,
+      "AD19": 0.208,
+      "EAD105": 0.206,
+      "AU12": 0.194,
+      "EAD101": 0.193,
+      "AU118": 0.186,
+      "AD37": 0.178,
+      "AD33": 0.157,
+      "AU143": 0.146,
+      "EAD102": 0.145,
+      "AU101": 0.132,
+      "AU145": 0.128
+    },
+    "szum_zbiorczo": {
+      "pomiary_trek_au": 546,
+      "rozklad": {
+        "n": 546,
+        "p10": 0.055,
+        "median": 0.232,
+        "p90": 0.801,
+        "mean": 0.334
+      },
+      "sygnal_aktywacji": 0.1499999999999999,
+      "szum_powyzej_sygnalu_proc": 68.9,
+      "au_z_mediana_powyzej_sygnalu": 17,
+      "liczba_prob_na_pomiar": {
+        "n": 546,
+        "p10": 4.0,
+        "median": 8.0,
+        "p90": 16.0,
+        "mean": 8.615
+      }
+    },
+    "ponizej_progu_conf_proc": 3.0
+  },
+  "etap_6_emocje": {
+    "peaki": 39,
+    "audyt_fallbacku_tfm": {
+      "prog_tfm": 0.15,
+      "peaki_z_fallbackiem": 39,
+      "peaki_bez_fallbacku": 38,
+      "peaki_spod_progu": 1,
+      "udzial_spod_progu_proc": 2.6,
+      "tfm_peakow": {
+        "n": 39,
+        "p10": 0.723,
+        "median": 2.78,
+        "p90": 10.451,
+        "mean": 4.749
+      }
+    },
+    "rozklad": {
+      "neutral": 26,
+      "relaxed": 6,
+      "sad": 2,
+      "happy": 2,
+      "angry": 2,
+      "submission": 1
+    },
+    "reguly": {
+      "neutral_priority_50": 26,
+      "relaxed_priority_70": 6,
+      "sad_priority_80": 2,
+      "happy_priority_100": 2,
+      "angry_priority_95": 2,
+      "submission_priority_85": 1
+    }
+  }
+}

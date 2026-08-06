@@ -20,6 +20,14 @@ _BACKEND_DIR = Path(__file__).resolve().parent
 SESSIONS_DIR = _BACKEND_DIR / "sessions"
 
 
+# Statusy anotacji. `verified` znaczy "człowiek to sprawdził" i tylko taka anotacja
+# ma prawo trafić do zbioru jako `human_verified` — bez tego rozróżnienia Sprint 16
+# nie odsieje pre-etykiet od danych zweryfikowanych.
+ANNOTATION_STATUS_AUTO: str = "auto"
+ANNOTATION_STATUS_REVIEWED: str = "reviewed"
+ANNOTATION_STATUS_VERIFIED: str = "verified"
+
+
 @dataclass
 class FrameAnnotation:
     """
@@ -50,7 +58,7 @@ class FrameAnnotation:
     frame_idx: int
     image_url: str
     track_id: Optional[int] = None
-    annotation_status: str = "auto"
+    annotation_status: str = ANNOTATION_STATUS_AUTO
     source: str = "ai"
     bbox: Optional[list[float]] = None
     keypoints: Optional[list[float]] = None
@@ -79,6 +87,9 @@ class DogTrack:
         neutral_source: `auto` (detektor) albo `manual` (wskazana ręcznie)
         peak_frame_indices: Numery klatek szczytowych tego psa
         au_noise: Odchylenie ratio każdego AU w treku — waga wiarygodności
+        au_sample_count: Liczba pomiarów, z których policzono szum. Bez niej sigma
+            z 3 klatek jest nieodróżnialna od sigmy z 20, a obciążenie krótkich
+            treków (~11% przy 3 próbkach) nie do skorygowania w treningu.
     """
 
     track_id: int
@@ -87,6 +98,7 @@ class DogTrack:
     neutral_source: str = "auto"
     peak_frame_indices: list[int] = field(default_factory=list)
     au_noise: dict = field(default_factory=dict)
+    au_sample_count: dict = field(default_factory=dict)
 
 
 @dataclass

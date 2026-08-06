@@ -185,6 +185,10 @@ class TrackAnnotation:
             obciążenia i CV ~50%), więc jest wymagana razem z `au_noise`.
         label_source: `auto_rules` (pre-etykieta z reguł) albo `human_verified`
             (po weryfikacji ręcznej, Sprint 15)
+        neutral_source: Skąd wzięła się klatka neutralna treku (`auto` albo `manual`).
+            Przy kilku psach ręcznie wskazana klatka trafia tylko w treki, które ją
+            zawierają — bez tego pola trening miesza dwa różne reżimy wyboru bazy AU,
+            nie mając jak ich rozdzielić.
         procrustes_keypoints: Kanoniczny kształt twarzy (138 wartości) — planowane
             wejście sieci AU. Punkty niewidoczne są tam przekształcone, ale
             niewiarygodne; konsument ma je odfiltrować po widoczności.
@@ -195,6 +199,7 @@ class TrackAnnotation:
     au_noise: dict[str, float] = field(default_factory=dict)
     au_sample_count: dict[str, int] = field(default_factory=dict)
     label_source: str = LABEL_SOURCE_AUTO_RULES
+    neutral_source: Optional[str] = None
     procrustes_keypoints: Optional[list[float]] = None
 
     def __post_init__(self) -> None:
@@ -249,6 +254,8 @@ class TrackAnnotation:
             "au_noise": dict(self.au_noise),
             "au_sample_count": dict(self.au_sample_count),
         }
+        if self.neutral_source is not None:
+            fields["neutral_source"] = self.neutral_source
         if self.procrustes_keypoints is not None:
             fields["procrustes_keypoints"] = list(self.procrustes_keypoints)
         return fields

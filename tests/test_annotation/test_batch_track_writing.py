@@ -183,6 +183,34 @@ class TestKanonicznyKsztalt:
 
         assert len(peak["procrustes_keypoints"]) == NUM_KEYPOINTS * 3
 
+    def test_zapisany_ksztalt_jest_znormalizowany_a_nie_surowy(self, annotator, context):
+        """
+        Regresja: sama długość 138 niczego nie dowodzi — surowe piksele mają tyle samo.
+
+        Podmiana `procrustes_align(...)` na surowe keypoints przechodziła CAŁY zestaw
+        testów, więc do zbioru mogłyby trafić współrzędne zależne od pozycji psa
+        w kadrze i od rozdzielczości wideo, podpisane jako kanoniczny kształt —
+        czyli dokładnie to, co superpozycja Prokrustesa ma usuwać.
+        """
+        annotations = _save(annotator, context, _track())
+        peak = annotations[1]
+
+        shape = np.array(peak["procrustes_keypoints"], dtype=float)
+        coords = shape.reshape(NUM_KEYPOINTS, 3)[:, :2]
+
+        centroid = coords.mean(axis=0)
+        centroid_size = float(np.sqrt(((coords - centroid) ** 2).sum()))
+
+        assert np.allclose(centroid, 0.0, atol=1e-6), f"kształt niewyśrodkowany: {centroid}"
+        assert centroid_size == pytest.approx(1.0, abs=1e-6), (
+            f"rozmiar centroidu {centroid_size:.4f} zamiast 1.0 — to nie jest "
+            "kształt po superpozycji Prokrustesa"
+        )
+        assert not np.allclose(coords.ravel(), np.array(peak["keypoints"], dtype=float)
+                               .reshape(NUM_KEYPOINTS, 3)[:, :2].ravel()), (
+            "kanoniczny kształt jest identyczny z surowymi keypoints"
+        )
+
     def test_brak_pliku_ksztaltu_nie_przerywa_anotacji(self, annotator, context, tmp_path):
         annotator.config.mean_shape_file = tmp_path / "nie-ma-takiego.json"
 

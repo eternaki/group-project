@@ -26,6 +26,10 @@ from pydantic import BaseModel
 from packages.models.breed import BreedPrediction
 from packages.models.emotion import classify_emotion_from_delta_aus
 from packages.pipeline import InferencePipeline, PipelineConfig, VideoDatasetConfig
+from packages.pipeline.inference import (
+    DATASET_MIN_KEYPOINT_CONF,
+    DATASET_PEAK_SEPARATION_S,
+)
 from packages.pipeline.peak_selector import compute_tfm
 from packages.pipeline.track_processing import (
     NO_NEUTRAL_FRAME,
@@ -79,8 +83,11 @@ app.include_router(sessions_router)
 pipeline: Optional[InferencePipeline] = None
 _session_store = SessionStore()
 
-# Domyślny odstęp między klatkami szczytowymi [klatki próbkowane]
-DEFAULT_MIN_SEPARATION_FRAMES: int = 30
+# Domyślny odstęp między klatkami szczytowymi [klatki próbkowane].
+# Wyprowadzony ze wspólnego progu zbierania zbioru, żeby anotator weryfikował
+# DOKŁADNIE ten materiał, który wyprodukował batch — przy 30 klatkach i próbkowaniu
+# 1 kl./s wychodziło 30 s odstępu wobec 3 s w batchu, czyli inne peaki.
+DEFAULT_MIN_SEPARATION_FRAMES: int = int(DATASET_PEAK_SEPARATION_S * 1.0)
 # Domyślna liczba klatek szczytowych na psa
 DEFAULT_NUM_PEAKS: int = 10
 # Domyślne próbkowanie klatek wideo [kl./s]
@@ -429,6 +436,9 @@ def annotate_track(
         neutral_source=track.neutral_source,
         peak_frame_indices=list(track.peak_indices),
         au_noise={name: float(value) for name, value in track.au_noise.items()},
+        au_sample_count={
+            name: int(value) for name, value in track.au_sample_count.items()
+        },
     )
     return dog, annotations
 
@@ -577,6 +587,7 @@ async def process_video(
             fps=fps_sample,
             neutral_frame_idx=neutral_idx,
             min_peak_separation_s=min_separation_frames / fps_sample,
+            min_keypoint_conf=DATASET_MIN_KEYPOINT_CONF,
         )
         result = pipeline.process_video_for_dataset(frames_list, config=config)
 
@@ -660,8 +671,16 @@ async def export_coco(request: ExportCOCORequest):
             "emotion_confidence": peak_frame["emotion_confidence"],
             "emotion_rule_applied": peak_frame["emotion_rule_applied"],
             "neutral_frame_id": request.neutral_frame_idx,
+            # Format zgodny z batchem: {ratio, is_active, confidence}. Wcześniej szła
+            # tu goła `delta` (ratio - 1), a `packages.data.coco.au_ratio` czyta gołego
+            # floata jako RATIO — aktywacja +45% (ratio 1.45) zapisywała się jako 0.45
+            # i była odczytywana jako 55% SPADEK, czyli z odwróconym kierunkiem.
             "au_analysis": {
-                au_name: au_data["delta"]
+                au_name: {
+                    "ratio": au_data["ratio"],
+                    "is_active": au_data["is_active"],
+                    "confidence": au_data["confidence"],
+                }
                 for au_name, au_data in peak_frame["aus"].items()
             },
             "tfm_score": peak_frame["tfm_score"],

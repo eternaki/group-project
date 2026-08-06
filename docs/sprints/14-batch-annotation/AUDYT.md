@@ -3,8 +3,14 @@
 Dokument porównuje pipeline sprzed gałęzi `feature/pipeline-audit` z wersją po niej.
 Oba przebiegi: `scripts/debug/audit_pipeline.py --limit 40 --fps 1.0 --max-frames 20
 --num-peaks 3 --device cpu`, ten sam katalog wideo (`data/drive_dogs/DOGS`), ta sama
-kolejność plików. Surowe wyniki: `data/audit_pipeline.json` (przed),
-`data/audit_pipeline_after.json` (po).
+kolejność plików. Surowe wyniki zacommitowane w `docs/sprints/14-batch-annotation/dane/`
+(`audit_before.json`, `audit_after.json`), żeby dało się je sprawdzić po sklonowaniu repo.
+
+**Czego NIE da się odtworzyć.** Materiał źródłowy (1505 plików wideo) jest w `.gitignore`
+— za duży na repozytorium. Przebiegu „przed" nie odtworzy też bieżąca wersja skryptu:
+powstała w tej samej gałęzi i produkuje inne klucze wyjściowe (`etap_0_treki`,
+`yaw_asymmetry_abs`) niż wersja, która wygenerowała plik „przed" (`pitch_abs`, bez etapu 0).
+Plik „przed" jest więc zapisem historycznym, nie wynikiem powtarzalnego polecenia.
 
 **Jak czytać ten dokument.** Część liczb to porównanie tej samej wielkości przed i po —
 te wolno czytać jako poprawę albo pogorszenie. Część to **zamiana miary**: stara metryka
@@ -173,7 +179,7 @@ mylić.
 
 | Wielkość | Przed | Po |
 |---|---|---|
-| Peaki łącznie | **3** | **39** |
+| Peaki łącznie | **3** | **39** (dziś 38 — patrz niżej) |
 | TFM peaka (mediana) | — | 2,78 |
 | TFM peaka (p10) | — | 0,723 |
 | Rozkład emocji | neutral 2 · relaxed 1 | neutral 26 · relaxed 6 · sad 2 · happy 2 · angry 2 · submission 1 |
@@ -183,7 +189,11 @@ Trzynastokrotny wzrost bierze się z trzech rzeczy naraz: wideo przestały się 
 (7 → 0), peaki liczone są **na psa**, a nie na wideo, i zniknął filtr pitch, który odrzucał
 frontalne mordy długopyskich ras.
 
-### Fallback TFM — decyzja na liczbach
+### Fallback TFM — decyzja na liczbach, już wykonana
+
+> **Uwaga o dacie pomiaru.** Cały audyt „po" biegł na commicie `ba887a5`, czyli **przed**
+> `e497bff`, który usunął opisany niżej mechanizm. Wszystkie pozostałe liczby w tym
+> dokumencie zmiana nie dotyczy, ale **liczba peaków jest dziś 38, nie 39.**
 
 `PeakFrameSelector` miał zastany mechanizm: gdy silnych kandydatów jest mniej niż
 `num_peaks`, dobierał kadry **poniżej progu TFM**, czyli klatki bez mimiki. Audyt zmierzył
@@ -191,15 +201,23 @@ oba warianty na tym samym materiale:
 
 | Wariant | Peaki |
 |---|---|
-| Z fallbackiem (stan obecny) | 39 |
-| Bez fallbacku | 38 |
-| Peaki pochodzące spod progu | **1 (2,6 %)** |
+| Z fallbackiem (stan w chwili pomiaru, commit `ba887a5`) | 39 |
+| Bez fallbacku (**stan obecny**, od commita `e497bff`) | **38** |
+| Peaki pochodzące spod progu | 1 (2,6 %) |
 
-**Rekomendacja: fallback usunąć.** Kosztuje jeden peak na 39, a wprowadza do zbioru kadr,
-o którym z definicji wiadomo, że nie ma mimiki wartej anotacji. Analogiczny mechanizm przy
-separacji peaków został już usunięty w tej gałęzi — tam produkował sąsiadujące klatki,
-czyli duplikaty. Decyzja nie została jeszcze wykonana, bo wymaga zmiany w `peak_selector.py`
-poza zakresem tego audytu.
+**Decyzja: fallback usunięty** (`e497bff`). Kosztował jeden peak na 39, a wprowadzał do
+zbioru kadr, o którym z definicji wiadomo, że nie ma mimiki wartej anotacji. Analogiczny
+mechanizm przy separacji peaków został usunięty wcześniej w tej samej gałęzi — tam
+produkował sąsiadujące klatki, czyli duplikaty.
+
+Usunięcie ujawniło lukę w testach: atrapa psa w testach integracyjnych nie ruszała mordą
+wcale, więc pięć testów peaków opierało się właśnie na dobieraniu kadrów spod progu.
+Naprawione przez danie atrapie realnej mimiki, nie przez obniżenie progu.
+
+Skutek uboczny dla samego narzędzia: sekcja `audyt_fallbacku_tfm` w
+`scripts/debug/audit_pipeline.py` mierzy od tej zmiany wielkość, która z definicji wynosi
+zero. Zostawiona świadomie jako strażnik — gdyby dobieranie spod progu kiedyś wróciło
+(np. przez „poprawkę" zwiększającą yield), audyt pokaże to natychmiast.
 
 ---
 

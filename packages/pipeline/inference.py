@@ -70,6 +70,14 @@ DEFAULT_MIN_PEAK_SEPARATION_S: float = 1.0
 DEFAULT_MIN_KEYPOINT_CONF: float = 0.5
 # Minimalna ostrość mordy (wariancja Laplaciana) — filtr rozmycia ruchowego
 DEFAULT_MIN_SHARPNESS: float = 60.0
+
+# Progi używane przy ZBIERANIU zbioru — wspólne dla batch annotation i webappu.
+# Muszą być te same po obu stronach: Sprint 15 weryfikuje ręcznie dokładnie ten
+# materiał, który wyprodukował batch. Gdy progi się rozjeżdżają, anotator ogląda
+# inne peaki i inne klatki niż te, które trafiły do zbioru, i weryfikuje materiał,
+# którego w zbiorze nie ma.
+DATASET_MIN_KEYPOINT_CONF: float = 0.3
+DATASET_PEAK_SEPARATION_S: float = 3.0
 # Promień okna wokół klatki neutralnej, z którego liczona jest baza median.
 # UWAGA: to promień w POZYCJACH treku, nie w klatkach wideo — na treku dziurawym
 # (pies wychodzi z kadru) okno ±2 pozycje może objąć klatki oddalone o sekundy.
