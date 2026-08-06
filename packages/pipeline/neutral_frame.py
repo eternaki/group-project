@@ -116,7 +116,9 @@ class NeutralFrameDetector:
             (
                 idx,
                 self._compute_stability_score(keypoints_list, idx)
-                * _frontal_factor(head_poses[idx]),
+                * _frontal_factor(
+                    head_poses[idx], self.max_yaw_asymmetry, self.max_roll
+                ),
             )
             for idx in candidates
         ]
@@ -217,7 +219,11 @@ class NeutralFrameDetector:
         Returns:
             Lista indeksów kandydatów
         """
-        relaxed_conf = 0.4
+        # Ścieżka awaryjna nie ma prawa być surowsza od ścisłej: przy
+        # min_keypoint_conf = 0.3 (batch) sztywne 0.4 odrzucało kandydatów, których
+        # ścieżka ścisła by przyjęła, i wybór spadał na ostatnią deskę ratunku —
+        # pierwszą z brzegu klatkę, bez oceny stabilności i frontalności.
+        relaxed_conf = min(_RELAXED_MIN_CONF, self.min_keypoint_conf)
 
         candidates = []
         for i in range(len(keypoints_list)):
@@ -280,6 +286,9 @@ class NeutralFrameDetector:
 # =============================================================================
 
 # Poluzowane progi frontalności dla fallbacku (_find_relaxed_candidates)
+# Górna granica progu pewności na ścieżce awaryjnej — realny próg to minimum z tej
+# wartości i skonfigurowanego min_keypoint_conf (patrz _find_relaxed_candidates)
+_RELAXED_MIN_CONF: float = 0.4
 _RELAXED_YAW_ASYMMETRY: float = 0.7
 _RELAXED_ROLL: float = 60.0
 
@@ -332,15 +341,27 @@ def collect_neutral_baseline(
     return baseline
 
 
-def _frontal_factor(pose: Optional[HeadPose]) -> float:
+def _frontal_factor(
+    pose: Optional[HeadPose],
+    max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+    max_roll: float = DEFAULT_MAX_ROLL,
+) -> float:
     """
     Współczynnik frontalności kandydata na klatkę neutralną.
 
     Liczony z obrotu i przechylenia; miara „nos poniżej oczu" nie jest używana,
     bo odzwierciedla długość pyska, nie pozę.
 
+    Odchylenia normalizowane są progami, KTÓRE OBOWIĄZUJĄ W TYM WYWOŁANIU. Dotąd
+    szły tu stałe modułowe, więc wywołujący z surowszym progiem (np. max_roll=10)
+    dostawał ranking ważony po staremu: kandydat z przechyleniem 9 stopni miał
+    niemal ten sam bonus co kandydat z przechyleniem 1 stopnia. Progi decydowały
+    o kandydowaniu, ale nie o wyborze — a to ranking wybiera klatkę neutralną.
+
     Args:
         pose: Poza głowy (None → neutralny współczynnik 0.5)
+        max_yaw_asymmetry: Próg obrotu, którym normalizujemy odchylenie
+        max_roll: Próg przechylenia, którym normalizujemy odchylenie
 
     Returns:
         Współczynnik w (0, 1]
@@ -348,8 +369,7 @@ def _frontal_factor(pose: Optional[HeadPose]) -> float:
     if pose is None:
         return 0.5
     deviation = (
-        abs(pose.yaw_asymmetry) / DEFAULT_MAX_YAW_ASYMMETRY
-        + abs(pose.roll) / DEFAULT_MAX_ROLL
+        abs(pose.yaw_asymmetry) / max_yaw_asymmetry + abs(pose.roll) / max_roll
     )
     return 1.0 / (1.0 + deviation)
 

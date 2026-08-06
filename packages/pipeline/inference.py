@@ -43,7 +43,7 @@ from packages.models.head_pose import (
 from packages.pipeline.dog_tracker import DogTracker
 from packages.pipeline.landmark_smoothing import KeypointSmoother
 from packages.pipeline.neutral_frame import NeutralFrameDetector, collect_neutral_baseline
-from packages.pipeline.peak_selector import PeakFrameSelector
+from packages.pipeline.peak_selector import DEFAULT_MIN_TFM, PeakFrameSelector
 from packages.pipeline.track_processing import (
     DEFAULT_TRACK_QUALITY,
     NEUTRAL_SOURCE_AUTO,
@@ -70,6 +70,8 @@ DEFAULT_MIN_PEAK_SEPARATION_S: float = 1.0
 DEFAULT_MIN_KEYPOINT_CONF: float = 0.5
 # Minimalna ostrość mordy (wariancja Laplaciana) — filtr rozmycia ruchowego
 DEFAULT_MIN_SHARPNESS: float = 60.0
+# Po ilu sekundach bez detekcji trek wygasa (3 klatki przy próbkowaniu 1 kl./s)
+DEFAULT_MAX_TRACK_GAP_S: float = 3.0
 
 # Progi używane przy ZBIERANIU zbioru — wspólne dla batch annotation i webappu.
 # Muszą być te same po obu stronach: Sprint 15 weryfikuje ręcznie dokładnie ten
@@ -133,6 +135,13 @@ class VideoDatasetConfig:
         max_yaw_asymmetry: Maks. asymetria kącik oka <-> nos (obrót głowy)
         max_roll: Maks. przechylenie głowy [stopnie]
         min_sharpness: Minimalna ostrość mordy; 0 wyłącza filtr rozmycia
+        min_tfm: Minimalny TFM kadru, żeby w ogóle mógł zostać peakiem. Audyt
+            rekomenduje rewizję tej wartości (mierzony szum AU jest rzędu progu
+            aktywacji), więc musi dać się ją zmienić bez edycji kodu.
+        max_track_gap_s: Po ilu SEKUNDACH bez detekcji trek wygasa. Wyrażone
+            w sekundach, nie w klatkach: przy próbkowaniu w klatkach podniesienie
+            fps skracało tolerancję przerwy (3 klatki to 3 s przy 1 kl./s, ale
+            0,6 s przy 5 kl./s), więc gęstsze próbkowanie ZMNIEJSZAŁO zbiór.
         track_quality: Progi godności CAŁEGO treku (liczba klatek, rozmiar mordy,
             mediana pewności)
     """
@@ -145,6 +154,8 @@ class VideoDatasetConfig:
     max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY
     max_roll: float = DEFAULT_MAX_ROLL
     min_sharpness: float = DEFAULT_MIN_SHARPNESS
+    min_tfm: float = DEFAULT_MIN_TFM
+    max_track_gap_s: float = DEFAULT_MAX_TRACK_GAP_S
     track_quality: TrackQuality = DEFAULT_TRACK_QUALITY
 
     def __post_init__(self) -> None:
@@ -175,6 +186,17 @@ class VideoDatasetConfig:
             raise ValueError(
                 f"min_sharpness nie może być ujemne, otrzymano {self.min_sharpness}"
             )
+        if self.min_tfm <= 0.0:
+            raise ValueError(f"min_tfm musi być dodatnie, otrzymano {self.min_tfm}")
+        if self.max_track_gap_s < 0.0:
+            raise ValueError(
+                f"max_track_gap_s nie może być ujemne, otrzymano {self.max_track_gap_s}"
+            )
+
+    @property
+    def max_track_gap_frames(self) -> int:
+        """Tolerancja przerwy w treku przeliczona na klatki przy zadanym próbkowaniu."""
+        return max(1, round(self.max_track_gap_s * self.fps))
 
     @property
     def peak_separation_frames(self) -> int:
@@ -819,7 +841,7 @@ class InferencePipeline:
         config = config or VideoDatasetConfig()
         report = _progress_reporter(progress_callback)
 
-        frames_by_track = self._assign_tracks(frames_list, report)
+        frames_by_track = self._assign_tracks(frames_list, config, report)
         accepted: list[TrackResult] = []
         rejected: list[TrackResult] = []
 
@@ -843,6 +865,7 @@ class InferencePipeline:
     def _assign_tracks(
         self,
         frames_list: list[np.ndarray],
+        config: VideoDatasetConfig,
         report: Callable[[int, str], None],
     ) -> dict[int, list[tuple[int, Detection]]]:
         """
@@ -852,12 +875,13 @@ class InferencePipeline:
 
         Args:
             frames_list: Kolejne klatki wideo
+            config: Progi przetwarzania (stąd tolerancja przerwy w treku)
             report: Raportowanie postępu
 
         Returns:
             Słownik track_id → lista (numer klatki wideo, detekcja)
         """
-        tracker = DogTracker()
+        tracker = DogTracker(max_gap_frames=config.max_track_gap_frames)
         frames_by_track: dict[int, list[tuple[int, Detection]]] = {}
 
         for frame_idx, frame in enumerate(frames_list):
@@ -1219,6 +1243,7 @@ class InferencePipeline:
         """
         selector = PeakFrameSelector(
             min_separation_frames=config.peak_separation_frames,
+            min_tfm_threshold=config.min_tfm,
             # Ścisłej frontalności nie wymagamy — filtr progowy niżej wystarcza,
             # a wymóg `is_frontal` odrzucał praktycznie cały materiał.
             frontal_only=False,

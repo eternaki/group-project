@@ -1,6 +1,15 @@
 """
 Temporalna agregacja Delta AU dla stabilnych predykcji emocji.
 
+UWAGA — moduł BEZ KONSUMENTA W KODZIE PRODUKCYJNYM (stan: sprint 14).
+Tor wideo (`process_video_for_dataset`) idzie przez `packages.pipeline.track_processing`,
+gdzie stabilność liczy się per TREK, a nie per wideo. Ten moduł uśrednia AU po oknie
+klatek bez rozróżnienia psów, więc na nagraniu z kilkoma psami mieszałby ich mimikę.
+Zostaje, bo jego pomysł (okno czasowe zamiast pojedynczej klatki) może wrócić przy
+sieci AU w sprincie 16 — ale każdą zmianę tutaj rób świadomie, że nikt tego nie woła.
+Ostrzeżenie dopisane po tym, jak jedna runda poprawek naprawiała w nim propagację
+progów, która nigdzie nie działała.
+
 Aggruje delta Action Units (AU) w czasie (okno N klatek) dla uzyskania
 stabilnych predykcji emocji zamiast szumnych predykcji klatka-po-klatce.
 

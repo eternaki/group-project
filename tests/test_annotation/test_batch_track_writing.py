@@ -141,6 +141,31 @@ class TestZapisTreku:
 
         assert _save(annotator, context, track) == []
 
+    def test_bramka_odrzucenia_dziala_takze_przy_wypelnionych_peakach(
+        self, annotator, context
+    ):
+        """
+        Regresja: poprzedni test przechodził z niewłaściwego powodu.
+
+        `rejected_track()` zawsze zwraca puste `peak_indices`, więc zapis kończył
+        się pustą listą niezależnie od bramki na `rejected_reason` — usunięcie
+        bramki przechodziło CAŁY zestaw testów. Tu trek ma wypełnione peaki i
+        klatkę neutralną, więc jedyną rzeczą, która może go zatrzymać, jest sama
+        bramka.
+        """
+        frames = [_track_frame(0), _track_frame(1), _track_frame(2)]
+        track = TrackResult(
+            track_id=3,
+            neutral_frame_idx=0,
+            frames=frames,
+            peak_indices=[1, 2],
+            au_noise={"AU101": 0.2},
+            au_sample_count={"AU101": 3},
+            rejected_reason="za niska pewność keypoints: 0.20 < 0.40",
+        )
+
+        assert _save(annotator, context, track) == []
+
     def test_bbox_anotacji_to_boks_psa_nie_mordy(self, annotator, context):
         """
         Konsumenci czytają `bbox` jako psa (tak było w poprzednich wersjach zbioru).
