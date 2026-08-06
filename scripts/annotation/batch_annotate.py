@@ -415,6 +415,9 @@ class BatchAnnotator:
                 "track_id": track.track_id,
                 "reason": track.rejected_reason,
                 "frames": len(track.frames),
+                # Bez tego "trek ma 2 klatki" nie mówi, czy pies wyszedł z kadru,
+                # czy pomiary odrzucił filtr pewności keypoints.
+                "frames_dropped_low_conf": track.frames_dropped_low_conf,
             })
 
         for track in dataset_result["tracks"]:
@@ -554,7 +557,10 @@ class BatchAnnotator:
         height, width = frame_img.shape[:2]
 
         image_id = self.coco_dataset.add_image(
-            file_name=str(frame_path.relative_to(self.config.frames_dir)),
+            # as_posix(), nie str(): na Windows str() daje 'happy\vid\kadr.jpg',
+            # a Linux (Kaggle, gdzie idzie trening) potraktuje to jako JEDNĄ nazwę
+            # pliku z backslashami w środku i nie znajdzie obrazu.
+            file_name=frame_path.relative_to(self.config.frames_dir).as_posix(),
             width=width,
             height=height,
             source_video=context.video_id,
@@ -831,6 +837,7 @@ class BatchAnnotator:
             f"Łączne detekcje:       {self.progress.total_detections}",
             f"Niska pewność:         {len(self.progress.low_confidence_frames)}",
             f"Błędy:                 {len(self.progress.errors)}",
+            f"Treki odrzucone:       {len(self.progress.rejected_tracks)}",
             "",
         ]
 

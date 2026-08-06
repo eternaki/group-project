@@ -619,7 +619,12 @@ class COCODataset:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=indent, ensure_ascii=False)
+            # allow_nan=False: NaN/Infinity to NIEPOPRAWNY JSON — część parserów
+            # odrzuci taki plik, a cichy zapis oznaczałby zbiór nie do wczytania.
+            # Moduł broni się przed NaN przy liczeniu szumu; to ostatnia bramka.
+            json.dump(
+                self.to_dict(), f, indent=indent, ensure_ascii=False, allow_nan=False
+            )
 
         print(f"Dataset zapisany: {output_path}")
         print(f"  Obrazów: {self.num_images}")
