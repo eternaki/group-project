@@ -221,7 +221,85 @@ zero. Zostawiona świadomie jako strażnik — gdyby dobieranie spod progu kiedy
 
 ---
 
-## 5. Co ten audyt zmierzył, a czego nie
+## 5. Pełny zbiór wygenerowany nowym pipeline'em (2026-08-06)
+
+Przebieg na całym materiale: **1496 / 1496 wideo, zero błędów**, ~10 h na CPU
+(`--fps 1.0 --max-frames 30`). Statystyki policzone przez
+`scripts/debug/dataset_stats.py`.
+
+| Wielkość | Stary zbiór | Nowy zbiór |
+|---|---|---|
+| Wideo z anotacjami | — | 1181 / 1496 |
+| Treki przyjęte | brak pojęcia treku | 1359 |
+| Anotacje łącznie | 2826 peaków → 549 „clean" | **4145** (2786 peaków + 1359 klatek neutralnych) |
+| Kadrów na trek | — | 3,1 |
+| Wideo z więcej niż jednym psem | ignorowane | **123 (10,4 %)** |
+| Kompletność pól wejścia sieci AU | brak pól | **4145 / 4145** |
+
+Klatka neutralna każdego treku jest teraz częścią zbioru (1359 sztuk) — bez niej
+sieć AU nie ma odniesienia, względem którego liczone są delty.
+
+Powody odrzucenia 765 treków: 565 za mało klatek z mordą, 144 za mała morda,
+56 za niska pewność keypoints. Filtr pewności odsiał dodatkowo 1750 pojedynczych
+klatek, zanim weszły do bazy AU treku.
+
+### 5.1. Ile etykiet AU pochodzi z szumu — pomiar na pełnym zbiorze
+
+| Wielkość | Wartość |
+|---|---|
+| Pomiary AU łącznie | 58 506 |
+| `is_active = True` | 15 745 |
+| ...powyżej własnego szumu (`snr ≥ 1`) | 10 345 (65,7 %) |
+| ...**poniżej własnego szumu** | **5374 (34,1 %)** |
+| Szum ratio (mediana) | 0,280 |
+| snr (mediana) | 0,794 |
+
+**Co trzecia aktywacja AU w zbiorze pochodzi z drgania keypoints, nie z mimiki.**
+Pole `snr` pozwala je odsiać; bez niego wszystkie 15 745 aktywacji weszłyby do
+treningu jako równoważne. To potwierdza na realnych danych diagnozę z sekcji 3.
+
+Rozbicie na jednostki układa się dokładnie wzdłuż długości bazy pomiarowej —
+najwięcej tracą AU mierzone na krótkim odcinku: EAD104 przeżywa 59 %, AD35 54 %,
+podczas gdy AU25, AU27, AU116, AU110 i AU109 trzymają się na 67–70 %.
+
+### 5.2. Decyzja: `MIN_TRACK_FRAMES` zostaje 3
+
+Rozważane było podniesienie do 5, bo sigma z 3 próbek ma ~11 % obciążenia i ~50 %
+rozrzutu własnego. Pomiar na pełnym zbiorze: **tylko 4,8 % pomiarów szumu opiera
+się na mniej niż 5 próbkach** (mediana to 13 prób, maksimum 30). Podniesienie progu
+kosztowałoby treki, żeby usunąć 4,8 % pomiarów o gorszej jakości, które i tak są
+oznaczone przez `au_sample_count` i dają się zważyć w treningu. Zostaje 3.
+
+### 5.3. Problem, którego przepisanie pipeline'u NIE rozwiązało
+
+Rozkład emocji w zbiorze:
+
+| Emocja | Kadry | Udział |
+|---|---|---|
+| neutral | 2455 | 59,2 % |
+| relaxed | 1202 | 29,0 % |
+| sad | 182 | 4,4 % |
+| angry | 112 | 2,7 % |
+| happy | 95 | 2,3 % |
+| fearful | 58 | 1,4 % |
+| submission | 22 | 0,5 % |
+| surprise | 17 | 0,4 % |
+| pain | 2 | 0,05 % |
+
+**88 % zbioru to dwie klasy z dziewięciu, a na ból przypadają 2 kadry.** Ten sam
+przechył miał stary zbiór (relaxed 260 / neutral 242 z 549), więc nie jest skutkiem
+starego pipeline'u — bierze się z materiału. Stockowy b-roll to spokojne psy na
+spacerze, nie przestraszone ani cierpiące.
+
+Konsekwencja dla Sprintu 16 jest twarda: **na tym zbiorze nie da się wytrenować
+klasyfikatora dziewięciu emocji** — siedem klas nie zbierze statystyki. Realne
+kierunki to (a) regresja 21 AU, gdzie przechył emocji nie występuje, albo
+(b) celowane pozyskanie materiału pod rzadkie klasy. Wybór jest decyzją o zakresie
+projektu, nie o kodzie.
+
+---
+
+## 6. Co ten audyt zmierzył, a czego nie
 
 Zmierzone: lejek etapami, szum AU na realnym materiale, koszt filtru pewności, udział
 fallbacku TFM.
@@ -231,12 +309,10 @@ fallbacku TFM.
 - **Trafność AU i emocji.** Brak danych z ręczną weryfikacją (GT), więc żadna liczba w tym
   dokumencie nie mówi, czy AU są *poprawne* — mówią wyłącznie, czy są *stabilne*. Niski
   szum nie dowodzi trafności.
-- **Próg `snr ≥ 1`** przyjęty przy zapisie do COCO jest konwencją, nie pomiarem. Przy
-  medianie szumu 0,232 oznacza realny próg wykrywalności rzędu 0,23 zamiast 0,15, czyli
-  większość dzisiejszych `is_active` odpadnie. To wygląda na prawidłową diagnozę, ale
-  wymaga potwierdzenia przed treningiem.
-- **`MIN_TRACK_FRAMES = 3`.** Mediana liczby prób na pomiar szumu wynosi 8, ale p10 to 4 —
-  a sigma z 3–4 próbek ma ~11 % obciążenia i ~50 % rozrzutu własnego. Podniesienie progu do
-  5 zmniejszyłoby zbiór; decyzja wymaga zestawienia z docelową liczebnością.
+- **Próg `snr ≥ 1`** przyjęty przy zapisie do COCO jest konwencją, nie pomiarem —
+  ale jego SKUTEK jest już zmierzony na pełnym zbiorze (sekcja 5.1): odsiewa 34,1 %
+  aktywacji. Otwarte zostaje, czy 1,0 to właściwa wartość; do rozstrzygnięcia dopiero
+  wtedy, gdy będzie choć trochę danych z ręczną weryfikacją (Sprint 15).
+- **`MIN_TRACK_FRAMES`** — rozstrzygnięte na pełnym zbiorze, patrz sekcja 5.2 (zostaje 3).
 - **Rasa** klasyfikowana jest z boksu psa (przywrócone w tej gałęzi po tym, jak przez jeden
   commit liczyła się z kadru mordy), ale jej trafności ten audyt nie sprawdza.
