@@ -108,7 +108,10 @@ Obraz/Klatka → BBox (YOLOv8) → Crop → Rasa
 - **Testy API**: `starlette.testclient.TestClient` niekompatybilny z httpx ≥0.28. Używaj `httpx.AsyncClient(transport=ASGITransport(app=app))` + `@pytest.mark.anyio`.
 - **Środowisko uruchomienia**: `.venv` (Python 3.12), `node` dla yt-dlp, `ffmpeg` w PATH.
 - **Keypoints**: pipeline robi square-crop przed Resize (fix zniekształceń) i kadruje mordę osobnym detektorem. Trudne pozostają profil i wiszące uszy.
-- **AU w COCO**: pole `au_analysis` to `{ratio, is_active, confidence}` — samo `ratio` nie odróżnia realnej aktywacji od klamrowanego (niewiarygodnego) pomiaru. Odczyt starych zbiorów (samo `ratio` jako liczba) przez `packages.data.coco.au_ratio()`.
+- **AU w COCO**: pole `au_analysis` to `{ratio, is_active, confidence}`, a przy podanym szumie treku dodatkowo `{noise, snr}`. Samo `ratio` nie odróżnia realnej aktywacji od klamrowanego (niewiarygodnego) pomiaru. Odczyt starych zbiorów (samo `ratio` jako liczba) przez `packages.data.coco.au_ratio()`.
+- **`is_active` NIE WYSTARCZA jako etykieta**: zmierzony szum ratio AU (mediana 0.232 na 40 wideo) przewyższa sygnał aktywacji 0.15 dla 68.9% par trek–AU. Do odsiewu służy `packages.data.coco.au_signal_above_noise()`, który jest **trójstanowy**: `None` znaczy „nie zmierzono szumu", a nie „szum zerowy" — potraktowanie tego jako `False` wyrzuci dobre próbki, jako `True` wpuści etykiety z drgania keypoints. Szczegóły i liczby: `docs/sprints/14-batch-annotation/AUDYT.md`.
+- **`au_noise` zawsze razem z `au_sample_count`**: sigma z 3 klatek ma ~11% obciążenia i ~50% rozrzutu własnego, więc bez liczby prób nie da się jej zważyć. `TrackAnnotation` wymusza to strukturalnie (`ValueError`).
+- **Dwa boksy, nie jeden**: `TrackFrame.body_box` to pies (idzie do `bbox` anotacji i z niego liczy się rasa — klasyfikator uczono na całych psach), `face_box` to kadr mordy (wygładzanie, próg godności treku). Pomylenie ich po cichu zmienia znaczenie pola w całym zbiorze.
 
 ---
 
@@ -125,7 +128,7 @@ DPP (proces projektowania), Specyfikacja Oprogramowania (funkcje, interfejs, kod
 |---|--------|--------|
 | 1-7 | Setup, Detection, Breed, Keypoints, Emotion, Pipeline, Webapp | Done |
 | 8-12 | Ulepszenia modeli (Detection/Breed/Keypoints/AU/Emotion) | Done (AU/emocje bez metryki — brak GT) |
-| 13-14 | Data Collection, Batch Annotation | Done — 1491 wideo → 2826 peak → 549 czystych klatek |
-| 15 | Manual Verification (webapp) | Blokada: brak importu COCO do sesji i eksportu CSV |
+| 13-14 | Data Collection, Batch Annotation | Done — pipeline przepisany na treki psów (`feature/pipeline-audit`); audyt przed/po w `docs/sprints/14-batch-annotation/AUDYT.md`. Zbiór wymaga PONOWNEGO wygenerowania: poprzednie 549 klatek powstało starym pipeline'em (jedna baza AU na wideo, filtr `pitch`, bez pól `au_noise`/`procrustes_keypoints`) |
+| 15 | Manual Verification (webapp) | Webapp obsługuje wiele psów, eksport sesji niesie pola treku i `label_source=human_verified`. Zostaje: import istniejącego COCO do sesji i eksport CSV |
 | 16 | AU Neural Network (MLP 138→21 AU) | Planowane |
 | 17-18 | Dataset Finalization, Statistics & Reporting | Planowane |
