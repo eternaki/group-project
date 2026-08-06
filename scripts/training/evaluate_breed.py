@@ -15,7 +15,6 @@ Użycie:
 
 import argparse
 import json
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -242,7 +241,7 @@ def generate_report(
         breed_name = breeds.get(str(class_id), f"Class {class_id}")
         report += f"| {i} | {breed_name} | {acc * 100:.1f}% |\n"
 
-    report += f"""
+    report += """
 ---
 
 ## 3. Top 10 Najgorszych Ras

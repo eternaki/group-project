@@ -16,8 +16,7 @@ Użycie:
 import argparse
 import json
 import logging
-from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -400,7 +399,7 @@ def main():
     if args.report:
         print(merger.generate_report())
     else:
-        print(f"\n=== SCALANIE ZAKOŃCZONE ===")
+        print("\n=== SCALANIE ZAKOŃCZONE ===")
         print(f"Wejście:  {merger.stats.total_auto_annotations} anotacji")
         print(f"Korekty:  {merger.stats.total_corrections}")
         print(f"Wynik:    {merger.stats.final_annotations} anotacji")

@@ -23,8 +23,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
-
 # Konfiguracja logowania
 logging.basicConfig(
     level=logging.INFO,
@@ -249,7 +247,7 @@ class AgreementCalculator:
 
         # Per-class agreement
         for cls in self.classes:
-            cls_indices = [i for i, l in enumerate(labels1) if l == cls]
+            cls_indices = [i for i, lab in enumerate(labels1) if lab == cls]
             if cls_indices:
                 agreed = sum(1 for i in cls_indices if labels1[i] == labels2[i])
                 metrics.per_class_agreement[cls] = agreed / len(cls_indices)
@@ -425,7 +423,7 @@ class AgreementCalculator:
             lines.append(f"Fleiss' Kappa:         {metrics.fleiss_kappa:.4f}")
 
         lines.extend([
-            f"",
+            "",
             f"Łącznie porównań:      {metrics.total_comparisons}",
             f"Zgodnych:              {metrics.agreed_count}",
             "",
@@ -603,7 +601,7 @@ def main():
     if args.report:
         print(calculator.generate_report(metrics))
     else:
-        print(f"\n=== WYNIK ===")
+        print("\n=== WYNIK ===")
         print(f"Procent zgodności: {metrics.percent_agreement * 100:.2f}%")
         print(f"Cohen's Kappa:     {metrics.cohens_kappa:.4f}")
         print(f"Zapisano do: {args.output}")

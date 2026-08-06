@@ -44,6 +44,7 @@ breeds = [
 ]
 
 import os
+
 os.makedirs("data/tmpl", exist_ok=True)
 acc = np.zeros((NUM_KEYPOINTS, 2))
 accv = np.zeros(NUM_KEYPOINTS)

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import cv2
 
+from packages.data.coco import au_ratio
+
 d = json.load(open("data/annotations/annotations.json", encoding="utf-8"))
 img_rel = Path(d["images"][0]["file_name"])
 ann = d["annotations"][0]
@@ -30,11 +32,11 @@ label = f"{emo} ({conf:.2f}) | {breed}"
 cv2.rectangle(img, (x, y - 22), (x + max(190, 7 * len(label)), y), (0, 255, 0), -1)
 cv2.putText(img, label, (x + 3, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
-# top-5 AU wg |wartości|
+# top-5 AU wg |wartości| (obsługa obu formatów au_analysis)
 au = ann.get("au_analysis", {})
-top = sorted(au.items(), key=lambda kv: -abs(kv[1]))[:5]
+top = sorted(au.items(), key=lambda kv: -abs(au_ratio(kv[1])))[:5]
 for j, (name, val) in enumerate(top):
-    txt = f"{name}: {val:+.2f}"
+    txt = f"{name}: {au_ratio(val):+.2f}"
     cv2.putText(img, txt, (8, 22 + j * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 3, cv2.LINE_AA)
     cv2.putText(img, txt, (8, 22 + j * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
 
