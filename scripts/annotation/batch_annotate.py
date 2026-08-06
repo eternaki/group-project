@@ -20,6 +20,7 @@ import gc
 import json
 import logging
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -172,12 +173,15 @@ class BatchAnnotator:
         annotator.process_all()
     """
 
-    def __init__(self, config: BatchConfig) -> None:
+    def __init__(self, config: BatchConfig, resume: bool = False) -> None:
         """
         Inicjalizuje annotator.
 
         Args:
             config: Konfiguracja batch annotation
+            resume: Czy dokończyć poprzedni przebieg (wczytać zapisany postęp).
+                Domyślnie False — po zmianie pipeline'u chcemy zbioru od nowa,
+                a nie dopisania nowych anotacji do starych.
         """
         self.config = config
         self.progress = ProcessingProgress()
@@ -193,8 +197,25 @@ class BatchAnnotator:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         self.config.frames_dir.mkdir(parents=True, exist_ok=True)
 
-        # Wczytaj postęp jeśli istnieje
-        self._load_progress()
+        # Postęp wczytujemy TYLKO na wyraźne żądanie. Dotąd wznowienie było
+        # bezwarunkowe, a flaga --resume parsowana i nigdy nieczytana: po zmianie
+        # pipeline'u ponowny przebieg widział 1499 wideo jako „już przetworzone"
+        # i kończył się pustym zbiorem, nie mówiąc, dlaczego nic nie zrobił.
+        if resume:
+            self._load_progress()
+        elif self.config.progress_file.exists():
+            logger.warning(
+                f"Istnieje {self.config.progress_file} z {self._processed_count()} wideo. "
+                "Zaczynam OD NOWA (użyj --resume, żeby dokończyć poprzedni przebieg)."
+            )
+
+    def _processed_count(self) -> int:
+        """Ile wideo odnotowuje zapisany postęp (0, gdy pliku nie da się wczytać)."""
+        try:
+            with open(self.config.progress_file, encoding="utf-8") as f:
+                return len(json.load(f).get("processed_videos", []))
+        except (OSError, ValueError):
+            return 0
 
     def _load_progress(self) -> None:
         """Wczytuje postęp z pliku."""
@@ -859,6 +880,26 @@ class BatchAnnotator:
                 lines.append(f"  - {Path(error['video']).name}: {error['error'][:50]}")
             lines.append("")
 
+        if self.progress.rejected_tracks:
+            # Powody odrzuceń to mapa strat lejka: bez nich nie wiadomo, czy zbiór
+            # jest mały przez brak psów w kadrze, czy przez zbyt surowe progi.
+            reasons = Counter(
+                str(track["reason"]).split(":")[0]
+                for track in self.progress.rejected_tracks
+            )
+            dropped = sum(
+                int(track.get("frames_dropped_low_conf", 0))
+                for track in self.progress.rejected_tracks
+            )
+            lines.extend([
+                "POWODY ODRZUCENIA TREKÓW",
+                "-" * 40,
+            ])
+            for reason, count in reasons.most_common():
+                lines.append(f"  {count:4d} x {reason}")
+            lines.append(f"  klatki odsiane progiem pewności: {dropped}")
+            lines.append("")
+
         lines.append("=" * 60)
 
         return "\n".join(lines)
@@ -950,7 +991,11 @@ def main():
     )
 
     # Utwórz annotator
-    annotator = BatchAnnotator(config)
+    # --report i --dry-run tylko RAPORTUJĄ, więc zawsze czytają zapisany postęp;
+    # bez tego pokazywałyby zera zamiast stanu poprzedniego przebiegu.
+    annotator = BatchAnnotator(
+        config, resume=args.resume or args.report or args.dry_run
+    )
 
     # Tylko raport
     if args.report:
