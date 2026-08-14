@@ -81,3 +81,49 @@ class TestSamplingInterval:
         """Trzysekundowy klip mieści się w budżecie, więc nie ma co rozciągać."""
         interval = _annotator(fps=5.0, max_frames=50)._sampling_interval(VIDEO_FPS, 90)
         assert interval == 6
+
+
+class TestEffectiveFps:
+    """
+    Tempo, po którym pipeline przelicza SEKUNDY na pozycje w treku.
+
+    Zamówione `fps` bywa nieosiągalne. Podanie pipeline'owi tempa zamówionego
+    zamiast osiągniętego zawyża minimalny odstęp między peakami i tolerancję
+    przerwy w treku dokładnie tyle razy, ile wynosi rozciągnięcie odstępu —
+    czyli po cichu wycina peaki i skleja osobne pojawienia się psa.
+    """
+
+    def test_gdy_budzet_starcza_tempo_jest_zamowione(self, tmp_path, monkeypatch) -> None:
+        annotator = _annotator(fps=5.0, max_frames=120)
+        monkeypatch.setattr(
+            type(annotator), "_video_metadata", staticmethod(lambda _: (VIDEO_FPS, TOTAL_FRAMES_20S))
+        )
+        assert annotator.effective_fps(tmp_path / "x.mp4") == pytest.approx(5.0)
+
+    def test_gdy_budzet_rozciaga_odstep_tempo_spada(self, tmp_path, monkeypatch) -> None:
+        annotator = _annotator(fps=5.0, max_frames=50)
+        monkeypatch.setattr(
+            type(annotator), "_video_metadata", staticmethod(lambda _: (VIDEO_FPS, TOTAL_FRAMES_20S))
+        )
+        # 600 klatek / 50 = co 12. klatka z 30 kl./s daje 2.5 kl./s
+        assert annotator.effective_fps(tmp_path / "x.mp4") == pytest.approx(2.5)
+
+    def test_tempo_trafia_do_konfiguracji_wideo(self, tmp_path, monkeypatch) -> None:
+        """Bez tego progi czasowe pipeline'u liczą się po nieosiągniętym tempie."""
+        annotator = _annotator(fps=5.0, max_frames=50)
+        monkeypatch.setattr(
+            type(annotator), "_video_metadata", staticmethod(lambda _: (VIDEO_FPS, TOTAL_FRAMES_20S))
+        )
+        sampling = annotator.effective_fps(tmp_path / "x.mp4")
+        config = annotator._video_config(num_frames=50, sampling_fps=sampling)
+        assert config.fps == pytest.approx(2.5)
+
+    def test_odstep_peakow_liczy_sie_po_osiagnietym_tempie(self, tmp_path, monkeypatch) -> None:
+        annotator = _annotator(fps=5.0, max_frames=50)
+        monkeypatch.setattr(
+            type(annotator), "_video_metadata", staticmethod(lambda _: (VIDEO_FPS, TOTAL_FRAMES_20S))
+        )
+        sampling = annotator.effective_fps(tmp_path / "x.mp4")
+        config = annotator._video_config(num_frames=50, sampling_fps=sampling)
+        # 3 s przy 2.5 kl./s to 8 pozycji, a nie 15 jak przy zamówionych 5 kl./s
+        assert config.peak_separation_frames == round(config.min_peak_separation_s * 2.5)

@@ -367,12 +367,7 @@ class BatchAnnotator:
             logger.error(f"Nie można otworzyć wideo: {video_path}")
             return
 
-        video_fps = cap.get(cv2.CAP_PROP_FPS)
-
-        if video_fps <= 0:
-            video_fps = 30.0
-
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        video_fps, total_frames = self._video_metadata(video_path)
         frame_interval = self._sampling_interval(video_fps, total_frames)
 
         frame_count = 0
@@ -394,6 +389,44 @@ class BatchAnnotator:
 
         cap.release()
         logger.debug(f"Wyekstrahowano {extracted_count} klatek z {video_path.name}")
+
+    @staticmethod
+    def _video_metadata(video_path: Path) -> tuple[float, int]:
+        """
+        Odczytuje tempo i długość nagrania bez dekodowania klatek.
+
+        Args:
+            video_path: Ścieżka do pliku wideo
+
+        Returns:
+            Para (klatki na sekundę, liczba klatek); 30 kl./s gdy kontener
+            nie podaje tempa, 0 klatek gdy nie podaje długości
+        """
+        cap = cv2.VideoCapture(str(video_path))
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        return (video_fps if video_fps > 0 else 30.0), max(0, total_frames)
+
+    def effective_fps(self, video_path: Path) -> float:
+        """
+        Zwraca tempo, w jakim klatki NAPRAWDĘ trafiają do pipeline'u.
+
+        Zamówione `fps` bywa nieosiągalne: gdy próbkowanie w tym tempie nie
+        mieści się w budżecie klatek, odstęp rozciąga się na całe nagranie
+        i realne tempo spada. Pipeline przelicza po tym tempie SEKUNDY na
+        pozycje — minimalny odstęp między peakami i tolerancję przerwy
+        w treku — więc podanie mu tempa zamówionego zamiast osiągniętego
+        zawyża oba progi dokładnie tyle razy, ile wynosi rozciągnięcie.
+
+        Args:
+            video_path: Ścieżka do pliku wideo
+
+        Returns:
+            Osiągnięte tempo próbkowania w klatkach na sekundę
+        """
+        video_fps, total_frames = self._video_metadata(video_path)
+        return video_fps / self._sampling_interval(video_fps, total_frames)
 
     def _sampling_interval(self, video_fps: float, total_frames: int) -> int:
         """
@@ -502,7 +535,9 @@ class BatchAnnotator:
 
         # Konfiguracja powstaje poza try: zły próg to pomyłka wywołującego,
         # a nie powód do cichego pominięcia wideo.
-        video_config = self._video_config(len(context.frames))
+        video_config = self._video_config(
+            len(context.frames), self.effective_fps(video_path)
+        )
         try:
             dataset_result = self.pipeline.process_video_for_dataset(
                 context.frames, config=video_config
@@ -530,19 +565,22 @@ class BatchAnnotator:
 
         return stats
 
-    def _video_config(self, num_frames: int) -> VideoDatasetConfig:
+    def _video_config(self, num_frames: int, sampling_fps: float) -> VideoDatasetConfig:
         """
         Buduje konfigurację przetwarzania wideo z ustawień batcha.
 
         Args:
             num_frames: Liczba wyekstrahowanych klatek
+            sampling_fps: Tempo, w jakim klatki NAPRAWDĘ trafiły do pipeline'u.
+                To po nim przeliczają się sekundy na pozycje, więc musi być
+                tempo osiągnięte, a nie zamówione (`BatchConfig.fps`).
 
         Returns:
             Progi dla process_video_for_dataset()
         """
         return VideoDatasetConfig(
             num_peaks=min(self.config.num_peaks, num_frames),
-            fps=self.config.fps,
+            fps=sampling_fps,
             min_peak_separation_s=self.config.peak_min_separation_s,
             min_keypoint_conf=self.config.min_keypoint_conf,
             max_yaw_asymmetry=self.config.max_yaw_asymmetry,
