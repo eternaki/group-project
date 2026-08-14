@@ -67,14 +67,59 @@ function ruleSaysActive(peak: FrameAnnotation, code: string): boolean {
   return Boolean(peak.aus?.[code]?.is_active);
 }
 
+/** Zapas wokół boksu psa przy kadrowaniu — ułamek jego szerokości i wysokości */
+const CROP_PADDING = 0.18;
+
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Wylicza wycinek kadru pokazywany anotatorowi.
+ *
+ * Pełna klatka jest bezużyteczna do oceny AU: bramka dopuszcza mordy od 40 px
+ * szerokości, a klatka 1920 px pokazana w kolumnie szerokiej na 380 px kurczy
+ * je do ośmiu. Do tego na nagraniu bywa kilka psów i bez wycinka nie wiadomo,
+ * którego dotyczy anotacja.
+ */
+function cropRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
+  if (!natural || !frame.bbox) return null;
+  const [x, y, width, height] = frame.bbox;
+  const padX = width * CROP_PADDING;
+  const padY = height * CROP_PADDING;
+  const left = Math.max(0, x - padX);
+  const top = Math.max(0, y - padY);
+  return {
+    x: left,
+    y: top,
+    width: Math.min(natural.width - left, width + 2 * padX),
+    height: Math.min(natural.height - top, height + 2 * padY),
+  };
+}
+
 interface FrameViewProps {
   frame: FrameAnnotation;
   label: string;
   accent: string;
+  showFullFrame: boolean;
 }
 
-function FrameView({ frame, label, accent }: FrameViewProps) {
+function FrameView({ frame, label, accent, showFullFrame }: FrameViewProps) {
+  const [natural, setNatural] = useState<Rect | null>(null);
   const quality = frame.quality ?? {};
+  const crop = showFullFrame ? null : cropRect(frame, natural);
+
+  // Klatka i pies się zmieniły — poprzedni rozmiar naturalny już nie obowiązuje
+  useEffect(() => setNatural(null), [frame.image_url]);
+
+  const onLoad = (event: React.SyntheticEvent<HTMLImageElement>) => {
+    const image = event.currentTarget;
+    setNatural({ x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight });
+  };
+
   return (
     <div className="flex-1 min-w-0">
       <div className="flex items-baseline justify-between mb-1">
@@ -85,11 +130,27 @@ function FrameView({ frame, label, accent }: FrameViewProps) {
           </span>
         )}
       </div>
-      <img
-        src={frame.image_url}
-        alt={label}
-        className="w-full rounded-lg bg-gray-900 object-contain max-h-[46vh]"
-      />
+      <div
+        className="relative w-full overflow-hidden rounded-lg bg-gray-900"
+        style={crop ? { aspectRatio: `${crop.width} / ${crop.height}` } : undefined}
+      >
+        <img
+          src={frame.image_url}
+          alt={label}
+          onLoad={onLoad}
+          className={crop ? 'absolute' : 'w-full max-h-[46vh] object-contain'}
+          style={
+            crop && natural
+              ? {
+                  width: `${(100 * natural.width) / crop.width}%`,
+                  left: `${(-100 * crop.x) / crop.width}%`,
+                  top: `${(-100 * crop.y) / crop.height}%`,
+                  maxWidth: 'none',
+                }
+              : undefined
+          }
+        />
+      </div>
     </div>
   );
 }
@@ -162,6 +223,9 @@ export default function FastReview() {
   const [verifiedCount, setVerifiedCount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Anotator czasem potrzebuje kontekstu sceny — np. gdy trzeba rozstrzygnąć,
+  // czy pies reaguje na człowieka poza wycinkiem.
+  const [showFullFrame, setShowFullFrame] = useState(false);
 
   const current = pairs[position];
 
@@ -240,7 +304,10 @@ export default function FastReview() {
         toggle(VERIFIABLE_AU[digit].code, event.shiftKey ? 'not_observable' : 'active');
         return;
       }
-      if (event.key === 'Enter') {
+      if (event.key === 'f' || event.key === 'F') {
+        event.preventDefault();
+        setShowFullFrame((shown) => !shown);
+      } else if (event.key === 'Enter') {
         event.preventDefault();
         void commit();
       } else if (event.key === 'ArrowLeft') {
@@ -325,8 +392,18 @@ export default function FastReview() {
       </div>
 
       <div className="flex gap-4 mb-4">
-        <FrameView frame={current.neutral} label="Neutralna (baza AU)" accent="text-blue-600" />
-        <FrameView frame={current.peak} label="Szczytowa (oceniana)" accent="text-amber-600" />
+        <FrameView
+          frame={current.neutral}
+          label="Neutralna (baza AU)"
+          accent="text-blue-600"
+          showFullFrame={showFullFrame}
+        />
+        <FrameView
+          frame={current.peak}
+          label="Szczytowa (oceniana)"
+          accent="text-amber-600"
+          showFullFrame={showFullFrame}
+        />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
@@ -349,6 +426,8 @@ export default function FastReview() {
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">1–8</kbd> aktywne ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Shift+1–8</kbd> niewidoczne ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Enter</kbd> zapisz i dalej ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">F</kbd>{' '}
+          {showFullFrame ? 'wróć do kadru psa' : 'cała klatka'} ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">←→</kbd> nawigacja
         </span>
         <button
