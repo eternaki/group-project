@@ -18,7 +18,6 @@ import json
 import tempfile
 import uuid
 from dataclasses import asdict
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -27,6 +26,7 @@ from coco_import import (
     CocoImportError,
     build_session,
     load_coco,
+    resolve_import_path,
 )
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -215,17 +215,21 @@ async def import_coco(request: ImportCocoRequest):
     Bez tego wejścia weryfikacja zbioru policzonego wsadowo wymagałaby
     ponownego przepuszczenia tych samych nagrań przez pipeline.
 
+    Ścieżka przychodzi z przeglądarki, więc `resolve_import_path` przycina ją
+    do katalogu danych — inaczej endpoint czytałby dowolny plik z dysku serwera.
+
     Args:
-        request: Ścieżka do zbioru i opcjonalny limit par
+        request: Ścieżka do zbioru (względem katalogu danych) i limit par
 
     Returns:
         `{session_id, pairs, frames, source}`
 
     Raises:
-        HTTPException: 400, gdy zbiór nie przeszedł kuracji albo nie istnieje
+        HTTPException: 400, gdy ścieżka wychodzi poza katalog danych, zbiór nie
+            istnieje albo nie przeszedł kuracji
     """
-    path = Path(request.path)
     try:
+        path = resolve_import_path(request.path)
         coco = load_coco(path)
         session = build_session(
             coco=coco,

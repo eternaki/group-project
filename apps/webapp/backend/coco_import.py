@@ -14,6 +14,7 @@ weryfikacji, bo `track_id` z batcha jest unikalny tylko w obrębie nagrania
 """
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -37,8 +38,69 @@ _WINDOWS_SEPARATOR: str = "\\"
 _POSIX_SEPARATOR: str = "/"
 
 
+# Katalog, spod którego wolno importować zbiory. Ścieżka przychodzi z przeglądarki,
+# więc bez tego ograniczenia endpoint czytałby dowolny plik z dysku serwera.
+IMPORT_ROOT_ENV: str = "DOGFACS_IMPORT_ROOT"
+DEFAULT_IMPORT_ROOT: str = "data"
+
+# Zbiory to JSON i tylko JSON — rozszerzenie sprawdzamy, żeby ścieżka nie
+# posłużyła do wyciągnięcia czegokolwiek innego, co leży w katalogu danych.
+ALLOWED_SUFFIX: str = ".json"
+
+
 class CocoImportError(ValueError):
     """Wyjątek, gdy zbioru nie da się zaimportować jako sesji anotacji."""
+
+
+def import_root() -> Path:
+    """
+    Zwraca katalog, spod którego wolno importować zbiory.
+
+    Odczytywany przy każdym wywołaniu, a nie raz przy imporcie modułu, żeby
+    dało się go podmienić w testach i w uruchomieniu zespołowym.
+
+    Returns:
+        Bezwzględna ścieżka katalogu dozwolonych zbiorów
+    """
+    return Path(os.environ.get(IMPORT_ROOT_ENV, DEFAULT_IMPORT_ROOT)).resolve()
+
+
+def resolve_import_path(raw_path: str) -> Path:
+    """
+    Sprawdza ścieżkę podaną przez klienta i sprowadza ją do pliku pod korzeniem.
+
+    Ścieżka przychodzi z przeglądarki. Bez tego sprawdzenia `../../` albo
+    ścieżka bezwzględna pozwoliłyby wczytać dowolny plik z dysku serwera,
+    a treść błędu parsowania odesłałaby jego fragment klientowi.
+
+    Args:
+        raw_path: Ścieżka podana przez klienta, względna wobec korzenia importu
+
+    Returns:
+        Bezwzględna ścieżka pliku leżącego pod korzeniem importu
+
+    Raises:
+        CocoImportError: Gdy ścieżka jest bezwzględna, ucieka poza korzeń,
+            ma złe rozszerzenie albo nie wskazuje pliku
+    """
+    root = import_root()
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        # Ścieżka bezwzględna bywa poprawna (zespół trzyma zbiór gdzie indziej),
+        # ale musi mimo wszystko leżeć pod korzeniem importu.
+        resolved = candidate.resolve()
+    else:
+        resolved = (root / candidate).resolve()
+
+    if root != resolved and root not in resolved.parents:
+        raise CocoImportError(
+            f"Zbiór musi leżeć w katalogu {root.name}/ — podana ścieżka wychodzi poza niego"
+        )
+    if resolved.suffix.lower() != ALLOWED_SUFFIX:
+        raise CocoImportError(f"Zbiór musi być plikiem {ALLOWED_SUFFIX}")
+    if not resolved.is_file():
+        raise CocoImportError("Nie znaleziono zbioru pod podaną ścieżką")
+    return resolved
 
 
 def _image_url(file_name: str) -> str:
@@ -215,12 +277,14 @@ def load_coco(path: Path) -> dict:
         Słownik COCO
 
     Raises:
-        CocoImportError: Gdy pliku nie ma albo nie jest poprawnym JSON-em
+        CocoImportError: Gdy pliku nie ma albo nie jest poprawnym JSON-em.
+            Komunikat nie niesie ścieżki ani treści pliku — poszedłby wprost
+            do przeglądarki i wyciekłby układ dysku serwera.
     """
     if not path.exists():
-        raise CocoImportError(f"Nie znaleziono zbioru: {path}")
+        raise CocoImportError("Nie znaleziono zbioru pod podaną ścieżką")
     try:
         with open(path, encoding="utf-8") as handle:
             return json.load(handle)
     except json.JSONDecodeError as error:
-        raise CocoImportError(f"Zbiór {path} nie jest poprawnym JSON-em: {error}") from error
+        raise CocoImportError("Zbiór nie jest poprawnym plikiem JSON") from error
