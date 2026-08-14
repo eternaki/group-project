@@ -107,7 +107,14 @@ MIN_PEAK_CANDIDATES: int = 4
 # inne peaki i inne klatki niż te, które trafiły do zbioru, i weryfikuje materiał,
 # którego w zbiorze nie ma.
 DATASET_MIN_KEYPOINT_CONF: float = 0.3
-DATASET_PEAK_SEPARATION_S: float = 3.0
+
+# Minimalny odstęp między peakami [s]. Musi być mały wobec DŁUGOŚCI TREKU, nie
+# wobec długości nagrania — a treki na materiale stockowym są krótkie: zmierzona
+# mediana to 10 pozycji, czyli około 3.3 s. Przy poprzednich 3.0 s na trek
+# mieścił się dokładnie JEDEN peak (zmierzony sufit z separacji: mediana 1.0,
+# realnie wybieranych 0.90 peaka na trek wobec 2.05 w poprzednim zbiorze).
+# Próg TFM nie ma z tym nic wspólnego — nie przechodzi go tylko 5% klatek.
+DATASET_PEAK_SEPARATION_S: float = 1.0
 # Promień okna wokół klatki neutralnej, z którego liczona jest baza median.
 # UWAGA: to promień w POZYCJACH treku, nie w klatkach wideo — na treku dziurawym
 # (pies wychodzi z kadru) okno ±2 pozycje może objąć klatki oddalone o sekundy.
