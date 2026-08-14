@@ -26,8 +26,12 @@ import {
 } from '../types';
 import { exportSessionCOCO, getSession, importCoco, patchAUVerdicts } from '../utils/api';
 
-/** Domyślna ścieżka zbioru po kuracji — widziana przez backend */
-const DEFAULT_DATASET_PATH = 'data/dataset_v2/curated.json';
+/**
+ * Domyślna ścieżka zbioru po kuracji — WZGLĘDEM katalogu danych backendu
+ * (`DOGFACS_IMPORT_ROOT`, domyślnie `data/`), a nie względem korzenia repo.
+ * Backend nie przyjmie ścieżki wychodzącej poza ten katalog.
+ */
+const DEFAULT_DATASET_PATH = 'dataset_v2/curated.json';
 
 /** Klawisze przypisane do AU: pozycja w VERIFIABLE_AU → cyfra */
 const AU_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
@@ -260,7 +264,8 @@ export default function FastReview() {
       <div className="max-w-xl mx-auto mt-16 p-6 bg-white rounded-xl border border-gray-200">
         <h2 className="text-lg font-bold text-gray-800">Weryfikacja AU — start</h2>
         <p className="text-sm text-gray-500 mt-1">
-          Ścieżka do zbioru po kuracji (<code>curate_for_review.py</code>), widziana przez backend.
+          Ścieżka do zbioru po kuracji (<code>curate_for_review.py</code>), względem katalogu
+          danych backendu.
         </p>
         <input
           value={datasetPath}

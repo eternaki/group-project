@@ -70,8 +70,14 @@ class BatchConfig:
     mean_shape_file: Path = field(default_factory=lambda: Path("models/dogflw_mean_shape.json"))
 
     # Parametry ekstrakcji
-    fps: float = 1.0  # klatki na sekundę do ekstrakcji
-    max_frames_per_video: int = 30  # maksymalna liczba klatek z wideo
+    #
+    # 1 kl./s dawało z 20-sekundowego nagrania 20 kandydatów, z których po
+    # trackingu i odsiewie zostawały median 3 peaki. Chwila, w której pies
+    # patrzy w obiektyw, trwa sekundę-dwie — przy takim próbkowaniu trafialiśmy
+    # w nią przypadkiem. Gęstsze próbkowanie zwiększa szansę złapania kadru
+    # nadającego się do pomiaru; bramka jakości i tak odsieje resztę.
+    fps: float = 5.0  # klatki na sekundę do ekstrakcji
+    max_frames_per_video: int = 100  # maksymalna liczba klatek z wideo
 
     # Parametry generowania datasetu (peak frames + emocje/AU)
     num_peaks: int = 10  # liczba peak frames na wideo do anotacji emocji
@@ -88,6 +94,40 @@ class BatchConfig:
     # Filtrowanie jakości
     min_confidence: float = 0.3  # minimalna pewność detekcji
     flag_low_confidence: float = 0.5  # próg dla flagowania niskiej jakości
+
+    # Podział pracy na niezależne procesy.
+    #
+    # Poprzedni przebieg zajął 9 h 46 min na 1496 nagraniach przy 1 kl./s.
+    # Przy 5 kl./s sekwencyjnie byłoby to kilkadziesiąt godzin, czyli więcej,
+    # niż zostało do terminu. Zamiast przerabiać działający pipeline na pracę
+    # współbieżną (i ryzykować cichym rozjechaniem stanu), dzielimy LISTĘ WIDEO
+    # na rozłączne części: każdy proces ma własny plik COCO i własny postęp,
+    # a wyniki scala `merge_annotations.py`.
+    shard: int = 0  # numer części (0-indeksowany)
+    shards: int = 1  # na ile części dzielimy listę nagrań
+
+    def __post_init__(self) -> None:
+        """
+        Rozdziela pliki wyjściowe części, żeby procesy nie nadpisywały się nawzajem.
+
+        Katalog klatek zostaje wspólny — nazwy plików niosą identyfikator wideo,
+        więc kolizji tam nie ma, a kopiowanie klatek byłoby marnotrawstwem.
+
+        Raises:
+            ValueError: Gdy numer części nie mieści się w liczbie części
+        """
+        if self.shards < 1:
+            raise ValueError(f"shards musi być dodatnie, otrzymano {self.shards}")
+        if not 0 <= self.shard < self.shards:
+            raise ValueError(
+                f"shard musi być w [0, {self.shards}), otrzymano {self.shard}"
+            )
+        if self.shards == 1:
+            return
+
+        suffix = f"shard_{self.shard}"
+        self.output_dir = self.output_dir / suffix
+        self.progress_file = self.output_dir / self.progress_file.name
 
     # Rozszerzenia wideo
     video_extensions: list[str] = field(
@@ -280,10 +320,14 @@ class BatchAnnotator:
 
     def get_video_files(self) -> list[Path]:
         """
-        Znajduje wszystkie pliki wideo.
+        Znajduje pliki wideo należące do TEJ części pracy.
+
+        Podział bierze co n-te nagranie z posortowanej listy, a nie kolejne
+        bloki: nagrania z jednego katalogu bywają podobnej długości, więc
+        podział blokami dałby częściom bardzo różny czas pracy.
 
         Returns:
-            Lista ścieżek do plików wideo
+            Lista ścieżek do plików wideo tej części
         """
         video_files = []
 
@@ -293,6 +337,9 @@ class BatchAnnotator:
 
         # Sortuj dla spójności
         video_files = sorted(set(video_files))
+
+        if self.config.shards > 1:
+            video_files = video_files[self.config.shard :: self.config.shards]
 
         return video_files
 
@@ -932,14 +979,26 @@ def main():
     parser.add_argument(
         "--fps",
         type=float,
-        default=1.0,
-        help="Klatki na sekundę do ekstrakcji (domyślnie: 1.0)",
+        default=BatchConfig.fps,
+        help=f"Klatki na sekundę do ekstrakcji (domyślnie: {BatchConfig.fps})",
     )
     parser.add_argument(
         "--max-frames",
         type=int,
-        default=30,
-        help="Maksymalna liczba klatek z wideo (domyślnie: 30)",
+        default=BatchConfig.max_frames_per_video,
+        help=f"Maksymalna liczba klatek z wideo (domyślnie: {BatchConfig.max_frames_per_video})",
+    )
+    parser.add_argument(
+        "--shards",
+        type=int,
+        default=1,
+        help="Na ile niezależnych części podzielić listę nagrań (domyślnie: 1)",
+    )
+    parser.add_argument(
+        "--shard",
+        type=int,
+        default=0,
+        help="Numer części do przetworzenia, 0-indeksowany (domyślnie: 0)",
     )
     parser.add_argument(
         "--batch-size",
@@ -988,6 +1047,8 @@ def main():
         batch_size=args.batch_size,
         save_interval=args.save_interval,
         device=args.device,
+        shard=args.shard,
+        shards=args.shards,
     )
 
     # Utwórz annotator

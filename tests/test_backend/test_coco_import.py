@@ -16,7 +16,13 @@ from pathlib import Path
 
 import httpx
 import pytest
-from coco_import import CocoImportError, build_session, load_coco
+from coco_import import (
+    IMPORT_ROOT_ENV,
+    CocoImportError,
+    build_session,
+    load_coco,
+    resolve_import_path,
+)
 from fastapi import FastAPI
 from session_store import (
     ANNOTATION_STATUS_AUTO,
@@ -175,6 +181,63 @@ class TestLoadCoco:
         with pytest.raises(CocoImportError, match="JSON"):
             load_coco(path)
 
+    def test_blad_nie_wynosi_sciezki_do_klienta(self, tmp_path: Path) -> None:
+        """Komunikat jedzie wprost do przeglądarki — nie może nieść układu dysku."""
+        secret = tmp_path / "tajny_katalog" / "zly.json"
+        secret.parent.mkdir()
+        secret.write_text("{nie json", encoding="utf-8")
+        with pytest.raises(CocoImportError) as caught:
+            load_coco(secret)
+        assert "tajny_katalog" not in str(caught.value)
+
+
+class TestResolveImportPath:
+    """
+    Przycięcie ścieżki od klienta do katalogu danych.
+
+    Ścieżka przychodzi z przeglądarki, więc bez tego endpoint importu czytałby
+    dowolny plik z dysku serwera.
+    """
+
+    @pytest.fixture
+    def root(self, tmp_path: Path, monkeypatch) -> Path:
+        """Katalog danych z jednym poprawnym zbiorem w środku."""
+        data_root = tmp_path / "data"
+        (data_root / "dataset_v2").mkdir(parents=True)
+        (data_root / "dataset_v2" / "curated.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv(IMPORT_ROOT_ENV, str(data_root))
+        return data_root
+
+    def test_sciezka_wzgledna_pod_korzeniem_przechodzi(self, root: Path) -> None:
+        resolved = resolve_import_path("dataset_v2/curated.json")
+        assert resolved == (root / "dataset_v2" / "curated.json").resolve()
+
+    def test_wyjscie_w_gore_odrzucone(self, root: Path, tmp_path: Path) -> None:
+        (tmp_path / "sekret.json").write_text("{}", encoding="utf-8")
+        with pytest.raises(CocoImportError, match="wychodzi poza"):
+            resolve_import_path("../sekret.json")
+
+    def test_sciezka_bezwzgledna_poza_korzeniem_odrzucona(
+        self, root: Path, tmp_path: Path
+    ) -> None:
+        outside = tmp_path / "sekret.json"
+        outside.write_text("{}", encoding="utf-8")
+        with pytest.raises(CocoImportError, match="wychodzi poza"):
+            resolve_import_path(str(outside))
+
+    def test_sciezka_bezwzgledna_pod_korzeniem_przechodzi(self, root: Path) -> None:
+        inside = root / "dataset_v2" / "curated.json"
+        assert resolve_import_path(str(inside)) == inside.resolve()
+
+    def test_inne_rozszerzenie_odrzucone(self, root: Path) -> None:
+        (root / "klucz.txt").write_text("sekret", encoding="utf-8")
+        with pytest.raises(CocoImportError, match="json"):
+            resolve_import_path("klucz.txt")
+
+    def test_nieistniejacy_plik_odrzucony(self, root: Path) -> None:
+        with pytest.raises(CocoImportError, match="Nie znaleziono"):
+            resolve_import_path("dataset_v2/nie_ma.json")
+
 
 # =============================================================================
 # Testy API — import i werdykty
@@ -207,8 +270,9 @@ async def client(app: FastAPI):
 
 
 @pytest.fixture
-def curated_path(tmp_path: Path) -> Path:
-    """Plik zbioru po kuracji na dysku."""
+def curated_path(tmp_path: Path, monkeypatch) -> Path:
+    """Plik zbioru po kuracji, leżący pod korzeniem importu."""
+    monkeypatch.setenv(IMPORT_ROOT_ENV, str(tmp_path))
     path = tmp_path / "curated.json"
     path.write_text(json.dumps(make_curated_coco(2)), encoding="utf-8")
     return path
@@ -236,9 +300,20 @@ class TestImportCocoEndpoint:
         assert resp.status_code == 200
         assert len(resp.json()["frames"]) == 4
 
-    async def test_brak_pliku_daje_400(self, client, tmp_path: Path) -> None:
+    async def test_brak_pliku_daje_400(self, client, curated_path: Path) -> None:
         resp = await client.post(
-            "/api/sessions/import_coco", json={"path": str(tmp_path / "brak.json")}
+            "/api/sessions/import_coco", json={"path": "brak.json"}
+        )
+        assert resp.status_code == 400
+
+    async def test_wyjscie_poza_katalog_danych_daje_400(
+        self, client, curated_path: Path, tmp_path: Path
+    ) -> None:
+        """Ścieżka od klienta nie może sięgnąć poza katalog danych."""
+        outside = tmp_path.parent / "sekret.json"
+        outside.write_text("{}", encoding="utf-8")
+        resp = await client.post(
+            "/api/sessions/import_coco", json={"path": "../sekret.json"}
         )
         assert resp.status_code == 400
 

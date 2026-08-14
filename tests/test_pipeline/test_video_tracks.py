@@ -25,12 +25,17 @@ from packages.pipeline.inference import (
     VideoDatasetConfig,
 )
 from packages.pipeline.landmark_smoothing import KeypointSmoother
+from packages.pipeline.quality_gate import QualityThresholds
 from packages.pipeline.track_processing import (
     NEUTRAL_SOURCE_AUTO,
     NEUTRAL_SOURCE_MANUAL,
     TrackQuality,
 )
 from tests.test_pipeline.kp_fixtures import make_frontal_kp
+
+# Bramka jakości otwarta na oścież — do testów, które sprawdzają INNY próg
+# i nie chcą, żeby odsiew kadru zamazał badany efekt.
+_OPEN_GATE = QualityThresholds(max_asymmetry=1.0, max_weak_ratio=1.0, min_face_width=0.0)
 
 # Psy w kadrze: lewy mniejszy, prawy większy (różny rozmiar cropu = różna geometria
 # mordy w atrapie modelu keypoints — patrz `_FakeKeypointsModel`)
@@ -346,7 +351,13 @@ class TestProgiDocierajaDoDecyzji:
         assert peaks(0.2) > peaks(1.0)
 
     def test_prog_obrotu_glowy_dociera_do_wyboru_peakow(self) -> None:
-        """Nos przesunięty w bok = morda w profilu; przy domyślnym progu odpada."""
+        """
+        Nos przesunięty w bok = morda w profilu; przy domyślnych progach odpada.
+
+        Obrócony kadr zatrzymują teraz DWA niezależne progi: poza głowy
+        (`max_yaw_asymmetry`) i bramka jakości kadru (`frame_quality`).
+        Poluzowanie jednego nie wystarcza — dlatego wariant „loose" luzuje oba.
+        """
         turned = {"nose_shift": 60.0}
 
         strict = _run(_pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}, **turned), min_peak_separation_s=0.2)
@@ -354,10 +365,33 @@ class TestProgiDocierajaDoDecyzji:
             _pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}, **turned),
             min_peak_separation_s=0.2,
             max_yaw_asymmetry=0.5,
+            frame_quality=_OPEN_GATE,
         )
 
         assert strict["tracks"][0].peak_indices == []
         assert loose["tracks"][0].peak_indices
+
+    def test_bramka_jakosci_nie_zeruje_treku_nagranego_w_zlych_warunkach(self) -> None:
+        """
+        Bramka przy WYBORZE peaków jest preferencją, nie wetem.
+
+        Rozdział jest celowy. Selektor pyta „które kadry TEGO treku nadają się
+        najlepiej" i musi coś zwrócić — trek nagrany gorzej ma dawać gorsze
+        kadry, a nie zero kadrów. Weto należy do kuracji zbioru, która zna próg
+        „człowiek to zweryfikuje" (`packages.pipeline.quality_gate`).
+
+        Bez tego ustępstwa na materiale stockowym wychodziło zero peaków: sam
+        próg rozmiaru mordy odrzucał 67 klatek na 100, bo mediana szerokości
+        mordy w tym materiale to 26 px.
+        """
+        turned = {"nose_shift": 60.0}
+        result = _run(
+            _pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}, **turned),
+            min_peak_separation_s=0.2,
+            # Próg pozy głowy poluzowany — zostaje sama bramka jakości kadru
+            max_yaw_asymmetry=0.5,
+        )
+        assert result["tracks"][0].peak_indices
 
     def test_prog_przechylenia_glowy_dociera_do_wyboru_peakow(self) -> None:
         tilted = {"eye_tilt": 60.0}

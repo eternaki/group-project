@@ -22,12 +22,17 @@ liczy się względem klatki neutralnej — zepsuta neutralna psuje każdy pomiar
 w całym treku.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
 from packages.data.schemas import KP, NUM_KEYPOINTS
+
+# Keypoints przychodzą raz jako lista COCO, raz jako tablica z treku — bramka
+# przyjmuje jedno i drugie, żeby nie mnożyć konwersji po stronie wywołań.
+KeypointsInput = Union[Sequence[float], np.ndarray]
 
 # Poniżej tej pewności keypoint uznajemy za niewiarygodny. Próg zgodny
 # z `_count_visible_keypoints` w eksporcie webappu byłby za luźny (0.3) —
@@ -133,7 +138,7 @@ class PairQuality:
     reasons: tuple[str, ...]
 
 
-def split_keypoints(keypoints: list[float]) -> tuple[np.ndarray, np.ndarray]:
+def split_keypoints(keypoints: KeypointsInput) -> tuple[np.ndarray, np.ndarray]:
     """
     Rozdziela płaską listę COCO na współrzędne i pewności.
 
@@ -251,7 +256,7 @@ def face_width(coords: np.ndarray) -> float:
 
 
 def assess_frame(
-    keypoints: Optional[list[float]],
+    keypoints: Optional[KeypointsInput],
     thresholds: Optional[QualityThresholds] = None,
 ) -> FrameQuality:
     """
@@ -297,8 +302,8 @@ def assess_frame(
 
 
 def assess_pair(
-    peak_keypoints: Optional[list[float]],
-    neutral_keypoints: Optional[list[float]],
+    peak_keypoints: Optional[KeypointsInput],
+    neutral_keypoints: Optional[KeypointsInput],
     thresholds: Optional[QualityThresholds] = None,
 ) -> PairQuality:
     """

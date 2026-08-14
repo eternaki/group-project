@@ -120,6 +120,7 @@ class PeakFrameSelector:
         delta_aus_list: list[dict[str, DeltaActionUnit]],
         head_poses: Optional[list[HeadPose]] = None,
         num_peaks: int = 10,
+        allowed_positions: Optional[set[int]] = None,
     ) -> list[int]:
         """
         Select peak expression frames.
@@ -131,6 +132,11 @@ class PeakFrameSelector:
             delta_aus_list: List of delta AU dictionaries for each frame
             head_poses: Optional list of HeadPose objects
             num_peaks: Number of peak frames to select
+            allowed_positions: Pozycje, spośród których wolno wybierać. None
+                znaczy „wszystkie". Ograniczenie podaje się TU, a nie przez
+                skrócenie list wejściowych: separacja liczona jest w pozycjach,
+                więc na skróconej liście odpowiadałaby wielokrotnie dłuższemu
+                odstępowi w nagraniu i wycinała prawie wszystkie szczyty.
 
         Returns:
             Wybrane pozycje, od najwyższego TFM. Może być ich MNIEJ niż `num_peaks`
@@ -161,6 +167,8 @@ class PeakFrameSelector:
         tfm_scores: list[tuple[int, float]] = []
         for i, delta_aus in enumerate(delta_aus_list):
             if i == neutral_idx or delta_aus is None:
+                continue
+            if allowed_positions is not None and i not in allowed_positions:
                 continue
             frame_i = frames[i] if i < len(frames) else None
             if not self._is_valid_peak(keypoints_list[i], head_poses[i], frame_i):
