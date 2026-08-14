@@ -116,6 +116,35 @@ export const AU_NAMES: Record<string, string> = {
   EAD105: 'Uszy na boki',
 };
 
+/**
+ * Werdykt człowieka o pojedynczym AU.
+ *
+ * `not_observable` NIE ZNACZY „nieaktywny": ucho schowane za głową to brak
+ * wiedzy, a nie brak ruchu. Wpisanie tam zera nauczyłoby sieć, że niewidoczne
+ * znaczy spoczynkowe — dlatego stany są trzy, a nie dwa.
+ */
+export type AUVerdict = 'active' | 'inactive' | 'not_observable';
+
+/**
+ * AU brane do weryfikacji ręcznej — podzbiór 21, który człowiek jest w stanie
+ * ocenić na stop-klatce.
+ *
+ * Pozostałe AU zostają w wyjściu pipeline'u (wymóg zadania), ale bez etykiety
+ * człowieka: część z nich to RUCHY (oblizywanie nosa, mruganie), których na
+ * pojedynczej klatce nie da się orzec, a część wymaga zbliżenia, jakiego na
+ * materiale stockowym nie ma. Metryka liczy się tylko tam, gdzie jest GT.
+ */
+export const VERIFIABLE_AU: { code: string; hint: string }[] = [
+  { code: 'AU25',   hint: 'wargi rozchylone, widać zęby lub szparę' },
+  { code: 'AU26',   hint: 'żuchwa opuszczona, pysk otwarty' },
+  { code: 'AU27',   hint: 'pysk otwarty szeroko (ziewanie, dyszenie)' },
+  { code: 'AD19',   hint: 'język widoczny poza wargami' },
+  { code: 'EAD103', hint: 'uszy przyciśnięte do głowy' },
+  { code: 'AU143',  hint: 'powieka napięta, oko zmrużone' },
+  { code: 'AU101',  hint: 'brew uniesiona, fałda nad okiem' },
+  { code: 'AU12',   hint: 'kąciki ust cofnięte do tyłu' },
+];
+
 /** Grupy AU do wyświetlania w panelu */
 export const AU_GROUPS: { label: string; codes: string[] }[] = [
   {
@@ -210,6 +239,23 @@ export interface FrameAnnotation {
   breed: string | null;
   breed_confidence: number;
   tfm_score: number;
+  /** Werdykty człowieka; brak klucza = jeszcze nieoceniony (NIE „nieaktywny") */
+  au_verdicts?: Record<string, AUVerdict>;
+  frame_role?: 'neutral' | 'peak' | null;
+  quality?: { asymmetry?: number; weak_keypoint_ratio?: number; face_width_px?: number };
+  review_order?: number | null;
+  track_id?: number | null;
+}
+
+/** Trek jednego psa (odpowiednik DogTrack z backend session_store.py) */
+export interface DogTrack {
+  track_id: number;
+  neutral_frame_idx: number;
+  neutral_keypoints: number[] | null;
+  neutral_source: string;
+  peak_frame_indices: number[];
+  au_noise: Record<string, number>;
+  au_sample_count: Record<string, number>;
 }
 
 /** Dane sesji (odpowiednik SessionData z backend session_store.py) */
@@ -221,6 +267,7 @@ export interface SessionData {
   neutral_frame_idx: number;
   neutral_keypoints: number[] | null;
   frames: FrameAnnotation[];
+  dogs?: DogTrack[];
 }
 
 // =============================================================================

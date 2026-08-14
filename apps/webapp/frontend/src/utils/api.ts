@@ -5,6 +5,7 @@
 import axios from 'axios';
 import { saveAs } from 'file-saver';
 import type {
+  AUVerdict,
   DeltaActionUnit,
   ExportCOCORequest,
   ProcessVideoOptions,
@@ -62,6 +63,47 @@ export async function healthCheck(): Promise<{ status: string; pipeline_loaded: 
 export async function getSession(sessionId: string): Promise<SessionData> {
   const response = await axios.get<SessionData>(`${API_BASE}/sessions/${sessionId}`);
   return response.data;
+}
+
+/** Odpowiedź importu zbioru COCO do sesji weryfikacji. */
+export interface ImportCocoResponse {
+  session_id: string;
+  pairs: number;
+  frames: number;
+  source: string;
+}
+
+/**
+ * Tworzy sesję weryfikacji ze zbioru COCO po kuracji.
+ *
+ * @param path Ścieżka do pliku po `curate_for_review.py` (widziana przez backend)
+ * @param limit Najwyżej tyle par; pominięty = wszystkie
+ */
+export async function importCoco(path: string, limit?: number): Promise<ImportCocoResponse> {
+  const response = await axios.post<ImportCocoResponse>(
+    `${API_BASE}/sessions/import_coco`,
+    { path, limit: limit ?? null }
+  );
+  return response.data;
+}
+
+/**
+ * Zapisuje werdykty człowieka o AU danej klatki.
+ *
+ * Werdykty DOPISUJĄ się do już zapisanych — anotator ocenia AU po kolei
+ * i nie powinien tracić wcześniejszych decyzji.
+ */
+export async function patchAUVerdicts(
+  sessionId: string,
+  frameIdx: number,
+  trackId: number,
+  verdicts: Record<string, AUVerdict>,
+  markVerified: boolean
+): Promise<void> {
+  await axios.patch(
+    `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/au_verdicts?track_id=${trackId}`,
+    { verdicts, mark_verified: markVerified }
+  );
 }
 
 /** Aktualizuje keypoints klatki. */

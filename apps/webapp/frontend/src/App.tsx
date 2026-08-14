@@ -2,31 +2,63 @@
  * Main App component dla DogFACS Dataset Generator.
  */
 
+import { useState } from 'react';
 import VideoUpload from './components/VideoUpload';
 import Timeline from './components/Timeline';
 import PeakFramesGrid from './components/PeakFramesGrid';
 import ExportPanel from './components/ExportPanel';
+import FastReview from './components/FastReview';
 import useStore from './store/useStore';
+
+/**
+ * Dwa tryby pracy narzędzia.
+ *
+ * `review` to ścieżka zbierania zbioru: gotowe pary z batcha idą pod ręce
+ * anotatora bez ponownego przeliczania wideo. `video` to stara ścieżka —
+ * wgraj nagranie i przepuść przez pipeline.
+ */
+type Mode = 'review' | 'video';
 
 export default function App() {
   const { error, videoData } = useStore();
+  const [mode, setMode] = useState<Mode>('review');
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <header className="bg-primary-700 text-white shadow-lg">
-        <div className="container mx-auto px-4 py-6">
-          <h1 className="text-3xl font-bold">
-            🐕 DogFACS Dataset Generator
-          </h1>
-          <p className="text-primary-100 mt-1">
-Narzędzie do anotacji emocji psów oparte na regułach (rule-based)
-          </p>
+        <div className="container mx-auto px-4 py-6 flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold">
+              🐕 DogFACS Dataset Generator
+            </h1>
+            <p className="text-primary-100 mt-1">
+              Narzędzie do anotacji emocji psów oparte na regułach (rule-based)
+            </p>
+          </div>
+          <nav className="flex gap-1 bg-primary-800/40 p-1 rounded-lg shrink-0">
+            {([
+              ['review', 'Weryfikacja AU'],
+              ['video', 'Przetwarzanie wideo'],
+            ] as [Mode, string][]).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setMode(value)}
+                className={`px-3 py-1.5 rounded-md text-sm font-semibold transition-colors ${
+                  mode === value ? 'bg-white text-primary-800' : 'text-primary-100 hover:bg-white/10'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
         </div>
       </header>
 
+      {mode === 'review' && <FastReview />}
+
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-8">
+      <main className={`container mx-auto px-4 py-8 ${mode === 'review' ? 'hidden' : ''}`}>
         {/* Error Message */}
         {error && (
           <div className="mb-6 bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded">
