@@ -44,6 +44,8 @@ kadru samego w sobie — pytaj, *co się zmieniło* względem lewego.
 | `1`–`8` | oznacz AU jako **aktywne** (drugie naciśnięcie cofa) |
 | `Shift`+`1`–`8` | oznacz AU jako **niewidoczne** |
 | `Enter` | zapisz parę i przejdź dalej |
+| `X` | **kadr się nie nadaje** — odrzuć i przejdź dalej |
+| `F` | pokaż całą klatkę (domyślnie widać wycinek z psem) |
 | `←` `→` | nawigacja bez zapisu |
 | `Spacja` | pomiń parę |
 
@@ -76,6 +78,26 @@ stockowym nie ma (marszczenie nosa, ruchy pojedynczej wargi). Część to
 jednej klatce nie da się ich odróżnić od zwykłego zamkniętego oka czy
 wysuniętego języka. Wpisanie tam zgadywanki byłoby gorsze niż brak etykiety.
 
+## Klawisz `X` — kadr się nie nadaje
+
+**Spodziewaj się, że odrzucisz mniej więcej co drugą parę. To normalne i tak ma być.**
+
+Automat nie potrafi odróżnić psa patrzącego w obiektyw od psa nurkującego nosem
+w trawę. Miara, którą się posługuje, sprawdza symetrię lewo-prawo i na pochylenie
+głowy jest ślepa z definicji — a pies wąchający ziemię to najczęstsze ujęcie
+w tym materiale. Sprawdzaliśmy też inne miary, żadna tego nie rozstrzyga.
+
+Dlatego progi są celowo luźne, a prawdziwym filtrem jesteś Ty. Naciśnij `X`, gdy:
+
+- głowa jest opuszczona i nie widać mordy z przodu
+- pies jest odwrócony albo widać go z tyłu
+- kadr jest tak rozmyty, że nie da się rozpoznać ułożenia warg i powiek
+- punkty kluczowe leżą ewidentnie nie na mordzie (na grzbiecie, na łapie)
+
+Odrzucenie **nie jest stratą** — zapisuje się w zbiorze jako `usable: false`
+i będzie danymi uczącymi dla automatycznego filtra jakości. Sekunda Twojej
+pracy jest tu warta więcej niż dowolny próg, który umiemy policzyć.
+
 ## `niewidoczne` to nie `nieaktywne`
 
 Najważniejsza zasada całej pracy.
@@ -97,7 +119,7 @@ zgadywanych.
 - **Nie poprawiasz rasy.** Nie wpływa na AU, a klasyfikator na tym materiale
   ma medianę pewności 0.33 — poprawianie go zajęłoby więcej czasu niż daje.
 - **Nie poprawiasz keypoints** w tym trybie. Jeśli punkty leżą ewidentnie nie na
-  mordzie, pomiń parę spacją.
+  mordzie, odrzuć parę klawiszem `X`.
 
 ## Podpowiedź „reguła: tak"
 
