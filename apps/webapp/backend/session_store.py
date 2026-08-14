@@ -99,6 +99,12 @@ class FrameAnnotation:
     frame_role: Optional[str] = None
     quality: dict = field(default_factory=dict)
     review_order: Optional[int] = None
+    # Czy człowiek uznał kadr za nadający się do kodowania AU. Miary geometryczne
+    # tego nie rozstrzygają: przegląd kadrów pokazał, że nawet przy najniższej
+    # asymetrii połowa ujęć to psy z głową w dół albo odwrócone, bo asymetria
+    # jest miarą lewo-prawo i na pochylenie głowy jest z definicji ślepa.
+    # Odrzucenie ręczne zajmuje sekundę i jest samo w sobie etykietą.
+    usable: bool = True
 
 
 @dataclass

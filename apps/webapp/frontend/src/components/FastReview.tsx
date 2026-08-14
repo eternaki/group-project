@@ -221,6 +221,7 @@ export default function FastReview() {
   const [position, setPosition] = useState(0);
   const [verdicts, setVerdicts] = useState<Record<string, AUVerdict>>({});
   const [verifiedCount, setVerifiedCount] = useState(0);
+  const [rejectedCount, setRejectedCount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Anotator czasem potrzebuje kontekstu sceny — np. gdy trzeba rozstrzygnąć,
@@ -273,26 +274,44 @@ export default function FastReview() {
    * Dlatego dopiero tutaj powstają werdykty negatywne — wcześniej brak
    * zaznaczenia znaczy „jeszcze nie patrzyłem", a nie „nieaktywne".
    */
-  const commit = useCallback(async () => {
-    if (!session || !current || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const complete: Record<string, AUVerdict> = {};
-      for (const { code } of VERIFIABLE_AU) complete[code] = verdicts[code] ?? 'inactive';
-      await patchAUVerdicts(session.session_id, current.peak.frame_idx, current.trackId, complete, true);
-      current.peak.au_verdicts = complete;
-      if (current.peak.annotation_status !== 'verified') {
-        current.peak.annotation_status = 'verified';
-        setVerifiedCount((count) => count + 1);
+  const commit = useCallback(
+    async (usable = true) => {
+      if (!session || !current || busy) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const complete: Record<string, AUVerdict> = {};
+        if (usable) {
+          for (const { code } of VERIFIABLE_AU) complete[code] = verdicts[code] ?? 'inactive';
+        } else {
+          // Kadr odrzucony: żadne AU nie jest „nieaktywne", wszystkie są
+          // NIEOBSERWOWALNE. Zapisanie zer nauczyłoby sieć, że pies z głową
+          // w dół ma mimikę spoczynkową.
+          for (const { code } of VERIFIABLE_AU) complete[code] = 'not_observable';
+        }
+        await patchAUVerdicts(
+          session.session_id,
+          current.peak.frame_idx,
+          current.trackId,
+          complete,
+          true,
+          usable
+        );
+        current.peak.au_verdicts = complete;
+        if (current.peak.annotation_status !== 'verified') {
+          current.peak.annotation_status = 'verified';
+          setVerifiedCount((count) => count + 1);
+        }
+        if (!usable) setRejectedCount((count) => count + 1);
+        goTo(position + 1);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Nie udało się zapisać');
+      } finally {
+        setBusy(false);
       }
-      goTo(position + 1);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Nie udało się zapisać');
-    } finally {
-      setBusy(false);
-    }
-  }, [session, current, busy, verdicts, position, goTo]);
+    },
+    [session, current, busy, verdicts, position, goTo]
+  );
 
   useEffect(() => {
     if (!current) return;
@@ -307,6 +326,9 @@ export default function FastReview() {
       if (event.key === 'f' || event.key === 'F') {
         event.preventDefault();
         setShowFullFrame((shown) => !shown);
+      } else if (event.key === 'x' || event.key === 'X') {
+        event.preventDefault();
+        void commit(false);
       } else if (event.key === 'Enter') {
         event.preventDefault();
         void commit();
@@ -373,7 +395,8 @@ export default function FastReview() {
       <div className="flex items-center justify-between mb-3">
         <div className="text-sm text-gray-600">
           Para <strong>{position + 1}</strong> / {pairs.length} · zweryfikowane{' '}
-          <strong className="text-green-700">{verifiedCount}</strong> · aktywne AU{' '}
+          <strong className="text-green-700">{verifiedCount}</strong> · odrzucone{' '}
+          <strong className="text-gray-600">{rejectedCount}</strong> · aktywne AU{' '}
           <strong className="text-amber-700">{activeCount}</strong>
         </div>
         <button
@@ -426,17 +449,28 @@ export default function FastReview() {
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">1–8</kbd> aktywne ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Shift+1–8</kbd> niewidoczne ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Enter</kbd> zapisz i dalej ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">X</kbd> kadr się nie nadaje ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">F</kbd>{' '}
           {showFullFrame ? 'wróć do kadru psa' : 'cała klatka'} ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">←→</kbd> nawigacja
         </span>
-        <button
-          onClick={() => void commit()}
-          disabled={busy}
-          className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-700 disabled:opacity-50"
-        >
-          {busy ? 'Zapisywanie…' : 'Zapisz i dalej ⏎'}
-        </button>
+        <div className="flex gap-2 shrink-0">
+          <button
+            onClick={() => void commit(false)}
+            disabled={busy}
+            className="px-3 py-2 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 disabled:opacity-50"
+            title="Głowa w dół, pies odwrócony, morda niewidoczna"
+          >
+            Nie nadaje się ✕
+          </button>
+          <button
+            onClick={() => void commit()}
+            disabled={busy}
+            className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-700 disabled:opacity-50"
+          >
+            {busy ? 'Zapisywanie…' : 'Zapisz i dalej ⏎'}
+          </button>
+        </div>
       </div>
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
     </div>

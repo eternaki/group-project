@@ -98,11 +98,12 @@ export async function patchAUVerdicts(
   frameIdx: number,
   trackId: number,
   verdicts: Record<string, AUVerdict>,
-  markVerified: boolean
+  markVerified: boolean,
+  usable = true
 ): Promise<void> {
   await axios.patch(
     `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/au_verdicts?track_id=${trackId}`,
-    { verdicts, mark_verified: markVerified }
+    { verdicts, mark_verified: markVerified, usable }
   );
 }
 

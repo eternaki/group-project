@@ -375,6 +375,46 @@ class TestAUVerdictsEndpoint:
         peak = [f for f in session.json()["frames"] if f["frame_idx"] == 2][0]
         assert peak["annotation_status"] == ANNOTATION_STATUS_VERIFIED
 
+    async def test_odrzucenie_kadru_zapisuje_sie_jako_etykieta(
+        self, client, curated_path: Path
+    ) -> None:
+        """
+        Kadr odrzucony przez człowieka ZOSTAJE w zbiorze z flagą, a nie znika.
+
+        Przegląd materiału pokazał, że żadna miara geometryczna nie odróżnia
+        kadru nadającego się do kodowania AU od psa z głową w dół — asymetria
+        jest miarą lewo-prawo i na pochylenie jest ślepa. Decyzja człowieka jest
+        więc jedynym wiarygodnym filtrem, a zapisana staje się etykietą uczącą.
+        """
+        session_id = await self._import(client, curated_path)
+        resp = await client.patch(
+            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            json={
+                "verdicts": {"AU25": AU_VERDICT_NOT_OBSERVABLE},
+                "mark_verified": True,
+                "usable": False,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["usable"] is False
+
+        coco = json.loads((await client.post(f"/api/sessions/{session_id}/export_coco")).content)
+        rejected = [a for a in coco["annotations"] if a["usable"] is False]
+        assert len(rejected) == 1
+        assert rejected[0]["label_source"] == LABEL_SOURCE_HUMAN_VERIFIED
+
+    async def test_kadr_domyslnie_jest_uznany_za_nadajacy_sie(
+        self, client, curated_path: Path
+    ) -> None:
+        session_id = await self._import(client, curated_path)
+        await client.patch(
+            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "mark_verified": True},
+        )
+        session = await client.get(f"/api/sessions/{session_id}")
+        peak = [f for f in session.json()["frames"] if f["frame_idx"] == 2][0]
+        assert peak["usable"] is True
+
     async def test_eksport_niesie_werdykty_i_zrodlo_etykiety(
         self, client, curated_path: Path
     ) -> None:

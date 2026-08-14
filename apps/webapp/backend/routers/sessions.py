@@ -135,10 +135,13 @@ class UpdateAUVerdictsRequest(BaseModel):
         verdicts: {nazwa AU: active | inactive | not_observable}. Klucze
             pominięte zostają nieocenione, a nie wyzerowane.
         mark_verified: Czy oznaczyć klatkę jako sprawdzoną przez człowieka
+        usable: Czy kadr w ogóle nadaje się do kodowania AU. False znaczy, że
+            człowiek odrzucił kadr — i to też jest etykieta, a nie brak danych.
     """
 
     verdicts: dict[str, str]
     mark_verified: bool = False
+    usable: bool = True
 
 
 # =============================================================================
@@ -344,12 +347,13 @@ async def update_au_verdicts(
 
     frame = _get_frame_or_404(session_id, frame_idx, track_id)
     frame.au_verdicts = {**frame.au_verdicts, **request.verdicts}
+    frame.usable = request.usable
     frame.annotation_status = (
         ANNOTATION_STATUS_VERIFIED if request.mark_verified else ANNOTATION_STATUS_REVIEWED
     )
     frame.source = "manual"
     _store.update_frame(session_id, frame)
-    return {"ok": True, "au_verdicts": frame.au_verdicts}
+    return {"ok": True, "au_verdicts": frame.au_verdicts, "usable": frame.usable}
 
 
 @router.patch("/{session_id}/frames/{frame_idx}/aus")
@@ -594,6 +598,10 @@ def _build_coco_annotation(
         # zatarłoby różnicę między „człowiek orzekł, że nieaktywne" a „reguła
         # nie wykryła aktywacji" — a tylko pierwsze jest etykietą uczącą.
         "au_verdicts": dict(frame.au_verdicts or {}),
+        # Kadr odrzucony przez człowieka zostaje w zbiorze z tą flagą, a nie
+        # znika: „człowiek uznał to za nienadające się" jest etykietą uczącą
+        # dla przyszłego filtra jakości, a milczenie nią nie jest.
+        "usable": bool(frame.usable),
     }
     if frame.quality:
         ann["quality"] = dict(frame.quality)
