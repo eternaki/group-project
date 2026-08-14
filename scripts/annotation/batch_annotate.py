@@ -77,7 +77,12 @@ class BatchConfig:
     # w nią przypadkiem. Gęstsze próbkowanie zwiększa szansę złapania kadru
     # nadającego się do pomiaru; bramka jakości i tak odsieje resztę.
     fps: float = 5.0  # klatki na sekundę do ekstrakcji
-    max_frames_per_video: int = 100  # maksymalna liczba klatek z wideo
+    # Budżet klatek na nagranie. Zmierzone na tym sprzęcie (CPU, bez CUDA):
+    # około 1.1 klatki na sekundę pracy, więc to ten budżet, a nie liczba
+    # nagrań, decyduje o czasie przebiegu. 50 klatek rozłożonych po 20-sekundowym
+    # klipie daje efektywne 2.5 kl./s — dwuipółkrotnie gęściej niż poprzedni
+    # przebieg — przy czasie rzędu doby na 1496 nagrań.
+    max_frames_per_video: int = 50  # maksymalna liczba klatek z wideo
 
     # Parametry generowania datasetu (peak frames + emocje/AU)
     num_peaks: int = 10  # liczba peak frames na wideo do anotacji emocji
@@ -367,10 +372,8 @@ class BatchAnnotator:
         if video_fps <= 0:
             video_fps = 30.0
 
-        # Oblicz interwał
-        frame_interval = int(video_fps / self.config.fps)
-        if frame_interval < 1:
-            frame_interval = 1
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_interval = self._sampling_interval(video_fps, total_frames)
 
         frame_count = 0
         extracted_count = 0
@@ -391,6 +394,38 @@ class BatchAnnotator:
 
         cap.release()
         logger.debug(f"Wyekstrahowano {extracted_count} klatek z {video_path.name}")
+
+    def _sampling_interval(self, video_fps: float, total_frames: int) -> int:
+        """
+        Wylicza odstęp próbkowania mieszczący CAŁE nagranie w budżecie klatek.
+
+        Samo próbkowanie co `video_fps / fps` z twardym limitem `max_frames`
+        URYWA nagranie w połowie: limit wyczerpuje się na początku i druga
+        część klipu nigdy nie trafia do pipeline'u. Zbiór dostawał wtedy
+        systematycznie początki ujęć, a moment, w którym pies patrzy
+        w obiektyw, wypada gdzie indziej równie często.
+
+        Gdy próbkowanie w zamówionym tempie mieści się w budżecie — zostaje bez
+        zmian. Gdy nie mieści się, rozciągamy odstęp tak, żeby te same klatki
+        rozłożyły się po całym nagraniu.
+
+        Args:
+            video_fps: Liczba klatek na sekundę nagrania
+            total_frames: Długość nagrania w klatkach; 0 gdy nieznana
+
+        Returns:
+            Odstęp między pobieranymi klatkami, zawsze dodatni
+        """
+        by_fps = max(1, int(video_fps / self.config.fps))
+        budget = self.config.max_frames_per_video
+        if total_frames <= 0 or budget < 1:
+            return by_fps
+
+        # Ile klatek pobrałoby próbkowanie w zamówionym tempie
+        wanted = -(-total_frames // by_fps)  # dzielenie w górę
+        if wanted <= budget:
+            return by_fps
+        return max(by_fps, -(-total_frames // budget))
 
     def process_frame(
         self,
