@@ -16,15 +16,25 @@ Endpoints:
 
 import json
 import tempfile
+import uuid
 from dataclasses import asdict
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
+from coco_import import (
+    SESSION_ID_LENGTH,
+    CocoImportError,
+    build_session,
+    load_coco,
+)
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from session_store import (
+    ANNOTATION_STATUS_REVIEWED,
     ANNOTATION_STATUS_VERIFIED,
+    AU_VERDICTS,
     AmbiguousFrameError,
     DogTrack,
     FrameAnnotation,
@@ -104,6 +114,33 @@ class AddFrameRequest(BaseModel):
     track_id: Optional[int] = None
 
 
+class ImportCocoRequest(BaseModel):
+    """
+    Request dla POST import_coco.
+
+    Attributes:
+        path: Ścieżka do zbioru po kuracji (`curate_for_review.py`)
+        limit: Najwyżej tyle par; None znaczy wszystkie
+    """
+
+    path: str
+    limit: Optional[int] = None
+
+
+class UpdateAUVerdictsRequest(BaseModel):
+    """
+    Request dla PATCH au_verdicts — werdykty człowieka o AU.
+
+    Attributes:
+        verdicts: {nazwa AU: active | inactive | not_observable}. Klucze
+            pominięte zostają nieocenione, a nie wyzerowane.
+        mark_verified: Czy oznaczyć klatkę jako sprawdzoną przez człowieka
+    """
+
+    verdicts: dict[str, str]
+    mark_verified: bool = False
+
+
 # =============================================================================
 # Funkcje pomocnicze
 # =============================================================================
@@ -166,6 +203,49 @@ def _dict_to_delta_aus(aus_dict: dict) -> dict[str, DeltaActionUnit]:
 
 
 # =============================================================================
+# POST import_coco — wprowadzenie zbioru wsadowego pod ręce anotatora
+# =============================================================================
+
+
+@router.post("/import_coco")
+async def import_coco(request: ImportCocoRequest):
+    """
+    Tworzy sesję weryfikacji ze zbioru COCO po kuracji.
+
+    Bez tego wejścia weryfikacja zbioru policzonego wsadowo wymagałaby
+    ponownego przepuszczenia tych samych nagrań przez pipeline.
+
+    Args:
+        request: Ścieżka do zbioru i opcjonalny limit par
+
+    Returns:
+        `{session_id, pairs, frames, source}`
+
+    Raises:
+        HTTPException: 400, gdy zbiór nie przeszedł kuracji albo nie istnieje
+    """
+    path = Path(request.path)
+    try:
+        coco = load_coco(path)
+        session = build_session(
+            coco=coco,
+            session_id=uuid.uuid4().hex[:SESSION_ID_LENGTH],
+            source_name=path.name,
+            limit=request.limit,
+        )
+    except CocoImportError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    _store.save(session)
+    return {
+        "session_id": session.session_id,
+        "pairs": len(session.dogs),
+        "frames": len(session.frames),
+        "source": session.video_filename,
+    }
+
+
+# =============================================================================
 # GET endpoints — DOG-S9-8
 # =============================================================================
 
@@ -223,6 +303,49 @@ async def update_keypoints(
     frame.annotation_status = "reviewed"
     _store.update_frame(session_id, frame)
     return {"ok": True}
+
+
+@router.patch("/{session_id}/frames/{frame_idx}/au_verdicts")
+async def update_au_verdicts(
+    session_id: str,
+    frame_idx: int,
+    request: UpdateAUVerdictsRequest,
+    track_id: Optional[int] = None,
+):
+    """
+    Zapisuje werdykty człowieka o AU tej klatki.
+
+    Werdykty dopisują się do już zapisanych, a nie zastępują ich w całości:
+    anotator ocenia AU po kolei i nie powinien tracić wcześniejszych decyzji,
+    gdy zapisze kolejną.
+
+    Args:
+        session_id: ID sesji
+        frame_idx: Numer klatki
+        request: Werdykty i flaga oznaczenia klatki jako sprawdzonej
+        track_id: Który pies w klatce
+
+    Returns:
+        `{"ok": True, "au_verdicts": {...}}`
+
+    Raises:
+        HTTPException: 422 przy nieznanym werdykcie
+    """
+    unknown = sorted(set(request.verdicts.values()) - AU_VERDICTS)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Nieznany werdykt: {unknown}. Dozwolone: {sorted(AU_VERDICTS)}",
+        )
+
+    frame = _get_frame_or_404(session_id, frame_idx, track_id)
+    frame.au_verdicts = {**frame.au_verdicts, **request.verdicts}
+    frame.annotation_status = (
+        ANNOTATION_STATUS_VERIFIED if request.mark_verified else ANNOTATION_STATUS_REVIEWED
+    )
+    frame.source = "manual"
+    _store.update_frame(session_id, frame)
+    return {"ok": True, "au_verdicts": frame.au_verdicts}
 
 
 @router.patch("/{session_id}/frames/{frame_idx}/aus")
@@ -419,7 +542,9 @@ def _track_fields_for_export(
     if dog is None:
         return fields
 
-    fields["frame_role"] = (
+    # Rola zapisana wprost (sesje z importu COCO) jest wiarygodniejsza niż
+    # wywnioskowana z numeru klatki — ten sam kadr neutralny bywa bazą kilku par.
+    fields["frame_role"] = frame.frame_role or (
         FRAME_ROLE_NEUTRAL if frame.frame_idx == dog.neutral_frame_idx else FRAME_ROLE_PEAK
     )
     fields["neutral_source"] = dog.neutral_source
@@ -461,7 +586,13 @@ def _build_coco_annotation(
             }
             for name, au in (frame.aus or {}).items()
         },
+        # Werdykty człowieka OSOBNO od pomiaru reguł. Scalenie ich w jedno pole
+        # zatarłoby różnicę między „człowiek orzekł, że nieaktywne" a „reguła
+        # nie wykryła aktywacji" — a tylko pierwsze jest etykietą uczącą.
+        "au_verdicts": dict(frame.au_verdicts or {}),
     }
+    if frame.quality:
+        ann["quality"] = dict(frame.quality)
     if frame.bbox is not None:
         ann["bbox"] = frame.bbox
         ann["area"] = frame.bbox[2] * frame.bbox[3]

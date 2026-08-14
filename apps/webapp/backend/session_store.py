@@ -28,6 +28,25 @@ ANNOTATION_STATUS_REVIEWED: str = "reviewed"
 ANNOTATION_STATUS_VERIFIED: str = "verified"
 
 
+# Werdykt człowieka o pojedynczym AU. Trzymany OSOBNO od `aus` (pomiaru reguł),
+# bo audyt pokazał, że pomiar bywa odwrotnością tego, co widać: dyszący pies
+# z otwartym pyskiem dostawał `neutral`, a siedzący spaniel `surprise`.
+# Gdyby werdykt startował od wartości reguły, anotator zatwierdzałby błąd
+# jednym kliknięciem — a to jest dokładnie to, czego zbiór nie przetrwa.
+AU_VERDICT_ACTIVE: str = "active"
+AU_VERDICT_INACTIVE: str = "inactive"
+
+# `not_observable` NIE ZNACZY „nieaktywny". Ucho schowane za głową to brak
+# wiedzy, a nie brak ruchu — wpisanie tu zera nauczyłoby sieć, że niewidoczne
+# znaczy spoczynkowe. To rozróżnienie jest powodem, dla którego pole ma trzy
+# stany zamiast być zwykłym `bool`.
+AU_VERDICT_NOT_OBSERVABLE: str = "not_observable"
+
+AU_VERDICTS: frozenset[str] = frozenset(
+    {AU_VERDICT_ACTIVE, AU_VERDICT_INACTIVE, AU_VERDICT_NOT_OBSERVABLE}
+)
+
+
 @dataclass
 class FrameAnnotation:
     """
@@ -53,6 +72,13 @@ class FrameAnnotation:
         breed: Rasa psa
         breed_confidence: Pewność klasyfikacji rasy (0-1)
         tfm_score: Temporal Feature Map score klatki
+        au_verdicts: Werdykty człowieka o poszczególnych AU
+            {nazwa AU: active | inactive | not_observable}. BRAK klucza znaczy
+            „jeszcze nieoceniony" — dlatego domyślnie słownik jest pusty, a nie
+            wypełniony wartościami z reguł.
+        frame_role: `neutral` albo `peak` — która klatka pary
+        quality: Miary bramki jakości {asymmetry, weak_keypoint_ratio, face_width_px}
+        review_order: Pozycja pary w kolejce weryfikacji
     """
 
     frame_idx: int
@@ -69,6 +95,10 @@ class FrameAnnotation:
     breed: Optional[str] = None
     breed_confidence: float = 0.0
     tfm_score: float = 0.0
+    au_verdicts: dict = field(default_factory=dict)
+    frame_role: Optional[str] = None
+    quality: dict = field(default_factory=dict)
+    review_order: Optional[int] = None
 
 
 @dataclass

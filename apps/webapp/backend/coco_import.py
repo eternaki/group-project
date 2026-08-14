@@ -1,0 +1,226 @@
+"""
+Import zbioru COCO do sesji anotacji.
+
+Domykający brak Sprintu 15: webapp umiał dotąd wyłącznie „wgraj wideo i przepuść
+przez pipeline". Zbiór policzony wsadowo (`scripts/annotation/curate_for_review`)
+nie miał jak trafić pod ręce anotatora — czyli każda weryfikacja zaczynała się od
+ponownego, wielogodzinnego przeliczania tego samego materiału.
+
+Jednostką importu jest PARA (klatka neutralna, klatka szczytowa), a nie klatka:
+AU jest z definicji różnicą względem klatki neutralnej, więc bez niej nie ma
+czego oceniać. Każda para dostaje własny `track_id` równy pozycji w kolejce
+weryfikacji, bo `track_id` z batcha jest unikalny tylko w obrębie nagrania
+(w `dataset_v2` na 1359 treków przypada 12 różnych wartości).
+"""
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from session_store import (
+    ANNOTATION_STATUS_AUTO,
+    DogTrack,
+    FrameAnnotation,
+    SessionData,
+)
+
+from packages.data.coco import FRAME_ROLE_NEUTRAL, FRAME_ROLE_PEAK
+
+# Prefiks URL, pod którym backend wystawia klatki zbioru
+DATASET_URL_PREFIX: str = "/dataset"
+
+# Długość identyfikatora sesji (jak w sesjach z wideo)
+SESSION_ID_LENGTH: int = 8
+
+_WINDOWS_SEPARATOR: str = "\\"
+_POSIX_SEPARATOR: str = "/"
+
+
+class CocoImportError(ValueError):
+    """Wyjątek, gdy zbioru nie da się zaimportować jako sesji anotacji."""
+
+
+def _image_url(file_name: str) -> str:
+    """
+    Buduje URL podglądu klatki.
+
+    Args:
+        file_name: Ścieżka klatki z pola `file_name` obrazu COCO
+
+    Returns:
+        URL wystawiany przez backend
+    """
+    normalized = file_name.replace(_WINDOWS_SEPARATOR, _POSIX_SEPARATOR)
+    return f"{DATASET_URL_PREFIX}/{normalized}"
+
+
+def _annotation_to_frame(
+    annotation: dict,
+    image: dict,
+    track_id: int,
+    review_order: int,
+) -> FrameAnnotation:
+    """
+    Przekłada anotację COCO na anotację klatki w sesji.
+
+    Werdykty człowieka (`au_verdicts`) zostają PUSTE. Pomiar reguł jedzie
+    w `aus` jako podpowiedź, ale nie jako wypełniona odpowiedź — inaczej
+    weryfikacja zamieniłaby się w zatwierdzanie tego, co reguły już orzekły.
+
+    Args:
+        annotation: Anotacja COCO
+        image: Rekord obrazu COCO
+        track_id: Identyfikator pary w sesji
+        review_order: Pozycja pary w kolejce weryfikacji
+
+    Returns:
+        `FrameAnnotation` gotowa do zapisania w sesji
+    """
+    return FrameAnnotation(
+        frame_idx=int(annotation["image_id"]),
+        image_url=_image_url(image["file_name"]),
+        track_id=track_id,
+        annotation_status=ANNOTATION_STATUS_AUTO,
+        source="ai",
+        bbox=annotation.get("bbox"),
+        keypoints=annotation.get("keypoints"),
+        aus=dict(annotation.get("au_analysis", {})),
+        emotion=annotation.get("emotion"),
+        emotion_confidence=float(
+            annotation.get("confidence", {}).get("emotion", 0.0)
+            if isinstance(annotation.get("confidence"), dict)
+            else 0.0
+        ),
+        emotion_rule_applied=annotation.get("emotion_rule_applied"),
+        breed=annotation.get("breed"),
+        breed_confidence=float(
+            annotation.get("confidence", {}).get("breed", 0.0)
+            if isinstance(annotation.get("confidence"), dict)
+            else 0.0
+        ),
+        tfm_score=float(annotation.get("tfm_score", 0.0)),
+        au_verdicts={},
+        frame_role=annotation.get("frame_role"),
+        quality=dict(annotation.get("quality", {})),
+        review_order=review_order,
+    )
+
+
+def _group_pairs(coco: dict) -> list[tuple[dict, dict]]:
+    """
+    Grupuje anotacje w pary (neutralna, szczytowa) według `review_order`.
+
+    Args:
+        coco: Wczytany zbiór COCO po kuracji
+
+    Returns:
+        Lista par w kolejności weryfikacji
+
+    Raises:
+        CocoImportError: Gdy zbiór nie ma pola `review_order` (nie przeszedł kuracji)
+    """
+    by_order: dict[int, dict[str, dict]] = {}
+    for annotation in coco.get("annotations", []):
+        order = annotation.get("review_order")
+        role = annotation.get("frame_role")
+        if order is None:
+            raise CocoImportError(
+                "Zbiór nie ma pola `review_order` — przepuść go najpierw przez "
+                "scripts/annotation/curate_for_review.py"
+            )
+        if role in (FRAME_ROLE_NEUTRAL, FRAME_ROLE_PEAK):
+            by_order.setdefault(int(order), {})[role] = annotation
+
+    pairs: list[tuple[dict, dict]] = []
+    for order in sorted(by_order):
+        entry = by_order[order]
+        neutral, peak = entry.get(FRAME_ROLE_NEUTRAL), entry.get(FRAME_ROLE_PEAK)
+        if neutral is not None and peak is not None:
+            pairs.append((neutral, peak))
+    if not pairs:
+        raise CocoImportError("Zbiór nie zawiera ani jednej kompletnej pary neutral+peak")
+    return pairs
+
+
+def build_session(
+    coco: dict,
+    session_id: str,
+    source_name: str,
+    limit: Optional[int] = None,
+) -> SessionData:
+    """
+    Składa sesję anotacji ze zbioru COCO po kuracji.
+
+    Args:
+        coco: Wczytany zbiór COCO
+        session_id: Identyfikator tworzonej sesji
+        source_name: Nazwa źródła zapisywana w sesji (nazwa pliku zbioru)
+        limit: Najwyżej tyle par; None znaczy wszystkie
+
+    Returns:
+        `SessionData` z parami w kolejności weryfikacji
+
+    Raises:
+        CocoImportError: Gdy zbiór nie przeszedł kuracji albo nie ma pełnych par
+    """
+    images = {image["id"]: image for image in coco.get("images", [])}
+    pairs = _group_pairs(coco)
+    if limit is not None:
+        pairs = pairs[:limit]
+
+    frames: list[FrameAnnotation] = []
+    dogs: list[DogTrack] = []
+
+    for track_id, (neutral, peak) in enumerate(pairs):
+        neutral_frame = _annotation_to_frame(
+            neutral, images[neutral["image_id"]], track_id, track_id
+        )
+        peak_frame = _annotation_to_frame(
+            peak, images[peak["image_id"]], track_id, track_id
+        )
+        frames.extend((neutral_frame, peak_frame))
+        dogs.append(
+            DogTrack(
+                track_id=track_id,
+                neutral_frame_idx=neutral_frame.frame_idx,
+                neutral_keypoints=neutral_frame.keypoints,
+                neutral_source=peak.get("neutral_source", "auto"),
+                peak_frame_indices=[peak_frame.frame_idx],
+                au_noise=dict(peak.get("au_noise") or {}),
+                au_sample_count=dict(peak.get("au_sample_count") or {}),
+            )
+        )
+
+    return SessionData(
+        session_id=session_id,
+        video_filename=source_name,
+        created_at=datetime.now().isoformat(),
+        total_frames=len(frames),
+        neutral_frame_idx=dogs[0].neutral_frame_idx,
+        neutral_keypoints=dogs[0].neutral_keypoints,
+        frames=frames,
+        dogs=dogs,
+    )
+
+
+def load_coco(path: Path) -> dict:
+    """
+    Wczytuje zbiór COCO z dysku.
+
+    Args:
+        path: Ścieżka do pliku JSON
+
+    Returns:
+        Słownik COCO
+
+    Raises:
+        CocoImportError: Gdy pliku nie ma albo nie jest poprawnym JSON-em
+    """
+    if not path.exists():
+        raise CocoImportError(f"Nie znaleziono zbioru: {path}")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except json.JSONDecodeError as error:
+        raise CocoImportError(f"Zbiór {path} nie jest poprawnym JSON-em: {error}") from error

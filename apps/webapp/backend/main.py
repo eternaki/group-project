@@ -7,6 +7,7 @@ Endpoints:
 - GET /api/health - Health check
 """
 
+import os
 import sys
 import tempfile
 import uuid
@@ -75,6 +76,21 @@ app.add_middleware(
 STATIC_DIR = _BACKEND_DIR / "static" / "frames"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Klatki zbioru wsadowego — sesje z importu COCO wskazują na nie przez /dataset.
+# Katalog bierzemy ze zmiennej środowiskowej, bo zbiór leży poza repozytorium
+# i u każdego członka zespołu może stać gdzie indziej.
+DATASET_FRAMES_ENV: str = "DOGFACS_DATASET_FRAMES"
+DEFAULT_DATASET_FRAMES: str = "data/dataset_v2/frames"
+DATASET_FRAMES_DIR = Path(
+    os.environ.get(DATASET_FRAMES_ENV, DEFAULT_DATASET_FRAMES)
+).resolve()
+if DATASET_FRAMES_DIR.is_dir():
+    app.mount(
+        "/dataset",
+        StaticFiles(directory=str(DATASET_FRAMES_DIR)),
+        name="dataset",
+    )
 
 # Podłącz router sesji (Sprint 9)
 app.include_router(sessions_router)
