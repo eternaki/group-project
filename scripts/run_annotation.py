@@ -19,16 +19,18 @@ import signal
 import subprocess
 import sys
 import time
+import webbrowser
 from pathlib import Path
 from typing import Optional
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 
 DATA_DIR: Path = REPO_ROOT / "data"
-DATASET_DIR: Path = DATA_DIR / "dataset_v2"
-CURATED_PATH: Path = DATASET_DIR / "curated.json"
-FRAMES_DIR: Path = DATASET_DIR / "frames"
 FRONTEND_DIR: Path = REPO_ROOT / "apps" / "webapp" / "frontend"
+
+# Nazwy plików, po których poznajemy zbiór wsadowy i jego wersję po kuracji
+ANNOTATIONS_NAME: str = "annotations.json"
+CURATED_NAME: str = "curated.json"
 
 BACKEND_HOST: str = "127.0.0.1"
 BACKEND_PORT: int = 8000
@@ -38,6 +40,10 @@ FRONTEND_URL: str = "http://localhost:5173"
 # kolejność działa, ale anotator widzi wtedy pustą stronę i myśli, że nie działa.
 BACKEND_WARMUP_S: float = 3.0
 
+# Ile czekamy, aż Vite wstanie, zanim otworzymy przeglądarkę. Otwarta za wcześnie
+# pokazuje błąd połączenia i anotator uznaje, że narzędzie nie działa.
+FRONTEND_WARMUP_S: float = 4.0
+
 
 def _fail(message: str) -> None:
     """Kończy pracę z czytelnym komunikatem."""
@@ -45,46 +51,108 @@ def _fail(message: str) -> None:
     sys.exit(1)
 
 
+def venv_python() -> str:
+    """
+    Zwraca interpreter, którym da się uruchomić pipeline.
+
+    `sys.executable` wystarcza tylko wtedy, gdy skrypt odpalono z aktywowanego
+    środowiska. Odpalony z „gołej" konsoli brałby systemowego Pythona, który nie
+    ma ani cv2, ani torcha — i cała praca kończyła się `ModuleNotFoundError`
+    zamiast się zacząć. Dlatego najpierw szukamy `.venv` w repozytorium.
+
+    Returns:
+        Ścieżka do interpretera
+    """
+    candidates = [
+        REPO_ROOT / ".venv" / "Scripts" / "python.exe",  # Windows
+        REPO_ROOT / ".venv" / "bin" / "python",  # Linux/macOS
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
+
+
 def check_prerequisites() -> None:
     """
     Sprawdza, czy da się w ogóle wystartować.
 
     Raises:
-        SystemExit: Gdy brakuje klatek zbioru albo katalogu frontendu
+        SystemExit: Gdy nie ma katalogu danych albo frontendu
     """
-    if not FRAMES_DIR.is_dir():
-        _fail(
-            f"Nie ma klatek zbioru w {FRAMES_DIR}.\n"
-            "Zbior generuje scripts/annotation/batch_annotate.py"
-        )
+    if not DATA_DIR.is_dir():
+        _fail(f"Nie ma katalogu danych {DATA_DIR}")
     if not (FRONTEND_DIR / "package.json").is_file():
         _fail(f"Nie ma frontendu w {FRONTEND_DIR}")
 
 
-def ensure_curated(limit: Optional[int]) -> None:
+def find_datasets() -> list[Path]:
     """
-    Kuruje zbiór, jeśli jeszcze nie ma pliku po kuracji.
+    Znajduje zbiory wsadowe w katalogu danych.
+
+    Anotator nie wskazuje niczego ręcznie — narzędzie samo widzi, co jest
+    do zrobienia.
+
+    Returns:
+        Katalogi zbiorów zawierające `annotations.json`, najświeższe pierwsze
+    """
+    found = [
+        path.parent
+        for path in DATA_DIR.glob(f"*/{ANNOTATIONS_NAME}")
+        if (path.parent / "frames").is_dir()
+    ]
+    return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def ensure_curated(limit: Optional[int]) -> list[Path]:
+    """
+    Przygotowuje do weryfikacji KAŻDY zbiór, który jeszcze nie ma kuracji.
 
     Args:
         limit: Najwyżej tyle par w wyniku; None znaczy wszystkie
-    """
-    if CURATED_PATH.is_file():
-        print(f"[OK] Zbior po kuracji juz jest: {CURATED_PATH}")
-        return
 
-    print("[..] Kuruje zbior (bramka jakosci + kolejnosc pod anotatora)...")
-    command = [
-        sys.executable,
-        "-m",
-        "scripts.annotation.curate_for_review",
-        "--out",
-        str(CURATED_PATH),
-    ]
-    if limit is not None:
-        command += ["--limit", str(limit)]
-    result = subprocess.run(command, cwd=REPO_ROOT, check=False)
-    if result.returncode != 0 or not CURATED_PATH.is_file():
-        _fail("Kuracja zbioru nie powiodla sie")
+    Returns:
+        Zbiory gotowe do weryfikacji (pliki po kuracji)
+
+    Raises:
+        SystemExit: Gdy nie ma ani jednego zbioru do pracy
+    """
+    datasets = find_datasets()
+    if not datasets:
+        _fail(
+            f"W {DATA_DIR} nie ma zadnego zbioru (katalogu z {ANNOTATIONS_NAME} i frames/).\n"
+            "Zbior generuje: python -m scripts.annotation.batch_annotate"
+        )
+
+    ready: list[Path] = []
+    for dataset_dir in datasets:
+        curated = dataset_dir / CURATED_NAME
+        if curated.is_file():
+            print(f"[OK] {dataset_dir.name}: gotowy do weryfikacji")
+            ready.append(curated)
+            continue
+
+        print(f"[..] {dataset_dir.name}: kuruje (bramka jakosci + kolejnosc pod anotatora)")
+        command = [
+            venv_python(),
+            "-m",
+            "scripts.annotation.curate_for_review",
+            "--dataset",
+            str(dataset_dir / ANNOTATIONS_NAME),
+            "--out",
+            str(curated),
+        ]
+        if limit is not None:
+            command += ["--limit", str(limit)]
+        result = subprocess.run(command, cwd=REPO_ROOT, check=False)
+        if result.returncode == 0 and curated.is_file():
+            ready.append(curated)
+        else:
+            print(f"[UWAGA] {dataset_dir.name}: kuracja sie nie powiodla, pomijam")
+
+    if not ready:
+        _fail("Zaden zbior nie przeszedl kuracji")
+    return ready
 
 
 def build_environment() -> dict[str, str]:
@@ -99,7 +167,9 @@ def build_environment() -> dict[str, str]:
     """
     environment = dict(os.environ)
     environment["DOGFACS_IMPORT_ROOT"] = str(DATA_DIR)
-    environment["DOGFACS_DATASET_FRAMES"] = str(FRAMES_DIR)
+    # Cały katalog danych, nie pojedynczy zbiór: anotator ma móc przełączać się
+    # między zbiorami bez restartu serwera.
+    environment["DOGFACS_DATASET_FRAMES"] = str(DATA_DIR)
     environment["PYTHONUTF8"] = "1"
     return environment
 
@@ -117,7 +187,7 @@ def start_backend(environment: dict[str, str]) -> subprocess.Popen:
     print(f"[..] Backend na http://{BACKEND_HOST}:{BACKEND_PORT}")
     return subprocess.Popen(
         [
-            sys.executable,
+            venv_python(),
             "-m",
             "uvicorn",
             "apps.webapp.backend.main:app",
@@ -173,6 +243,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Podnies samo API, bez frontendu",
     )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Nie otwieraj przegladarki automatycznie",
+    )
     return parser.parse_args()
 
 
@@ -180,7 +255,7 @@ def main() -> None:
     """Punkt wejścia: przygotowuje zbiór i podnosi oba serwery."""
     args = parse_args()
     check_prerequisites()
-    ensure_curated(args.limit)
+    ready = ensure_curated(args.limit)
 
     backend = start_backend(build_environment())
     frontend: Optional[subprocess.Popen] = None
@@ -188,7 +263,10 @@ def main() -> None:
         if not args.backend_only:
             time.sleep(BACKEND_WARMUP_S)
             frontend = start_frontend()
-        print(f"\n[OK] Gotowe. Otworz {FRONTEND_URL} i wybierz zakladke 'Weryfikacja AU'.")
+            time.sleep(FRONTEND_WARMUP_S)
+            if not args.no_browser:
+                webbrowser.open(FRONTEND_URL)
+        print(f"\n[OK] Gotowe: {len(ready)} zbior(ow) do weryfikacji, {FRONTEND_URL}")
         print("     Ctrl+C konczy prace obu serwerow.\n")
         backend.wait()
     except KeyboardInterrupt:

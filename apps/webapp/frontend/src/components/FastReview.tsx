@@ -24,14 +24,14 @@ import {
   type FrameAnnotation,
   type SessionData,
 } from '../types';
-import { exportSessionCOCO, getSession, importCoco, patchAUVerdicts } from '../utils/api';
-
-/**
- * Domyślna ścieżka zbioru po kuracji — WZGLĘDEM katalogu danych backendu
- * (`DOGFACS_IMPORT_ROOT`, domyślnie `data/`), a nie względem korzenia repo.
- * Backend nie przyjmie ścieżki wychodzącej poza ten katalog.
- */
-const DEFAULT_DATASET_PATH = 'dataset_v2/curated.json';
+import {
+  exportSessionCOCO,
+  getSession,
+  importCoco,
+  listDatasets,
+  patchAUVerdicts,
+  type AvailableDataset,
+} from '../utils/api';
 
 /** Klawisze przypisane do AU: pozycja w VERIFIABLE_AU → cyfra */
 const AU_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
@@ -215,7 +215,7 @@ function AUButton({
 }
 
 export default function FastReview() {
-  const [datasetPath, setDatasetPath] = useState(DEFAULT_DATASET_PATH);
+  const [datasets, setDatasets] = useState<AvailableDataset[] | null>(null);
   const [session, setSession] = useState<SessionData | null>(null);
   const [pairs, setPairs] = useState<ReviewPair[]>([]);
   const [position, setPosition] = useState(0);
@@ -230,24 +230,45 @@ export default function FastReview() {
 
   const current = pairs[position];
 
-  const startSession = async () => {
+  const startSession = useCallback(async (path: string) => {
     setBusy(true);
     setError(null);
     try {
-      const imported = await importCoco(datasetPath);
+      const imported = await importCoco(path);
       const loaded = await getSession(imported.session_id);
       const built = buildPairs(loaded);
       setSession(loaded);
       setPairs(built);
-      setPosition(0);
       setVerdicts({});
       setVerifiedCount(built.filter((p) => p.peak.annotation_status === 'verified').length);
+      setRejectedCount(built.filter((p) => p.peak.usable === false).length);
+      // Wracamy tam, gdzie praca się urwała — a nie na początek kolejki.
+      const firstOpen = built.findIndex((p) => p.peak.annotation_status !== 'verified');
+      setPosition(firstOpen === -1 ? built.length : firstOpen);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Nie udało się wczytać zbioru');
     } finally {
       setBusy(false);
     }
-  };
+  }, []);
+
+  // Zbiory znajdują się same. Gdy jest dokładnie jeden, od razu go otwieramy —
+  // anotator ma zobaczyć pierwszą parę, a nie formularz.
+  useEffect(() => {
+    let cancelled = false;
+    listDatasets()
+      .then(({ datasets: found }) => {
+        if (cancelled) return;
+        setDatasets(found);
+        if (found.length === 1) void startSession(found[0].path);
+      })
+      .catch((caught) =>
+        setError(caught instanceof Error ? caught.message : 'Nie udało się odczytać katalogu danych')
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [startSession]);
 
   const goTo = useCallback(
     (index: number) => {
@@ -351,23 +372,48 @@ export default function FastReview() {
   if (!session) {
     return (
       <div className="max-w-xl mx-auto mt-16 p-6 bg-white rounded-xl border border-gray-200">
-        <h2 className="text-lg font-bold text-gray-800">Weryfikacja AU — start</h2>
-        <p className="text-sm text-gray-500 mt-1">
-          Ścieżka do zbioru po kuracji (<code>curate_for_review.py</code>), względem katalogu
-          danych backendu.
-        </p>
-        <input
-          value={datasetPath}
-          onChange={(event) => setDatasetPath(event.target.value)}
-          className="w-full mt-3 px-3 py-2 border border-gray-300 rounded-lg font-mono text-sm"
-        />
-        <button
-          onClick={startSession}
-          disabled={busy}
-          className="mt-3 w-full py-2.5 bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-700 disabled:opacity-50"
-        >
-          {busy ? 'Wczytywanie…' : 'Rozpocznij weryfikację'}
-        </button>
+        <h2 className="text-lg font-bold text-gray-800">Weryfikacja AU</h2>
+        {datasets === null && !error && (
+          <p className="text-sm text-gray-500 mt-2">Szukam zbiorów do weryfikacji…</p>
+        )}
+        {busy && <p className="text-sm text-gray-500 mt-2">Wczytywanie zbioru…</p>}
+        {datasets !== null && datasets.length === 0 && (
+          <div className="mt-3 text-sm text-gray-600 space-y-2">
+            <p>Nie znalazłem żadnego zbioru gotowego do weryfikacji.</p>
+            <p className="text-gray-500">
+              Zbiór przygotowuje polecenie:
+              <code className="block mt-1 p-2 bg-gray-50 rounded font-mono text-xs">
+                python -m scripts.annotation.curate_for_review
+              </code>
+            </p>
+          </div>
+        )}
+        {datasets !== null && datasets.length > 0 && (
+          <div className="mt-3 space-y-2">
+            <p className="text-sm text-gray-500">Wybierz zbiór — praca zapisuje się i wznawia sama.</p>
+            {datasets.map((dataset) => {
+              const done = dataset.pairs > 0 ? (100 * dataset.verified) / dataset.pairs : 0;
+              return (
+                <button
+                  key={dataset.path}
+                  onClick={() => void startSession(dataset.path)}
+                  disabled={busy}
+                  className="w-full text-left p-3 rounded-lg border-2 border-gray-200 hover:border-amber-400 transition-colors disabled:opacity-50"
+                >
+                  <div className="flex items-baseline justify-between">
+                    <span className="font-semibold text-gray-800">{dataset.name}</span>
+                    <span className="text-xs text-gray-500 font-mono">
+                      {dataset.verified} / {dataset.pairs} par
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-gray-200 rounded-full mt-2 overflow-hidden">
+                    <div className="h-full bg-green-500" style={{ width: `${done}%` }} />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
         {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
       </div>
     );

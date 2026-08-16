@@ -71,6 +71,30 @@ export interface ImportCocoResponse {
   pairs: number;
   frames: number;
   source: string;
+  verified: number;
+  /** true = podjęto istniejącą sesję, false = założono nową */
+  resumed: boolean;
+}
+
+/** Zbiór gotowy do weryfikacji, znaleziony przez backend w katalogu danych. */
+export interface AvailableDataset {
+  path: string;
+  name: string;
+  pairs: number;
+  verified: number;
+  session_id: string;
+}
+
+/**
+ * Wylicza zbiory gotowe do weryfikacji.
+ *
+ * Anotator nie wpisuje ścieżek — narzędzie samo pokazuje, co jest do zrobienia.
+ */
+export async function listDatasets(): Promise<{ root: string; datasets: AvailableDataset[] }> {
+  const response = await axios.get<{ root: string; datasets: AvailableDataset[] }>(
+    `${API_BASE}/sessions/datasets/available`
+  );
+  return response.data;
 }
 
 /**

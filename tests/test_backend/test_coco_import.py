@@ -325,6 +325,87 @@ class TestImportCocoEndpoint:
 
 
 @pytest.mark.anyio
+class TestSessionReuse:
+    """
+    Ten sam zbiór to zawsze ta sama sesja.
+
+    Losowy identyfikator znaczyłby, że każde otwarcie narzędzia zakłada nową
+    sesję, a wczorajsza praca zostaje w osieroconej. Anotator wracałby do
+    pierwszej pary i nie miał jak odzyskać swoich werdyktów — czyli dzień
+    pracy grupy znikałby po zamknięciu przeglądarki.
+    """
+
+    async def test_drugi_import_podejmuje_te_sama_sesje(
+        self, client, curated_path: Path
+    ) -> None:
+        first = await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
+        second = await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
+        assert first.json()["session_id"] == second.json()["session_id"]
+        assert second.json()["resumed"] is True
+
+    async def test_werdykty_przezywaja_ponowne_otwarcie(
+        self, client, curated_path: Path
+    ) -> None:
+        """Sedno: praca ma się kumulować, a nie zaczynać od zera."""
+        session_id = (
+            await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
+        ).json()["session_id"]
+        await client.patch(
+            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "mark_verified": True},
+        )
+
+        again = await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
+        assert again.json()["verified"] == 1
+
+        frames = (await client.get(f"/api/sessions/{session_id}/frames")).json()["frames"]
+        peak = [f for f in frames if f["frame_idx"] == 2][0]
+        assert peak["au_verdicts"]["AU25"] == AU_VERDICT_ACTIVE
+
+    async def test_fresh_zaklada_sesje_od_nowa(self, client, curated_path: Path) -> None:
+        session_id = (
+            await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
+        ).json()["session_id"]
+        await client.patch(
+            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "mark_verified": True},
+        )
+        fresh = await client.post(
+            "/api/sessions/import_coco", json={"path": "curated.json", "fresh": True}
+        )
+        assert fresh.json()["verified"] == 0
+        assert fresh.json()["resumed"] is False
+
+
+@pytest.mark.anyio
+class TestDatasetListing:
+    """Wyliczanie zbiorów gotowych do weryfikacji — anotator nie wpisuje ścieżek."""
+
+    async def test_znajduje_zbior_po_kuracji(self, client, curated_path: Path) -> None:
+        resp = await client.get("/api/sessions/datasets/available")
+        assert resp.status_code == 200
+        names = [d["path"] for d in resp.json()["datasets"]]
+        assert "curated.json" in names
+
+    async def test_podaje_liczbe_par(self, client, curated_path: Path) -> None:
+        datasets = (await client.get("/api/sessions/datasets/available")).json()["datasets"]
+        entry = [d for d in datasets if d["path"] == "curated.json"][0]
+        assert entry["pairs"] == 2
+
+    async def test_pokazuje_postep_pracy(self, client, curated_path: Path) -> None:
+        session_id = (
+            await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
+        ).json()["session_id"]
+        await client.patch(
+            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "mark_verified": True},
+        )
+        datasets = (await client.get("/api/sessions/datasets/available")).json()["datasets"]
+        entry = [d for d in datasets if d["path"] == "curated.json"][0]
+        assert entry["verified"] == 1
+
+
+@pytest.mark.anyio
 class TestAUVerdictsEndpoint:
     """PATCH /api/sessions/{id}/frames/{idx}/au_verdicts."""
 

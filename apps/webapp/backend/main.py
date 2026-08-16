@@ -77,11 +77,12 @@ STATIC_DIR = _BACKEND_DIR / "static" / "frames"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# Klatki zbioru wsadowego — sesje z importu COCO wskazują na nie przez /dataset.
-# Katalog bierzemy ze zmiennej środowiskowej, bo zbiór leży poza repozytorium
-# i u każdego członka zespołu może stać gdzie indziej.
+# Klatki zbiorów wsadowych — sesje z importu COCO wskazują na nie przez /dataset.
+# Wystawiamy CAŁY katalog danych, a nie katalog jednego zbioru: inaczej dałoby
+# się pracować tylko na jednym zbiorze naraz, a mamy ich kilka i anotator ma
+# móc przełączać się między nimi bez restartu serwera.
 DATASET_FRAMES_ENV: str = "DOGFACS_DATASET_FRAMES"
-DEFAULT_DATASET_FRAMES: str = "data/dataset_v2/frames"
+DEFAULT_DATASET_FRAMES: str = "data"
 DATASET_FRAMES_DIR = Path(
     os.environ.get(DATASET_FRAMES_ENV, DEFAULT_DATASET_FRAMES)
 ).resolve()

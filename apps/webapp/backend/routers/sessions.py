@@ -16,17 +16,20 @@ Endpoints:
 
 import json
 import tempfile
-import uuid
 from dataclasses import asdict
 from typing import Optional
 
 import numpy as np
 from coco_import import (
-    SESSION_ID_LENGTH,
     CocoImportError,
     build_session,
+    count_pairs,
+    find_datasets,
+    frames_prefix_for,
+    import_root,
     load_coco,
     resolve_import_path,
+    session_id_for,
 )
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -125,6 +128,7 @@ class ImportCocoRequest(BaseModel):
 
     path: str
     limit: Optional[int] = None
+    fresh: bool = False
 
 
 class UpdateAUVerdictsRequest(BaseModel):
@@ -233,23 +237,90 @@ async def import_coco(request: ImportCocoRequest):
     """
     try:
         path = resolve_import_path(request.path)
-        coco = load_coco(path)
+        session_id = session_id_for(path)
+
+        # Ten sam zbiór to zawsze ta sama sesja. Bez tego każde otwarcie
+        # narzędzia zakładałoby nową, a wczorajsze werdykty zostawałyby
+        # w osieroconej — anotator wracałby do pierwszej pary.
+        if not request.fresh and _store.exists(session_id):
+            existing = _store.load(session_id)
+            return _session_summary(existing, resumed=True)
+
         session = build_session(
-            coco=coco,
-            session_id=uuid.uuid4().hex[:SESSION_ID_LENGTH],
-            source_name=path.name,
+            coco=load_coco(path),
+            session_id=session_id,
+            source_name=f"{path.parent.name}/{path.name}",
             limit=request.limit,
+            frames_prefix=frames_prefix_for(path),
         )
     except CocoImportError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
     _store.save(session)
+    return _session_summary(session, resumed=False)
+
+
+def _session_summary(session: SessionData, resumed: bool) -> dict:
+    """
+    Buduje podsumowanie sesji zwracane po imporcie.
+
+    Args:
+        session: Dane sesji
+        resumed: Czy sesja została podjęta, czy założona od nowa
+
+    Returns:
+        Słownik z licznikami postępu
+    """
+    verified = sum(
+        1
+        for frame in session.frames
+        if frame.frame_role == FRAME_ROLE_PEAK
+        and frame.annotation_status == ANNOTATION_STATUS_VERIFIED
+    )
     return {
         "session_id": session.session_id,
         "pairs": len(session.dogs),
         "frames": len(session.frames),
         "source": session.video_filename,
+        "verified": verified,
+        "resumed": resumed,
     }
+
+
+@router.get("/datasets/available")
+async def list_datasets():
+    """
+    Wylicza zbiory gotowe do weryfikacji razem z postępem pracy.
+
+    Anotator nie ma wpisywać ścieżek — narzędzie samo pokazuje, co jest do
+    zrobienia i ile już zrobione.
+
+    Returns:
+        `{"root": str, "datasets": [{path, name, pairs, verified, session_id}]}`
+    """
+    root = import_root()
+    datasets = []
+    for path in find_datasets(root):
+        session_id = session_id_for(path)
+        verified = 0
+        if _store.exists(session_id):
+            session = _store.load(session_id)
+            verified = sum(
+                1
+                for frame in session.frames
+                if frame.frame_role == FRAME_ROLE_PEAK
+                and frame.annotation_status == ANNOTATION_STATUS_VERIFIED
+            )
+        datasets.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "name": path.parent.name,
+                "pairs": count_pairs(path),
+                "verified": verified,
+                "session_id": session_id,
+            }
+        )
+    return {"root": str(root), "datasets": datasets}
 
 
 # =============================================================================

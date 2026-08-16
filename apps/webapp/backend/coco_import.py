@@ -13,6 +13,7 @@ weryfikacji, bo `track_id` z batcha jest unikalny tylko w obrębie nagrania
 (w `dataset_v2` na 1359 treków przypada 12 różnych wartości).
 """
 
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -50,6 +51,26 @@ ALLOWED_SUFFIX: str = ".json"
 
 class CocoImportError(ValueError):
     """Wyjątek, gdy zbioru nie da się zaimportować jako sesji anotacji."""
+
+
+def session_id_for(path: Path) -> str:
+    """
+    Wylicza STAŁY identyfikator sesji dla danego zbioru.
+
+    Identyfikator losowy znaczyłby, że każde otwarcie narzędzia zakłada nową
+    sesję, a wczorajsza praca zostaje w osieroconej — anotator wracałby do
+    pierwszej pary i nie miał jak odzyskać swoich werdyktów. Wyprowadzenie
+    identyfikatora ze ścieżki zbioru sprawia, że ten sam zbiór to zawsze ta
+    sama sesja, więc praca się kumuluje.
+
+    Args:
+        path: Ścieżka zbioru po kuracji
+
+    Returns:
+        Identyfikator sesji (skrót ścieżki)
+    """
+    digest = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()
+    return digest[:SESSION_ID_LENGTH]
 
 
 def import_root() -> Path:
@@ -103,18 +124,44 @@ def resolve_import_path(raw_path: str) -> Path:
     return resolved
 
 
-def _image_url(file_name: str) -> str:
+def frames_prefix_for(dataset_path: Path) -> str:
+    """
+    Wylicza przedrostek URL klatek danego zbioru.
+
+    Backend wystawia CAŁY katalog danych, a nie katalog jednego zbioru — inaczej
+    dałoby się pracować tylko na jednym zbiorze naraz, a mamy ich kilka
+    (`dataset_v2`, `dataset_v3`). Ścieżki w COCO są względne wobec katalogu
+    klatek swojego zbioru, więc przedrostek dokłada brakującą część.
+
+    Args:
+        dataset_path: Ścieżka pliku po kuracji
+
+    Returns:
+        Przedrostek względem katalogu danych, np. `dataset_v2/frames`
+    """
+    dataset_dir = dataset_path.resolve().parent
+    try:
+        relative = dataset_dir.relative_to(import_root()).as_posix()
+    except ValueError:
+        relative = dataset_dir.name
+    return f"{relative}/frames" if relative else "frames"
+
+
+def _image_url(file_name: str, prefix: str) -> str:
     """
     Buduje URL podglądu klatki.
 
     Args:
         file_name: Ścieżka klatki z pola `file_name` obrazu COCO
+        prefix: Przedrostek katalogu klatek względem katalogu danych
 
     Returns:
         URL wystawiany przez backend
     """
     normalized = file_name.replace(_WINDOWS_SEPARATOR, _POSIX_SEPARATOR)
-    return f"{DATASET_URL_PREFIX}/{normalized}"
+    return f"{DATASET_URL_PREFIX}/{prefix}/{normalized}" if prefix else (
+        f"{DATASET_URL_PREFIX}/{normalized}"
+    )
 
 
 def _annotation_to_frame(
@@ -122,6 +169,7 @@ def _annotation_to_frame(
     image: dict,
     track_id: int,
     review_order: int,
+    frames_prefix: str,
 ) -> FrameAnnotation:
     """
     Przekłada anotację COCO na anotację klatki w sesji.
@@ -135,13 +183,14 @@ def _annotation_to_frame(
         image: Rekord obrazu COCO
         track_id: Identyfikator pary w sesji
         review_order: Pozycja pary w kolejce weryfikacji
+        frames_prefix: Przedrostek katalogu klatek względem katalogu danych
 
     Returns:
         `FrameAnnotation` gotowa do zapisania w sesji
     """
     return FrameAnnotation(
         frame_idx=int(annotation["image_id"]),
-        image_url=_image_url(image["file_name"]),
+        image_url=_image_url(image["file_name"], frames_prefix),
         track_id=track_id,
         annotation_status=ANNOTATION_STATUS_AUTO,
         source="ai",
@@ -210,6 +259,7 @@ def build_session(
     session_id: str,
     source_name: str,
     limit: Optional[int] = None,
+    frames_prefix: str = "",
 ) -> SessionData:
     """
     Składa sesję anotacji ze zbioru COCO po kuracji.
@@ -219,6 +269,7 @@ def build_session(
         session_id: Identyfikator tworzonej sesji
         source_name: Nazwa źródła zapisywana w sesji (nazwa pliku zbioru)
         limit: Najwyżej tyle par; None znaczy wszystkie
+        frames_prefix: Przedrostek katalogu klatek względem katalogu danych
 
     Returns:
         `SessionData` z parami w kolejności weryfikacji
@@ -236,10 +287,10 @@ def build_session(
 
     for track_id, (neutral, peak) in enumerate(pairs):
         neutral_frame = _annotation_to_frame(
-            neutral, images[neutral["image_id"]], track_id, track_id
+            neutral, images[neutral["image_id"]], track_id, track_id, frames_prefix
         )
         peak_frame = _annotation_to_frame(
-            peak, images[peak["image_id"]], track_id, track_id
+            peak, images[peak["image_id"]], track_id, track_id, frames_prefix
         )
         frames.extend((neutral_frame, peak_frame))
         dogs.append(
@@ -264,6 +315,58 @@ def build_session(
         frames=frames,
         dogs=dogs,
     )
+
+
+# Po tym wzorcu poznajemy zbiory gotowe do weryfikacji. Anotator nie ma
+# wpisywać ścieżek — narzędzie ma samo znaleźć, co jest do zrobienia.
+CURATED_PATTERN: str = "curated*.json"
+
+# Jak głęboko schodzimy szukając zbiorów. Dwa poziomy pokrywają układ
+# `data/<zbior>/curated.json`, a nie każą przeczesywać całego katalogu danych.
+_SEARCH_DEPTH: int = 2
+
+
+def find_datasets(root: Optional[Path] = None) -> list[Path]:
+    """
+    Znajduje zbiory po kuracji, które da się wziąć do weryfikacji.
+
+    Args:
+        root: Katalog danych; domyślnie `import_root()`
+
+    Returns:
+        Ścieżki zbiorów, posortowane — najświeższe pierwsze
+    """
+    base = root or import_root()
+    if not base.is_dir():
+        return []
+    found: list[Path] = []
+    for depth in range(_SEARCH_DEPTH + 1):
+        pattern = "/".join(["*"] * depth + [CURATED_PATTERN]) if depth else CURATED_PATTERN
+        found.extend(base.glob(pattern))
+    unique = {path.resolve(): path for path in found if path.is_file()}
+    return sorted(unique.values(), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def count_pairs(path: Path) -> int:
+    """
+    Liczy pary w zbiorze bez budowania sesji.
+
+    Args:
+        path: Ścieżka zbioru po kuracji
+
+    Returns:
+        Liczba par gotowych do weryfikacji; 0 gdy pliku nie da się odczytać
+    """
+    try:
+        coco = load_coco(path)
+    except CocoImportError:
+        return 0
+    orders = {
+        annotation.get("review_order")
+        for annotation in coco.get("annotations", [])
+        if annotation.get("review_order") is not None
+    }
+    return len(orders)
 
 
 def load_coco(path: Path) -> dict:

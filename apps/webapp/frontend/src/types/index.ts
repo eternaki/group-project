@@ -242,6 +242,8 @@ export interface FrameAnnotation {
   /** Werdykty człowieka; brak klucza = jeszcze nieoceniony (NIE „nieaktywny") */
   au_verdicts?: Record<string, AUVerdict>;
   frame_role?: 'neutral' | 'peak' | null;
+  /** Czy człowiek uznał kadr za nadający się do kodowania AU */
+  usable?: boolean;
   quality?: { asymmetry?: number; weak_keypoint_ratio?: number; face_width_px?: number };
   review_order?: number | null;
   track_id?: number | null;
