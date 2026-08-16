@@ -20,8 +20,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from label_store import latest_by_pair
 from session_store import (
     ANNOTATION_STATUS_AUTO,
+    ANNOTATION_STATUS_VERIFIED,
     DogTrack,
     FrameAnnotation,
     SessionData,
@@ -254,12 +256,50 @@ def _group_pairs(coco: dict) -> list[tuple[dict, dict]]:
     return pairs
 
 
+def pair_key_for(image: dict) -> str:
+    """
+    Zwraca stabilny identyfikator pary — ścieżkę klatki szczytowej.
+
+    `image_id` nadaje kuracja i zmienia się przy każdym jej powtórzeniu, więc
+    etykiety przypięte do niego rozjechałyby się po pierwszym przeliczeniu
+    zbioru. Ścieżka niesie nagranie, trek i numer klatki, więc przeżywa
+    i ponowną kurację, i przeniesienie na inną maszynę.
+
+    Args:
+        image: Rekord obrazu COCO
+
+    Returns:
+        Znormalizowana ścieżka klatki
+    """
+    return str(image["file_name"]).replace(_WINDOWS_SEPARATOR, _POSIX_SEPARATOR)
+
+
+def _apply_label(frame: FrameAnnotation, record) -> None:
+    """
+    Nakłada zapisaną decyzję człowieka na świeżo zbudowaną anotację.
+
+    Args:
+        frame: Anotacja klatki szczytowej
+        record: Rekord z pliku etykiet
+    """
+    frame.au_verdicts = dict(record.au_verdicts)
+    frame.usable = record.usable
+    frame.keypoints_ok = record.keypoints_ok
+    if record.breed is not None:
+        frame.breed = record.breed
+    if record.emotion is not None:
+        frame.emotion = record.emotion
+    frame.annotation_status = ANNOTATION_STATUS_VERIFIED
+    frame.source = "manual"
+
+
 def build_session(
     coco: dict,
     session_id: str,
     source_name: str,
     limit: Optional[int] = None,
     frames_prefix: str = "",
+    dataset: Optional[str] = None,
 ) -> SessionData:
     """
     Składa sesję anotacji ze zbioru COCO po kuracji.
@@ -270,9 +310,11 @@ def build_session(
         source_name: Nazwa źródła zapisywana w sesji (nazwa pliku zbioru)
         limit: Najwyżej tyle par; None znaczy wszystkie
         frames_prefix: Przedrostek katalogu klatek względem katalogu danych
+        dataset: Nazwa zbioru — po niej odnajdujemy zapisane etykiety zespołu.
+            None znaczy „nie wczytuj etykiet" (używane w testach jednostkowych).
 
     Returns:
-        `SessionData` z parami w kolejności weryfikacji
+        `SessionData` z parami w kolejności weryfikacji, z nałożonymi etykietami
 
     Raises:
         CocoImportError: Gdy zbiór nie przeszedł kuracji albo nie ma pełnych par
@@ -281,6 +323,10 @@ def build_session(
     pairs = _group_pairs(coco)
     if limit is not None:
         pairs = pairs[:limit]
+
+    # Etykiety zespołu leżą w repozytorium, sesja jest lokalna — dlatego to
+    # pliki etykiet, a nie sesja, są źródłem prawdy o tym, co już zrobione.
+    labels = latest_by_pair(dataset) if dataset else {}
 
     frames: list[FrameAnnotation] = []
     dogs: list[DogTrack] = []
@@ -292,6 +338,10 @@ def build_session(
         peak_frame = _annotation_to_frame(
             peak, images[peak["image_id"]], track_id, track_id, frames_prefix
         )
+        record = labels.get(pair_key_for(images[peak["image_id"]]))
+        if record is not None:
+            _apply_label(peak_frame, record)
+
         frames.extend((neutral_frame, peak_frame))
         dogs.append(
             DogTrack(

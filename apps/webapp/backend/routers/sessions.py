@@ -21,6 +21,7 @@ from typing import Optional
 
 import numpy as np
 from coco_import import (
+    DATASET_URL_PREFIX,
     CocoImportError,
     build_session,
     count_pairs,
@@ -33,6 +34,7 @@ from coco_import import (
 )
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from label_store import append_label, build_record
 from pydantic import BaseModel
 from session_store import (
     ANNOTATION_STATUS_REVIEWED,
@@ -131,23 +133,6 @@ class ImportCocoRequest(BaseModel):
     fresh: bool = False
 
 
-class UpdateAUVerdictsRequest(BaseModel):
-    """
-    Request dla PATCH au_verdicts — werdykty człowieka o AU.
-
-    Attributes:
-        verdicts: {nazwa AU: active | inactive | not_observable}. Klucze
-            pominięte zostają nieocenione, a nie wyzerowane.
-        mark_verified: Czy oznaczyć klatkę jako sprawdzoną przez człowieka
-        usable: Czy kadr w ogóle nadaje się do kodowania AU. False znaczy, że
-            człowiek odrzucił kadr — i to też jest etykieta, a nie brak danych.
-    """
-
-    verdicts: dict[str, str]
-    mark_verified: bool = False
-    usable: bool = True
-
-
 class ReviewRequest(BaseModel):
     """
     Request dla PATCH review — CAŁA weryfikacja pary w jednym zapisie.
@@ -222,6 +207,26 @@ def _get_frame_or_404(
         )
 
 
+def _pair_key_of(frame: FrameAnnotation) -> str:
+    """
+    Odtwarza stabilny identyfikator pary z URL klatki.
+
+    URL ma postać `/dataset/<zbior>/frames/<sciezka klatki>`, a etykiety
+    identyfikują parę SAMĄ ŚCIEŻKĄ KLATKI — bez przedrostka, żeby przeżyła
+    przeniesienie zbioru do innego katalogu.
+
+    Args:
+        frame: Anotacja klatki szczytowej
+
+    Returns:
+        Ścieżka klatki względem katalogu klatek zbioru
+    """
+    marker = "/frames/"
+    url = frame.image_url or ""
+    _, separator, tail = url.partition(marker)
+    return tail if separator else url.removeprefix(f"{DATASET_URL_PREFIX}/")
+
+
 def _dict_to_delta_aus(aus_dict: dict) -> dict[str, DeltaActionUnit]:
     """Rekonstruuje DeltaActionUnit ze słownika zapisanego w JSON."""
     return {
@@ -266,25 +271,24 @@ async def import_coco(request: ImportCocoRequest):
         path = resolve_import_path(request.path)
         session_id = session_id_for(path)
 
-        # Ten sam zbiór to zawsze ta sama sesja. Bez tego każde otwarcie
-        # narzędzia zakładałoby nową, a wczorajsze werdykty zostawałyby
-        # w osieroconej — anotator wracałby do pierwszej pary.
-        if not request.fresh and _store.exists(session_id):
-            existing = _store.load(session_id)
-            return _session_summary(existing, resumed=True)
-
+        # Sesję budujemy ZA KAŻDYM RAZEM od nowa, bo źródłem prawdy o pracy
+        # ludzi są pliki etykiet w repozytorium, a nie sesja na dysku. Dzięki
+        # temu `git pull` z werdyktami kolegi wystarczy, żeby zobaczyć jego
+        # postęp — bez tego sesja pamiętałaby wyłącznie własną maszynę.
+        resumed = _store.exists(session_id)
         session = build_session(
             coco=load_coco(path),
             session_id=session_id,
             source_name=f"{path.parent.name}/{path.name}",
             limit=request.limit,
             frames_prefix=frames_prefix_for(path),
+            dataset=path.parent.name,
         )
     except CocoImportError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
     _store.save(session)
-    return _session_summary(session, resumed=False)
+    return _session_summary(session, resumed=resumed)
 
 
 def _session_summary(session: SessionData, resumed: bool) -> dict:
@@ -449,6 +453,7 @@ async def update_review(
             detail=f"Nieznana emocja: {request.emotion!r}. Dozwolone: {list(EMOTION_CLASSES)}",
         )
 
+    session = _load_session_or_404(session_id)
     frame = _get_frame_or_404(session_id, frame_idx, track_id)
     frame.au_verdicts = {**frame.au_verdicts, **request.verdicts}
     frame.usable = request.usable
@@ -462,6 +467,21 @@ async def update_review(
     )
     frame.source = "manual"
     _store.update_frame(session_id, frame)
+
+    # Sesja jest lokalna, więc sama w sobie nie przenosi pracy do zespołu.
+    # Plik etykiet leży w repozytorium i to on jedzie w gicie.
+    dataset, _, _ = session.video_filename.partition("/")
+    append_label(
+        dataset or session.video_filename,
+        build_record(
+            pair_key=_pair_key_of(frame),
+            au_verdicts=frame.au_verdicts,
+            usable=frame.usable,
+            keypoints_ok=frame.keypoints_ok,
+            breed=frame.breed,
+            emotion=frame.emotion,
+        ),
+    )
     return {
         "ok": True,
         "au_verdicts": frame.au_verdicts,
@@ -470,50 +490,6 @@ async def update_review(
         "breed": frame.breed,
         "emotion": frame.emotion,
     }
-
-
-@router.patch("/{session_id}/frames/{frame_idx}/au_verdicts")
-async def update_au_verdicts(
-    session_id: str,
-    frame_idx: int,
-    request: UpdateAUVerdictsRequest,
-    track_id: Optional[int] = None,
-):
-    """
-    Zapisuje werdykty człowieka o AU tej klatki.
-
-    Werdykty dopisują się do już zapisanych, a nie zastępują ich w całości:
-    anotator ocenia AU po kolei i nie powinien tracić wcześniejszych decyzji,
-    gdy zapisze kolejną.
-
-    Args:
-        session_id: ID sesji
-        frame_idx: Numer klatki
-        request: Werdykty i flaga oznaczenia klatki jako sprawdzonej
-        track_id: Który pies w klatce
-
-    Returns:
-        `{"ok": True, "au_verdicts": {...}}`
-
-    Raises:
-        HTTPException: 422 przy nieznanym werdykcie
-    """
-    unknown = sorted(set(request.verdicts.values()) - AU_VERDICTS)
-    if unknown:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Nieznany werdykt: {unknown}. Dozwolone: {sorted(AU_VERDICTS)}",
-        )
-
-    frame = _get_frame_or_404(session_id, frame_idx, track_id)
-    frame.au_verdicts = {**frame.au_verdicts, **request.verdicts}
-    frame.usable = request.usable
-    frame.annotation_status = (
-        ANNOTATION_STATUS_VERIFIED if request.mark_verified else ANNOTATION_STATUS_REVIEWED
-    )
-    frame.source = "manual"
-    _store.update_frame(session_id, frame)
-    return {"ok": True, "au_verdicts": frame.au_verdicts, "usable": frame.usable}
 
 
 @router.patch("/{session_id}/frames/{frame_idx}/aus")

@@ -138,25 +138,6 @@ export async function patchReview(
   );
 }
 
-/**
- * Zapisuje werdykty człowieka o AU danej klatki.
- *
- * Werdykty DOPISUJĄ się do już zapisanych — anotator ocenia AU po kolei
- * i nie powinien tracić wcześniejszych decyzji.
- */
-export async function patchAUVerdicts(
-  sessionId: string,
-  frameIdx: number,
-  trackId: number,
-  verdicts: Record<string, AUVerdict>,
-  markVerified: boolean,
-  usable = true
-): Promise<void> {
-  await axios.patch(
-    `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/au_verdicts?track_id=${trackId}`,
-    { verdicts, mark_verified: markVerified, usable }
-  );
-}
 
 /** Aktualizuje keypoints klatki. */
 export async function patchKeypoints(

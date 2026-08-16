@@ -215,6 +215,9 @@ def build_environment() -> dict[str, str]:
     # Cały katalog danych, nie pojedynczy zbiór: anotator ma móc przełączać się
     # między zbiorami bez restartu serwera.
     environment["DOGFACS_DATASET_FRAMES"] = str(DATA_DIR)
+    # Kto anotuje — trafia do nazwy pliku etykiet, żeby dwie osoby nigdy nie
+    # pisały do jednego pliku i git scalał ich pracę bez konfliktu.
+    environment.setdefault("DOGFACS_ANNOTATOR", os.environ.get("USERNAME", "anonim"))
     environment["PYTHONUTF8"] = "1"
     return environment
 

@@ -12,6 +12,7 @@ Uruchomienie:
 """
 
 import json
+import shutil
 from pathlib import Path
 
 import httpx
@@ -24,6 +25,7 @@ from coco_import import (
     resolve_import_path,
 )
 from fastapi import FastAPI
+from label_store import ANNOTATOR_ENV, LABELS_ROOT_ENV
 from session_store import (
     ANNOTATION_STATUS_AUTO,
     ANNOTATION_STATUS_VERIFIED,
@@ -271,8 +273,15 @@ async def client(app: FastAPI):
 
 @pytest.fixture
 def curated_path(tmp_path: Path, monkeypatch) -> Path:
-    """Plik zbioru po kuracji, leżący pod korzeniem importu."""
+    """
+    Plik zbioru po kuracji, leżący pod korzeniem importu.
+
+    Katalog etykiet też idzie do tmp: bez tego testy dopisywałyby werdykty
+    do prawdziwego `data/labels/` w repozytorium i zaśmiecały pracę zespołu.
+    """
     monkeypatch.setenv(IMPORT_ROOT_ENV, str(tmp_path))
+    monkeypatch.setenv(LABELS_ROOT_ENV, str(tmp_path / "labels"))
+    monkeypatch.setenv(ANNOTATOR_ENV, "test")
     path = tmp_path / "curated.json"
     path.write_text(json.dumps(make_curated_coco(2)), encoding="utf-8")
     return path
@@ -435,30 +444,43 @@ class TestSessionReuse:
             await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
         ).json()["session_id"]
         await client.patch(
-            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
             json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "mark_verified": True},
         )
 
         again = await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
-        assert again.json()["verified"] == 1
+        assert again.json()["verified"] == 1  # etykieta wczytana z pliku, nie z sesji
 
         frames = (await client.get(f"/api/sessions/{session_id}/frames")).json()["frames"]
         peak = [f for f in frames if f["frame_idx"] == 2][0]
         assert peak["au_verdicts"]["AU25"] == AU_VERDICT_ACTIVE
 
-    async def test_fresh_zaklada_sesje_od_nowa(self, client, curated_path: Path) -> None:
+    async def test_praca_przezywa_skasowanie_sesji(self, client, curated_path: Path) -> None:
+        """
+        Sesja jest kasowalnym cache'em — źródłem prawdy są pliki etykiet.
+
+        To dzięki temu `git pull` z werdyktami kolegi wystarcza, żeby zobaczyć
+        jego postęp: sesja na dysku zna wyłącznie własną maszynę.
+        """
+        import routers.sessions as sessions_module
+
         session_id = (
             await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
         ).json()["session_id"]
         await client.patch(
-            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
-            json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "mark_verified": True},
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
+            json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "keypoints_ok": True},
         )
-        fresh = await client.post(
-            "/api/sessions/import_coco", json={"path": "curated.json", "fresh": True}
-        )
-        assert fresh.json()["verified"] == 0
-        assert fresh.json()["resumed"] is False
+
+        # Kasujemy sesję tak, jak zrobiłby to nowy klon repozytorium
+        shutil.rmtree(sessions_module._store.sessions_dir / session_id)
+
+        restored = await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
+        assert restored.json()["verified"] == 1
+        frames = (await client.get(f"/api/sessions/{session_id}/frames")).json()["frames"]
+        peak = [f for f in frames if f["frame_idx"] == 2][0]
+        assert peak["au_verdicts"]["AU25"] == AU_VERDICT_ACTIVE
+        assert peak["keypoints_ok"] is True
 
 
 @pytest.mark.anyio
@@ -481,7 +503,7 @@ class TestDatasetListing:
             await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
         ).json()["session_id"]
         await client.patch(
-            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
             json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "mark_verified": True},
         )
         datasets = (await client.get("/api/sessions/datasets/available")).json()["datasets"]
@@ -502,7 +524,7 @@ class TestAUVerdictsEndpoint:
     async def test_zapisuje_werdykt(self, client, curated_path: Path) -> None:
         session_id = await self._import(client, curated_path)
         resp = await client.patch(
-            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
             json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}},
         )
         assert resp.status_code == 200
@@ -513,7 +535,7 @@ class TestAUVerdictsEndpoint:
     ) -> None:
         """Anotator ocenia AU po kolei i nie może tracić wcześniejszych decyzji."""
         session_id = await self._import(client, curated_path)
-        url = f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0"
+        url = f"/api/sessions/{session_id}/frames/2/review?track_id=0"
         await client.patch(url, json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}})
         resp = await client.patch(
             url, json={"verdicts": {"EAD103": AU_VERDICT_NOT_OBSERVABLE}}
@@ -525,7 +547,7 @@ class TestAUVerdictsEndpoint:
     async def test_nieznany_werdykt_odrzucony(self, client, curated_path: Path) -> None:
         session_id = await self._import(client, curated_path)
         resp = await client.patch(
-            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
             json={"verdicts": {"AU25": "moze_tak_moze_nie"}},
         )
         assert resp.status_code == 422
@@ -533,7 +555,7 @@ class TestAUVerdictsEndpoint:
     async def test_oznaczenie_jako_zweryfikowane(self, client, curated_path: Path) -> None:
         session_id = await self._import(client, curated_path)
         await client.patch(
-            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
             json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "mark_verified": True},
         )
         session = await client.get(f"/api/sessions/{session_id}")
@@ -553,11 +575,10 @@ class TestAUVerdictsEndpoint:
         """
         session_id = await self._import(client, curated_path)
         resp = await client.patch(
-            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
             json={
                 "verdicts": {"AU25": AU_VERDICT_NOT_OBSERVABLE},
-                "mark_verified": True,
-                "usable": False,
+                                "usable": False,
             },
         )
         assert resp.status_code == 200
@@ -573,7 +594,7 @@ class TestAUVerdictsEndpoint:
     ) -> None:
         session_id = await self._import(client, curated_path)
         await client.patch(
-            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
             json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "mark_verified": True},
         )
         session = await client.get(f"/api/sessions/{session_id}")
@@ -586,7 +607,7 @@ class TestAUVerdictsEndpoint:
         """Bez `human_verified` Sprint 16 nie odsieje etykiet ludzkich od reguł."""
         session_id = await self._import(client, curated_path)
         await client.patch(
-            f"/api/sessions/{session_id}/frames/2/au_verdicts?track_id=0",
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
             json={"verdicts": {"AU25": AU_VERDICT_ACTIVE}, "mark_verified": True},
         )
         resp = await client.post(f"/api/sessions/{session_id}/export_coco")
