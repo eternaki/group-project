@@ -34,8 +34,16 @@ from packages.pipeline.track_processing import (
 from tests.test_pipeline.kp_fixtures import make_frontal_kp
 
 # Bramka jakości otwarta na oścież — do testów, które sprawdzają INNY próg
-# i nie chcą, żeby odsiew kadru zamazał badany efekt.
-_OPEN_GATE = QualityThresholds(max_asymmetry=1.0, max_weak_ratio=1.0, min_face_width=0.0)
+# i nie chcą, żeby odsiew kadru zamazał badany efekt. Każdy próg trzeba wymienić
+# wprost: kryterium pominięte dziedziczy wartość domyślną, więc dodanie nowej
+# miary do `QualityThresholds` po cichu zamyka „otwartą" bramkę i psuje testy
+# w miejscu, które z nową miarą nie ma nic wspólnego.
+_OPEN_GATE = QualityThresholds(
+    max_asymmetry=1.0,
+    max_weak_ratio=1.0,
+    min_face_width=0.0,
+    max_shape_distance=float("inf"),
+)
 
 # Psy w kadrze: lewy mniejszy, prawy większy (różny rozmiar cropu = różna geometria
 # mordy w atrapie modelu keypoints — patrz `_FakeKeypointsModel`)
@@ -138,7 +146,11 @@ class _FakeKeypointsModel:
             keypoints[KP.CHIN, 1] += 20.0
 
         if self.calls in self.expression_frames:
-            for point in (KP.LOWER_LIP_CENTER, KP.CHIN, KP.JAW_CENTER):
+            # Czubek języka idzie z żuchwą. Bez niego otwarcie pyska rozjeżdżało
+            # geometrię dolnej części mordy: język zostawał na miejscu, przez co
+            # klatka z ekspresją wypadała detektorowi klatki neutralnej
+            # STABILNIEJ niż klatka spokojna i lądowała jako baza AU.
+            for point in (KP.LOWER_LIP_CENTER, KP.CHIN, KP.JAW_CENTER, KP.TONGUE_TIP):
                 keypoints[point, 1] += MOUTH_OPEN_PX
 
         sign = 1.0 if self.calls % 2 else -1.0
@@ -359,10 +371,16 @@ class TestProgiDocierajaDoDecyzji:
         Poluzowanie jednego nie wystarcza — dlatego wariant „loose" luzuje oba.
         """
         turned = {"nose_shift": 60.0}
+        # Ekspresja na JEDNEJ klatce. Przy czterech na sześć detektor klatki
+        # neutralnej brał kadr z otwartym pyskiem: utrzymana grymasa jest
+        # temporalnie stabilniejsza od spokoju, a detektor optymalizuje
+        # stabilność. Baza AU lądowała wtedy na szczycie i delta wychodziła
+        # zerowa — scenariusz mierzyłby wtedy tę pułapkę, a nie próg pozy.
+        expressions = {3}
 
-        strict = _run(_pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}, **turned), min_peak_separation_s=0.2)
+        strict = _run(_pipeline(boxes=[LEFT_DOG_BOX], expression_frames=expressions, **turned), min_peak_separation_s=0.2)
         loose = _run(
-            _pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}, **turned),
+            _pipeline(boxes=[LEFT_DOG_BOX], expression_frames=expressions, **turned),
             min_peak_separation_s=0.2,
             max_yaw_asymmetry=0.5,
             frame_quality=_OPEN_GATE,
@@ -385,8 +403,14 @@ class TestProgiDocierajaDoDecyzji:
         mordy w tym materiale to 26 px.
         """
         turned = {"nose_shift": 60.0}
+        # Ekspresja na JEDNEJ klatce. Przy czterech na sześć detektor klatki
+        # neutralnej brał kadr z otwartym pyskiem: utrzymana grymasa jest
+        # temporalnie stabilniejsza od spokoju, a detektor optymalizuje
+        # stabilność. Baza AU lądowała wtedy na szczycie i delta wychodziła
+        # zerowa — scenariusz mierzyłby wtedy tę pułapkę, a nie próg pozy.
+        expressions = {3}
         result = _run(
-            _pipeline(boxes=[LEFT_DOG_BOX], expression_frames={1, 2, 3, 7}, **turned),
+            _pipeline(boxes=[LEFT_DOG_BOX], expression_frames=expressions, **turned),
             min_peak_separation_s=0.2,
             # Próg pozy głowy poluzowany — zostaje sama bramka jakości kadru
             max_yaw_asymmetry=0.5,

@@ -93,6 +93,11 @@ DEFAULT_FRAME_QUALITY: QualityThresholds = QualityThresholds(
     max_asymmetry=0.45,
     max_weak_ratio=0.50,
     min_face_width=20.0,
+    # Kształt jest tu WYŁĄCZONY celowo. Ten zestaw progów rządzi WYBOREM peaków
+    # i musi coś zwrócić — weto na kształcie potrafiłoby wyzerować trek, a to
+    # dokładnie ta pułapka, przez którą progi kuracyjne nie mogą tu trafiać.
+    # O odrzuceniu kadru z punktami postawionymi byle gdzie decyduje kuracja.
+    max_shape_distance=float("inf"),
 )
 
 # Ile kadrów treku musi zostać po bramce, żeby wybór peaków miał z czego wybierać.

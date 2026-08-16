@@ -39,9 +39,15 @@ BASELINE_FRAMES: int = 5
 NOISE_REALIZATIONS: int = 20
 # Próg aktywacji AU wyrażony jako delta (ratio 1.15 → 0.15)
 ACTIVATION_DELTA: float = DEFAULT_ACTIVATION_THRESHOLD - 1.0
-# AU liczone z widoczności punktów, nie z geometrii — filtr nie rusza kanału widoczności,
-# więc wygładzanie nie ma jak obniżyć ich szumu (w fixturze widoczność jest stała)
-VISIBILITY_BASED_AUS: frozenset[str] = frozenset({"AU145", "AD19"})
+# AU liczone z SAMEJ widoczności punktów — filtr nie rusza kanału widoczności,
+# więc wygładzanie nie ma jak obniżyć ich szumu (w fixturze widoczność jest stała).
+#
+# AD19 tu NIE należy, choć długo tak było zapisane. Liczy się z widoczności języka
+# ORAZ z geometrii (o ile czubek języka wystaje poniżej dolnej wargi), więc reaguje
+# na drganie punktów jak każde AU geometryczne. Wyglądał na czysto widocznościowy
+# tylko dlatego, że fixtura zostawiała TONGUE_TIP w (0, 0) z zerową pewnością —
+# psa bez języka. Po uzupełnieniu fixtury szum AD19 spada z 0.020 do 0.008.
+VISIBILITY_BASED_AUS: frozenset[str] = frozenset({"AU145"})
 
 
 def _au(name: str, ratio: float) -> DeltaActionUnit:

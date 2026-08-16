@@ -49,17 +49,23 @@ AMBIGUOUS_SNR_MAX: float = 2.0
 DEFAULT_DATASET: str = "data/dataset_v2/annotations.json"
 DEFAULT_OUTPUT: str = "data/dataset_v2/curated.json"
 
-# Kuracja świadomie luzuje asymetrię ponad `QualityThresholds().max_asymmetry`
-# (0.20). Ostry próg chroni POMIAR reguł, który dzieli wszystko przez rozstaw
-# oczu i przy obrocie głowy zawyża każde AU. Kolejka trafia jednak do CZŁOWIEKA,
-# a człowiek czyta ucho i pysk także na ujęciu trzy czwarte, zaś dla zasłoniętej
-# połowy ma werdykt `not_observable`.
+# Asymetria jest tu PREFERENCJĄ, a nie realnym sitem, i próg odpowiada temu.
 #
-# Zmierzone na zbiorze: 0.20 daje 271 par, 0.50 daje 1082 pary przy spadku
-# udziału par bez żadnego sygnału z 42% do 34%. Wartość MUSI być domyślna, a nie
-# podawana flagą — przy dziedziczeniu z `QualityThresholds` ponowna kuracja
-# „na domyślnych" po cichu tnie kolejkę czterokrotnie.
-REVIEW_MAX_ASYMMETRY: float = 0.50
+# Miara zakłada dokładne keypoints, a nasze takie nie są. Zmierzone: na punktach
+# DogFLW stawianych przez człowieka mediana asymetrii wynosi 0.140; po dodaniu
+# szumu o skali błędu naszego modelu (NME 0.091) rośnie do 0.307. Pies patrzący
+# WPROST czyta się więc u nas jako 0.31 — 61% drogi do progu 0.50 zanim głowa
+# w ogóle się obróci. Ranking kadrów przeżywa ten szum z rho 0.37, czyli miara
+# ledwie porządkuje i na pewno nie rozstrzyga.
+#
+# 0.60 to wartość skalibrowana: zachowuje ten sam udział naturalnych póz (94.8%
+# zbioru DogFLW), który próg 0.50 miał zachowywać przy dokładnych punktach.
+# Obejrzane kadry potwierdzają rozjazd — w paśmie 0.45 (dotąd PRZYJMOWANYM)
+# siedzą wyraźne profile, a w paśmie 0.55 (odrzucanym) psy patrzące na wprost.
+#
+# Wartość MUSI być domyślna, a nie podawana flagą — przy dziedziczeniu
+# z `QualityThresholds` ponowna kuracja „na domyślnych" po cichu tnie kolejkę.
+REVIEW_MAX_ASYMMETRY: float = 0.60
 
 # Ostry próg 40 px zakłada odczyt z klatki. Anotator ogląda POWIĘKSZONY kadr
 # mordy, więc czyta ucho i pysk także przy 30 px. Ten próg i tak nie jest tu

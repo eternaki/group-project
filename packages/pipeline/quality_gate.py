@@ -22,13 +22,17 @@ liczy się względem klatki neutralnej — zepsuta neutralna psuje każdy pomiar
 w całym treku.
 """
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional, Union
 
 import numpy as np
 
 from packages.data.schemas import KP, NUM_KEYPOINTS
+from packages.models.shape_normalization import procrustes_align
 
 # Keypoints przychodzą raz jako lista COCO, raz jako tablica z treku — bramka
 # przyjmuje jedno i drugie, żeby nie mnożyć konwersji po stronie wywołań.
@@ -77,11 +81,27 @@ _MIDLINE_POINTS: tuple[int, ...] = (
 # Zabezpieczenie przed dzieleniem przez zero przy zdegenerowanych keypoints
 _EPSILON: float = 1e-6
 
+# Wzorzec kształtu mordy (średnia DogFLW) — do miary `shape_distance`.
+DEFAULT_MEAN_SHAPE_PATH: Path = Path("models/dogflw_mean_shape.json")
+
+# Powyżej tej odległości od wzorca uznajemy, że model postawił punkty BYLE GDZIE.
+#
+# Zmierzone: na punktach DogFLW stawianych przez człowieka mediana wynosi 0.059,
+# a p90 0.092; na naszych peakach mediana 0.068, p90 0.095, p99 0.133. Oglądnięte
+# kadry powyżej 0.13 to punkty na sierści, na potylicy i na tle — czyli awaria
+# detektora, nie poza psa.
+#
+# Próg jest CELOWO luźny. Odległość od wzorca w 53% tłumaczy się rasą (mediany ras
+# w DogFLW rozciągają się od 0.029 do 0.121), więc ostry próg wycinałby psy
+# krótkopyskie zamiast złych pomiarów.
+DEFAULT_MAX_SHAPE_DISTANCE: float = 0.13
+
 # Powody odrzucenia — po polsku, bo trafiają wprost do interfejsu anotatora
 REASON_ASYMMETRY: str = "profil lub obrót głowy"
 REASON_WEAK_KEYPOINTS: str = "za dużo niepewnych keypoints"
 REASON_SMALL_FACE: str = "morda za mała do weryfikacji"
 REASON_NO_KEYPOINTS: str = "brak keypoints"
+REASON_IMPLAUSIBLE_SHAPE: str = "punkty postawione byle gdzie"
 
 
 @dataclass(frozen=True)
@@ -93,11 +113,13 @@ class QualityThresholds:
         max_asymmetry: Maksymalna mediana asymetrii połówek mordy
         max_weak_ratio: Maksymalny udział keypoints poniżej progu pewności
         min_face_width: Minimalna szerokość mordy w pikselach
+        max_shape_distance: Maksymalna odległość układu punktów od wzorca mordy
     """
 
     max_asymmetry: float = DEFAULT_MAX_ASYMMETRY
     max_weak_ratio: float = DEFAULT_MAX_WEAK_RATIO
     min_face_width: float = DEFAULT_MIN_FACE_WIDTH_PX
+    max_shape_distance: float = DEFAULT_MAX_SHAPE_DISTANCE
 
 
 @dataclass(frozen=True)
@@ -111,6 +133,7 @@ class FrameQuality:
         face_width: Szerokość mordy w pikselach (rozstaw policzków)
         is_usable: Czy klatka przechodzi wszystkie progi
         reasons: Powody odrzucenia; pusta krotka, gdy klatka przeszła
+        shape_distance: Odległość układu punktów od wzorcowego kształtu mordy
     """
 
     asymmetry: float
@@ -118,6 +141,7 @@ class FrameQuality:
     face_width: float
     is_usable: bool
     reasons: tuple[str, ...]
+    shape_distance: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -219,6 +243,66 @@ def face_asymmetry(coords: np.ndarray) -> float:
     if not scores:
         return 1.0
     return float(np.median(scores))
+
+
+@lru_cache(maxsize=4)
+def load_mean_shape(path: Path = DEFAULT_MEAN_SHAPE_PATH) -> np.ndarray:
+    """
+    Wczytuje wzorcowy kształt mordy z pliku JSON.
+
+    Args:
+        path: Ścieżka do pliku ze średnim kształtem DogFLW
+
+    Returns:
+        Tablica (46, 2)
+
+    Raises:
+        ValueError: Gdy plik nie zawiera kształtu o właściwych wymiarach
+    """
+    shape = np.asarray(json.loads(Path(path).read_text(encoding="utf-8")), dtype=float)
+    if shape.shape != (NUM_KEYPOINTS, 2):
+        raise ValueError(
+            f"Wzorzec kształtu musi mieć wymiary ({NUM_KEYPOINTS}, 2), "
+            f"otrzymano {shape.shape}"
+        )
+    return shape
+
+
+def shape_distance(
+    keypoints: KeypointsInput,
+    reference_shape: Optional[np.ndarray] = None,
+) -> float:
+    """
+    Mierzy, jak bardzo układ punktów odbiega od wzorcowego kształtu psiej mordy.
+
+    Nakłada kształt na wzorzec metodą Prokrustesa (skala, obrót, przesunięcie) i
+    zwraca resztę dopasowania. W odróżnieniu od `face_asymmetry` liczy się po
+    WSZYSTKICH punktach naraz, więc błąd pojedynczego punktu się w niej rozmywa
+    zamiast dominować.
+
+    To czyni ją odporną na niedokładność detektora: przy szumie odpowiadającym
+    naszemu modelowi (NME 0.091) mediana rośnie o 8%, podczas gdy asymetria
+    o 119%, a ranking kadrów zachowuje się z rho 0.99 wobec 0.37 dla asymetrii.
+
+    Args:
+        keypoints: Keypoints w dowolnej postaci przyjmowanej przez bramkę
+        reference_shape: Wzorzec (46, 2); domyślnie średni kształt DogFLW
+
+    Returns:
+        Błąd resztkowy dopasowania; 0 znaczy kształt identyczny ze wzorcem
+    """
+    reference = load_mean_shape() if reference_shape is None else reference_shape
+    flat = np.asarray(keypoints, dtype=float).ravel()
+    if flat.size != NUM_KEYPOINTS * 3:
+        return 1.0
+    aligned = procrustes_align(flat, reference).reshape(NUM_KEYPOINTS, 3)[:, :2]
+
+    target = np.asarray(reference, dtype=float)
+    target = target - target.mean(axis=0)
+    size = float(np.sqrt(np.sum(target**2)))
+    if size < _EPSILON:
+        return 1.0
+    return float(np.sqrt(((aligned - target / size) ** 2).sum(axis=1).mean()))
 
 
 def weak_keypoint_ratio(
@@ -353,6 +437,7 @@ def assess_frame(
     asymmetry = face_asymmetry(coords)
     weak = weak_keypoint_ratio(confidences)
     width = face_width(coords)
+    shape = shape_distance(keypoints)
 
     reasons: list[str] = []
     if asymmetry > limits.max_asymmetry:
@@ -361,6 +446,8 @@ def assess_frame(
         reasons.append(REASON_WEAK_KEYPOINTS)
     if width < limits.min_face_width:
         reasons.append(REASON_SMALL_FACE)
+    if shape > limits.max_shape_distance:
+        reasons.append(REASON_IMPLAUSIBLE_SHAPE)
 
     return FrameQuality(
         asymmetry=asymmetry,
@@ -368,6 +455,7 @@ def assess_frame(
         face_width=width,
         is_usable=not reasons,
         reasons=tuple(reasons),
+        shape_distance=shape,
     )
 
 
