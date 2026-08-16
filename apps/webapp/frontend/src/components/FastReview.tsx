@@ -1,19 +1,18 @@
 /**
- * FastReview — szybka weryfikacja AU na parach (klatka neutralna, szczytowa).
+ * FastReview — экран разметки пары кадров (нейтральный + пиковый).
  *
- * Ekran zaprojektowany pod jedno: liczbę par zweryfikowanych na godzinę.
- * Trzy decyzje, które o tym przesądzają:
+ * Четыре решения, на которых он держится:
  *
- * 1. **Nic nie jest zaznaczone z góry.** Autometki reguł są pokazane jako
- *    szara podpowiedź, ale NIE wypełniają odpowiedzi. Gdyby wypełniały,
- *    weryfikacja zamieniłaby się w zatwierdzanie błędu jednym kliknięciem —
- *    audyt pokazał, że reguły bywają odwrotnością tego, co widać.
- * 2. **Zaznacza się tylko to, co widać.** Enter oznacza „obejrzałem wszystkie
- *    osiem, aktywne są te zaznaczone" i dopiero wtedy reszta zapisuje się jako
- *    `inactive`. Przy medianie 2-3 aktywnych AU to około czterech klawiszy
- *    na parę.
- * 3. **Para obok siebie.** AU jest różnicą względem klatki neutralnej, więc
- *    człowiek musi widzieć obie naraz, inaczej ocenia z pamięci.
+ * 1. **Ничего не отмечено заранее.** Автоматические метки видны серой
+ *    подписью, но не заполняют ответ. Иначе разметка выродилась бы в
+ *    подтверждение ошибки одним нажатием: аудит показал, что правила
+ *    бывают прямо противоположны тому, что видно на кадре.
+ * 2. **Отмечается только то, что видно.** Enter означает «я просмотрел все
+ *    AU, активны отмеченные», и лишь тогда остальные пишутся как `inactive`.
+ * 3. **Пара рядом.** AU по определению есть разница относительно нейтрального
+ *    кадра, поэтому оба кадра должны быть перед глазами одновременно.
+ * 4. **Все 21 AU, а не подмножество.** Видимость решается на каждом кадре
+ *    отдельно состоянием «не видно» — это точнее, чем исключать AU глобально.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -40,8 +39,11 @@ import {
 import useStore from '../store/useStore';
 import FullEditorModal from './FullEditorModal';
 
-/** Klawisze przypisane do AU: pozycja w VERIFIABLE_AU → cyfra */
+/** Клавиши 1-8 у первых AU из VERIFIABLE_AU; остальные размечаются кликом */
 const AU_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
+
+/** Порядок анатомических групп на экране */
+const AU_GROUP_ORDER = ['Пасть', 'Глаза', 'Нос', 'Уши'];
 
 interface ReviewPair {
   trackId: number;
@@ -250,12 +252,14 @@ function AUButton({
         onNotObservable();
       }}
       className={`text-left p-2.5 rounded-lg border-2 transition-colors ${style}`}
-      title="Klik = активен · prawy klik = niewidoczne"
+      title="Клик = активен · правый клик = не видно"
     >
       <div className="flex items-center gap-2">
-        <kbd className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/10 shrink-0">
-          {AU_KEYS[index]}
-        </kbd>
+        {AU_KEYS[index] && (
+          <kbd className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/10 shrink-0">
+            {AU_KEYS[index]}
+          </kbd>
+        )}
         <span className="font-mono text-xs font-bold">{code}</span>
         {ruleActive && verdict === undefined && (
           <span
@@ -630,19 +634,36 @@ export default function FastReview() {
         />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
-        {VERIFIABLE_AU.map(({ code, hint }, index) => (
-          <AUButton
-            key={code}
-            index={index}
-            code={code}
-            hint={hint}
-            verdict={verdicts[code]}
-            ruleActive={ruleSaysActive(current.peak, code)}
-            onToggle={() => toggle(code, 'active')}
-            onNotObservable={() => toggle(code, 'not_observable')}
-          />
-        ))}
+      {/* Все 21 AU, сгруппированные по анатомии. Клавиши 1-8 у самых частых,
+          остальные кликом — цифр всего девять, а AU двадцать одна. */}
+      <div className="space-y-2 mb-3">
+        {AU_GROUP_ORDER.map((group) => {
+          const items = VERIFIABLE_AU.map((au, index) => ({ ...au, index })).filter(
+            (au) => au.group === group
+          );
+          if (!items.length) return null;
+          return (
+            <div key={group}>
+              <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">
+                {group}
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {items.map(({ code, hint, index }) => (
+                  <AUButton
+                    key={code}
+                    index={index}
+                    code={code}
+                    hint={hint}
+                    verdict={verdicts[code]}
+                    ruleActive={ruleSaysActive(current.peak, code)}
+                    onToggle={() => toggle(code, 'active')}
+                    onNotObservable={() => toggle(code, 'not_observable')}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <div className="bg-white rounded-lg border border-gray-200 px-3 mb-3">

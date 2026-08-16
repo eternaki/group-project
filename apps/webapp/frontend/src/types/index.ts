@@ -215,16 +215,40 @@ export type AUVerdict = 'active' | 'inactive' | 'not_observable';
  * pojedynczej klatce nie da się orzec, a część wymaga zbliżenia, jakiego na
  * materiale stockowym nie ma. Metryka liczy się tylko tam, gdzie jest GT.
  */
-export const VERIFIABLE_AU: { code: string; hint: string }[] = [
-  { code: 'AU25',   hint: 'губы разомкнуты, видно зубы или щель' },
-  { code: 'AU26',   hint: 'челюсть опущена, пасть открыта' },
-  { code: 'AU27',   hint: 'пасть раскрыта широко (зевок, одышка)' },
-  { code: 'AD19',   hint: 'язык виден за пределами губ' },
-  { code: 'EAD103', hint: 'уши прижаты к голове' },
-  { code: 'AU143',  hint: 'веко напряжено, глаз прищурен' },
-  { code: 'AU101',  hint: 'бровь поднята, складка над глазом' },
-  { code: 'AU12',   hint: 'уголки рта оттянуты назад' },
+export const VERIFIABLE_AU: { code: string; hint: string; group: string }[] = [
+  // Клавиши 1-8 — самые частые, остальные кликом
+  { code: 'AU25',   group: 'Пасть',  hint: 'губы разомкнуты, видно зубы или щель' },
+  { code: 'AU26',   group: 'Пасть',  hint: 'челюсть опущена, пасть открыта' },
+  { code: 'AU27',   group: 'Пасть',  hint: 'пасть раскрыта широко (зевок, одышка)' },
+  { code: 'AD19',   group: 'Пасть',  hint: 'язык виден за пределами губ' },
+  { code: 'EAD103', group: 'Уши',    hint: 'уши прижаты к голове' },
+  { code: 'AU143',  group: 'Глаза',  hint: 'веко напряжено, глаз прищурен' },
+  { code: 'AU101',  group: 'Глаза',  hint: 'бровь поднята, складка над глазом' },
+  { code: 'AU12',   group: 'Пасть',  hint: 'уголки рта оттянуты назад' },
+  // Дальше — без горячих клавиш, но полноправные
+  { code: 'AU145',  group: 'Глаза',  hint: 'глаз закрыт на пике, открыт на нейтральном' },
+  { code: 'AU109',  group: 'Нос',    hint: 'морщина на левой стороне носа' },
+  { code: 'AU110',  group: 'Нос',    hint: 'морщина на правой стороне носа' },
+  { code: 'AU116',  group: 'Пасть',  hint: 'нижняя губа опущена, видно нижние зубы' },
+  { code: 'AU118',  group: 'Пасть',  hint: 'губы растянуты в стороны' },
+  { code: 'AD33',   group: 'Пасть',  hint: 'щёки надуты (выдох через сомкнутые губы)' },
+  { code: 'AD35',   group: 'Пасть',  hint: 'губа втянута или прикушена' },
+  { code: 'AD37',   group: 'Пасть',  hint: 'язык проходит по губам' },
+  { code: 'AD137',  group: 'Нос',    hint: 'язык касается носа' },
+  { code: 'EAD101', group: 'Уши',    hint: 'уши направлены вперёд' },
+  { code: 'EAD102', group: 'Уши',    hint: 'уши сведены к центру' },
+  { code: 'EAD104', group: 'Уши',    hint: 'ухо повёрнуто вокруг своей оси' },
+  { code: 'EAD105', group: 'Уши',    hint: 'уши разведены в стороны' },
 ];
+
+/**
+ * Сколько первых AU получают горячие клавиши 1-8.
+ *
+ * Остальные размечаются кликом. Ограничение чисто эргономическое: цифр
+ * всего девять, а AU двадцать одна — и восемь самых частых закрывают
+ * подавляющее большинство активаций.
+ */
+export const AU_QUICK_KEYS = 8;
 
 /** Grupy AU do wyświetlania w panelu */
 export const AU_GROUPS: { label: string; codes: string[] }[] = [
