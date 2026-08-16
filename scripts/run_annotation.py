@@ -44,6 +44,12 @@ BACKEND_WARMUP_S: float = 3.0
 # pokazuje błąd połączenia i anotator uznaje, że narzędzie nie działa.
 FRONTEND_WARMUP_S: float = 4.0
 
+# Zbiór zapisany niedawno jest najpewniej wciąż dopisywany przez batch. Kuracja
+# dałaby wtedy urywek materiału, a sesja zbudowana z tego urywka nie zobaczyłaby
+# już par dopisanych później — anotator pracowałby na przestarzałej kolejce,
+# nie wiedząc o tym.
+FRESH_WRITE_WINDOW_S: float = 600.0
+
 
 def _fail(message: str) -> None:
     """Kończy pracę z czytelnym komunikatem."""
@@ -130,6 +136,14 @@ def ensure_curated(limit: Optional[int]) -> list[Path]:
         if curated.is_file():
             print(f"[OK] {dataset_dir.name}: gotowy do weryfikacji")
             ready.append(curated)
+            continue
+
+        annotations = dataset_dir / ANNOTATIONS_NAME
+        if time.time() - annotations.stat().st_mtime < FRESH_WRITE_WINDOW_S:
+            print(
+                f"[..] {dataset_dir.name}: pomijam — zbior jest wlasnie dopisywany "
+                "przez batch. Uruchom ponownie po zakonczeniu przegonu."
+            )
             continue
 
         print(f"[..] {dataset_dir.name}: kuruje (bramka jakosci + kolejnosc pod anotatora)")
