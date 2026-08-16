@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from annotators import owns_pair
+from annotators import owns_video
 from label_store import latest_by_pair
 from session_store import (
     ANNOTATION_STATUS_AUTO,
@@ -262,6 +262,24 @@ def _group_pairs(coco: dict) -> list[tuple[dict, dict]]:
     return pairs
 
 
+def video_of(image: dict) -> str:
+    """
+    Wyciąga klucz nagrania ze ścieżki klatki.
+
+    Po nim dzieli się pracę: wszystkie pary jednego nagrania trafiają do jednej
+    osoby, bo to ten sam pies w tej samej scenie.
+
+    Args:
+        image: Rekord obrazu COCO
+
+    Returns:
+        Katalog nagrania; cała nazwa, gdy klatka leży płasko
+    """
+    normalized = pair_key_for(image)
+    head, separator, _ = normalized.rpartition(_POSIX_SEPARATOR)
+    return head if separator else normalized
+
+
 def pair_key_for(image: dict) -> str:
     """
     Zwraca stabilny identyfikator pary — ścieżkę klatki szczytowej.
@@ -333,8 +351,9 @@ def build_session(
     pairs = _group_pairs(coco)
     if annotator is not None:
         pairs = [
-            pair for pair in pairs
-            if owns_pair(annotator, int(pair[1].get("review_order", 0)))
+            pair
+            for pair in pairs
+            if owns_video(annotator, video_of(images[pair[1]["image_id"]]))
         ]
     if limit is not None:
         pairs = pairs[:limit]
@@ -434,7 +453,14 @@ def count_pairs(path: Path, annotator: Optional[str] = None) -> int:
     }
     if annotator is None:
         return len(orders)
-    return sum(1 for order in orders if owns_pair(annotator, int(order)))
+    images = {image["id"]: image for image in coco.get("images", [])}
+    owned = {
+        annotation.get("review_order")
+        for annotation in coco.get("annotations", [])
+        if annotation.get("review_order") is not None
+        and owns_video(annotator, video_of(images[annotation["image_id"]]))
+    }
+    return len(owned)
 
 
 def load_coco(path: Path) -> dict:
