@@ -166,3 +166,4 @@ data/*.log
 data/*.log.err
 *.stackdump
 data/review_samples/
+data/review_by_video/
