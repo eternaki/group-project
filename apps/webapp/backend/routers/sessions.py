@@ -444,6 +444,16 @@ async def update_keypoints(
     frame.annotation_status = ANNOTATION_STATUS_REVIEWED
     _store.update_frame(session_id, frame)
 
+    # Poprawka klatki NEUTRALNEJ musi trafić też do treku: przeliczanie AU
+    # bierze bazę stamtąd, więc bez tego liczyłoby deltę względem punktów
+    # sprzed poprawki i pokazywało aktywacje, których nie ma.
+    updated = _store.load(session_id)
+    for dog in updated.dogs:
+        if dog.track_id == frame.track_id and dog.neutral_frame_idx == frame.frame_idx:
+            dog.neutral_keypoints = list(request.keypoints)
+            _store.save(updated)
+            break
+
     # Sesja jest kasowalnym cache'em przebudowywanym przy każdym otwarciu, więc
     # poprawione punkty muszą trafić do pliku etykiet — inaczej najdroższa praca
     # anotatora (przeciąganie 46 punktów) ginie po przełączeniu użytkownika.

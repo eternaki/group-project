@@ -216,10 +216,12 @@ export async function patchBreed(
 /** Przelicza AU z keypoints klatki i klatki neutralnej. */
 export async function recomputeAUs(
   sessionId: string,
-  frameIdx: number
+  frameIdx: number,
+  trackId?: number
 ): Promise<Record<string, DeltaActionUnit>> {
+  const track = trackId === undefined ? '' : `?track_id=${trackId}`;
   const response = await axios.post<{ ok: boolean; aus: Record<string, DeltaActionUnit> }>(
-    `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/recompute_aus`
+    `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/recompute_aus${track}`
   );
   return response.data.aus;
 }
@@ -227,14 +229,16 @@ export async function recomputeAUs(
 /** Przelicza emocję z AU klatki. */
 export async function recomputeEmotion(
   sessionId: string,
-  frameIdx: number
+  frameIdx: number,
+  trackId?: number
 ): Promise<{ emotion: string; emotion_confidence: number; emotion_rule_applied: string }> {
+  const track = trackId === undefined ? '' : `?track_id=${trackId}`;
   const response = await axios.post<{
     ok: boolean;
     emotion: string;
     emotion_confidence: number;
     emotion_rule_applied: string;
-  }>(`${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/recompute_emotion`);
+  }>(`${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/recompute_emotion${track}`);
   return response.data;
 }
 

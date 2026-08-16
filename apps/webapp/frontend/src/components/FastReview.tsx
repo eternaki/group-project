@@ -15,13 +15,14 @@
  *    отдельно состоянием «не видно» — это точнее, чем исключать AU глобально.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AU_NAMES_RU,
   DOG_BREEDS,
   EMOTION_CLASSES,
   EMOTION_EMOJI,
   EMOTION_NAMES_RU,
+  KEYPOINT_NAMES_RU,
   KEYPOINT_VISIBLE_THRESHOLD,
   VERIFIABLE_AU,
   getKeypointColor,
@@ -35,12 +36,14 @@ import {
   importCoco,
   listDatasets,
   listTeam,
+  patchKeypoints,
   patchReview,
+  recomputeAUs,
+  recomputeEmotion,
   type AvailableDataset,
   type TeamMember,
 } from '../utils/api';
 import useStore from '../store/useStore';
-import FullEditorModal from './FullEditorModal';
 
 /** Клавиши 1-8 у первых AU из VERIFIABLE_AU; остальные размечаются кликом */
 const AU_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
@@ -126,6 +129,12 @@ const KEYPOINT_RADIUS_RATIO = 0.006;
 interface KeypointOverlayProps {
   keypoints: number[];
   region: Rect;
+  /** Можно ли двигать точки прямо здесь */
+  editable?: boolean;
+  /** Отдаёт новые точки; `commit` = пора сохранять на сервер */
+  onChange?: (keypoints: number[], commit: boolean) => void;
+  /** Показывать ли скрытые точки (пустыми кольцами), чтобы их можно было вернуть */
+  showHidden?: boolean;
 }
 
 /**
@@ -139,31 +148,115 @@ interface KeypointOverlayProps {
  * оригинала) попадают на своё место без пересчёта и масштабируются вместе
  * с картинкой при изменении окна.
  */
-function KeypointOverlay({ keypoints, region }: KeypointOverlayProps) {
-  const radius = region.width * KEYPOINT_RADIUS_RATIO;
+function KeypointOverlay({
+  keypoints,
+  region,
+  editable,
+  onChange,
+  showHidden,
+}: KeypointOverlayProps) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [dragging, setDragging] = useState<number | null>(null);
+  const [hovered, setHovered] = useState<number | null>(null);
+  const radius = region.width * KEYPOINT_RADIUS_RATIO * (editable ? 1.6 : 1);
+
+  /** Переводит событие мыши в координаты исходного кадра. */
+  const toImage = (event: React.PointerEvent): [number, number] => {
+    const box = svgRef.current?.getBoundingClientRect();
+    if (!box) return [0, 0];
+    return [
+      region.x + ((event.clientX - box.left) / box.width) * region.width,
+      region.y + ((event.clientY - box.top) / box.height) * region.height,
+    ];
+  };
+
+  const movePoint = (index: number, event: React.PointerEvent) => {
+    if (!onChange) return;
+    const [x, y] = toImage(event);
+    const next = [...keypoints];
+    next[index * 3] = x;
+    next[index * 3 + 1] = y;
+    onChange(next, false);
+  };
+
+  const toggleVisibility = (index: number) => {
+    if (!onChange) return;
+    const next = [...keypoints];
+    const visible = next[index * 3 + 2] > KEYPOINT_VISIBLE_THRESHOLD;
+    next[index * 3 + 2] = visible ? 0 : 1;
+    onChange(next, true);
+  };
+
   const points = [];
-  for (let i = 0; i < keypoints.length; i += 3) {
-    const [x, y, visibility] = [keypoints[i], keypoints[i + 1], keypoints[i + 2]];
-    if (visibility <= KEYPOINT_VISIBLE_THRESHOLD) continue;
+  for (let i = 0; i < keypoints.length / 3; i++) {
+    const [x, y, visibility] = [keypoints[i * 3], keypoints[i * 3 + 1], keypoints[i * 3 + 2]];
+    const hidden = visibility <= KEYPOINT_VISIBLE_THRESHOLD;
+    if (hidden && !showHidden) continue;
     points.push(
       <circle
         key={i}
         cx={x}
         cy={y}
-        r={radius}
-        fill={getKeypointColor(i / 3)}
-        stroke="rgba(0,0,0,0.6)"
-        strokeWidth={radius * 0.3}
+        r={i === hovered ? radius * 1.5 : radius}
+        fill={hidden ? 'none' : getKeypointColor(i)}
+        stroke={i === hovered ? '#fff' : 'rgba(0,0,0,0.6)'}
+        strokeWidth={radius * 0.35}
+        style={editable ? { cursor: 'grab', pointerEvents: 'all' } : undefined}
+        onPointerDown={
+          editable
+            ? (event) => {
+                event.preventDefault();
+                (event.target as Element).setPointerCapture(event.pointerId);
+                setDragging(i);
+              }
+            : undefined
+        }
+        onPointerMove={editable && dragging === i ? (event) => movePoint(i, event) : undefined}
+        onPointerUp={
+          editable
+            ? () => {
+                if (dragging === i && onChange) onChange(keypoints, true);
+                setDragging(null);
+              }
+            : undefined
+        }
+        onPointerEnter={editable ? () => setHovered(i) : undefined}
+        onPointerLeave={editable ? () => setHovered(null) : undefined}
+        onContextMenu={
+          editable
+            ? (event) => {
+                event.preventDefault();
+                toggleVisibility(i);
+              }
+            : undefined
+        }
       />
     );
   }
+
   return (
     <svg
-      className="absolute inset-0 w-full h-full pointer-events-none"
+      ref={svgRef}
+      className={`absolute inset-0 w-full h-full ${editable ? '' : 'pointer-events-none'}`}
       viewBox={`${region.x} ${region.y} ${region.width} ${region.height}`}
       preserveAspectRatio="none"
+      style={editable ? { pointerEvents: 'none' } : undefined}
     >
       {points}
+      {hovered !== null && (
+        <text
+          x={keypoints[hovered * 3] + radius * 2}
+          y={keypoints[hovered * 3 + 1] - radius}
+          fill="#fff"
+          stroke="rgba(0,0,0,0.85)"
+          strokeWidth={radius * 0.5}
+          paintOrder="stroke"
+          fontSize={radius * 3.5}
+          style={{ pointerEvents: 'none' }}
+        >
+          {KEYPOINT_NAMES_RU[hovered] ?? `kp${hovered}`}
+        </text>
+      )}
     </svg>
   );
 }
@@ -174,9 +267,23 @@ interface FrameViewProps {
   accent: string;
   showFullFrame: boolean;
   showKeypoints: boolean;
+  keypoints: number[] | null;
+  editable?: boolean;
+  showHidden?: boolean;
+  onChange?: (keypoints: number[], commit: boolean) => void;
 }
 
-function FrameView({ frame, label, accent, showFullFrame, showKeypoints }: FrameViewProps) {
+function FrameView({
+  frame,
+  label,
+  accent,
+  showFullFrame,
+  showKeypoints,
+  keypoints,
+  editable,
+  showHidden,
+  onChange,
+}: FrameViewProps) {
   const [natural, setNatural] = useState<Rect | null>(null);
   const quality = frame.quality ?? {};
 
@@ -223,8 +330,14 @@ function FrameView({ frame, label, accent, showFullFrame, showKeypoints }: Frame
               : undefined
           }
         />
-        {showKeypoints && frame.keypoints && region && (
-          <KeypointOverlay keypoints={frame.keypoints} region={region} />
+        {showKeypoints && keypoints && region && (
+          <KeypointOverlay
+            keypoints={keypoints}
+            region={region}
+            editable={editable}
+            showHidden={showHidden}
+            onChange={onChange}
+          />
         )}
       </div>
     </div>
@@ -399,11 +512,16 @@ export default function FastReview() {
   const [emotion, setEmotion] = useState<string | null>(null);
   const [breedQuery, setBreedQuery] = useState('');
   const [rolesSwapped, setRolesSwapped] = useState(false);
+  // Правка точек идёт ЗДЕСЬ, а не в отдельном окне: переход в него стоил
+  // времени на каждой паре, а показывал те же данные в другом масштабе.
+  const [editPoints, setEditPoints] = useState(false);
+  const [showHiddenPoints, setShowHiddenPoints] = useState(false);
+  const [editedNeutral, setEditedNeutral] = useState<number[] | null>(null);
+  const [editedPeak, setEditedPeak] = useState<number[] | null>(null);
+  const [recomputing, setRecomputing] = useState(false);
   // Pełny edytor (przeciąganie 46 punktów, zakładki AU/emocja/rasa) działa na
   // sesji trzymanej w store — dlatego ładujemy ją tam obok szybkiego trybu.
-  const [editing, setEditing] = useState(false);
   const loadStoreSession = useStore((state) => state.loadSession);
-  const storeSession = useStore((state) => state.sessionData);
 
   const current = pairs[position];
 
@@ -476,6 +594,9 @@ export default function FastReview() {
       setEmotion(peak?.emotion ?? null);
       setBreedQuery('');
       setRolesSwapped(peak?.roles_swapped ?? false);
+      setEditedNeutral(null);
+      setEditedPeak(null);
+      setShowHiddenPoints(false);
     },
     [pairs]
   );
@@ -561,9 +682,9 @@ export default function FastReview() {
           event.preventDefault();
           setRolesSwapped((swapped) => !swapped);
           break;
-        case 'KeyE':
+        case 'KeyP':
           event.preventDefault();
-          setEditing(true);
+          setEditPoints((on) => !on);
           break;
         case 'KeyK':
           event.preventDefault();
@@ -598,22 +719,59 @@ export default function FastReview() {
     return () => window.removeEventListener('keydown', onKey);
   }, [current, toggle, commit, goTo, position]);
 
+  /**
+   * Сохраняет поправленные точки и, для нейтрального кадра, обновляет базу AU.
+   *
+   * `commit=false` приходит на каждом движении мыши — тогда только обновляем
+   * картинку, чтобы не слать на сервер сотню запросов за одно перетаскивание.
+   */
+  const saveKeypoints = useCallback(
+    async (role: 'neutral' | 'peak', points: number[], commit: boolean) => {
+      if (role === 'neutral') setEditedNeutral(points);
+      else setEditedPeak(points);
+      if (!commit || !session || !current) return;
+      const frame = role === 'neutral' ? current.neutral : current.peak;
+      try {
+        await patchKeypoints(session.session_id, frame.frame_idx, points, annotator ?? undefined);
+        frame.keypoints = points;
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Не удалось сохранить точки');
+      }
+    },
+    [session, current, annotator]
+  );
+
+  /**
+   * Пересчитывает AU и эмоцию по исправленным точкам.
+   *
+   * Это подсказка, а не ответ: пересчёт обновляет ЗАМЕР правил, который виден
+   * серой подписью «правило: да». Метку по-прежнему ставит человек.
+   */
+  const recompute = useCallback(async () => {
+    if (!session || !current || recomputing) return;
+    setRecomputing(true);
+    setError(null);
+    try {
+      await recomputeAUs(session.session_id, current.peak.frame_idx, current.trackId);
+      const result = await recomputeEmotion(
+        session.session_id,
+        current.peak.frame_idx,
+        current.trackId
+      );
+      const refreshed = await getSession(session.session_id);
+      setPairs(buildPairs(refreshed));
+      setEmotion(result.emotion);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось пересчитать');
+    } finally {
+      setRecomputing(false);
+    }
+  }, [session, current, recomputing]);
+
   const activeCount = useMemo(
     () => Object.values(verdicts).filter((value) => value === 'active').length,
     [verdicts]
   );
-
-  // Pełny edytor pracuje na klatce ze store'u — tej samej, którą sam zapisuje.
-  // Podanie mu kopii z szybkiego trybu znaczyłoby, że zapis idzie w próżnię.
-  const editorFrame = useMemo(() => {
-    if (!current || !storeSession) return null;
-    return (
-      storeSession.frames.find(
-        (frame) =>
-          frame.frame_idx === current.peak.frame_idx && frame.track_id === current.trackId
-      ) ?? null
-    );
-  }, [current, storeSession]);
 
   if (!session) {
     return (
@@ -740,21 +898,57 @@ export default function FastReview() {
       {/* Порядок кадров меняется вместе с ролями: если разметчик сказал, что
           пайплайн перепутал, база отсчёта встаёт слева, как и должна. */}
       <div className="flex gap-4 mb-2">
-        {(rolesSwapped ? [current.peak, current.neutral] : [current.neutral, current.peak]).map(
-          (frame, index) => (
-            <FrameView
-              key={frame.frame_idx}
-              frame={frame}
-              label={index === 0 ? 'Нейтральный (база AU)' : 'Пиковый (оцениваем)'}
-              accent={index === 0 ? 'text-blue-600' : 'text-amber-600'}
-              showFullFrame={showFullFrame}
-              showKeypoints={showKeypoints}
-            />
-          )
-        )}
+        {(rolesSwapped
+          ? ([['peak', current.peak], ['neutral', current.neutral]] as const)
+          : ([['neutral', current.neutral], ['peak', current.peak]] as const)
+        ).map(([role, frame], index) => (
+          <FrameView
+            key={frame.frame_idx}
+            frame={frame}
+            label={index === 0 ? 'Нейтральный (база AU)' : 'Пиковый (оцениваем)'}
+            accent={index === 0 ? 'text-blue-600' : 'text-amber-600'}
+            showFullFrame={showFullFrame}
+            showKeypoints={showKeypoints}
+            keypoints={
+              (role === 'neutral' ? editedNeutral : editedPeak) ?? frame.keypoints ?? null
+            }
+            editable={editPoints}
+            showHidden={editPoints && showHiddenPoints}
+            onChange={(points, commit) => void saveKeypoints(role, points, commit)}
+          />
+        ))}
       </div>
 
-      <div className="flex items-center gap-2 mb-3">
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <button
+          onClick={() => setEditPoints((on) => !on)}
+          className={`px-3 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+            editPoints
+              ? 'bg-green-600 border-green-700 text-white'
+              : 'bg-white border-gray-200 text-gray-600 hover:border-green-300'
+          }`}
+          title="Точки можно перетаскивать; правый клик скрывает или возвращает точку"
+        >
+          ✎ Править точки (P)
+        </button>
+        {editPoints && (
+          <>
+            <button
+              onClick={() => setShowHiddenPoints((on) => !on)}
+              className="px-3 py-1.5 rounded-md border border-gray-200 text-xs text-gray-600 hover:border-gray-400"
+            >
+              {showHiddenPoints ? 'скрыть спрятанные' : 'показать спрятанные'}
+            </button>
+            <button
+              onClick={() => void recompute()}
+              disabled={recomputing}
+              className="px-3 py-1.5 rounded-md border border-amber-300 bg-amber-50 text-xs text-amber-800 hover:border-amber-500 disabled:opacity-50"
+              title="Обновит подсказку автомата по исправленным точкам. Твою оценку не меняет."
+            >
+              {recomputing ? 'Считаю…' : '↻ Пересчитать AU и эмоцию'}
+            </button>
+          </>
+        )}
         <button
           onClick={() => setRolesSwapped((swapped) => !swapped)}
           className={`px-3 py-1.5 rounded-md border text-xs font-medium transition-colors ${
@@ -877,7 +1071,7 @@ export default function FastReview() {
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">X</kbd> кадр не годится ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">S</kbd> поменять роли ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">K</kbd> точки ·{' '}
-          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">E</kbd> полное редактирование ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">P</kbd> править точки ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">F</kbd>{' '}
           {showFullFrame ? 'вернуть кадр собаки' : 'весь кадр'} ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">←→</kbd> навигация
@@ -902,21 +1096,6 @@ export default function FastReview() {
       </div>
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
 
-      {editing && editorFrame && (
-        <FullEditorModal
-          frame={editorFrame}
-          onClose={async () => {
-            setEditing(false);
-            // Edytor zapisuje przez store, więc świeże keypoints i przeliczone
-            // AU trzeba wciągnąć z powrotem do szybkiego trybu — inaczej
-            // anotator widziałby wersję sprzed poprawki.
-            if (session) {
-              const refreshed = await getSession(session.session_id);
-              setPairs(buildPairs(refreshed));
-            }
-          }}
-        />
-      )}
     </div>
   );
 }
