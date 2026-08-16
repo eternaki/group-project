@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  AU_NAMES_RU,
   KEYPOINT_NAMES_RU,
   KEYPOINT_VISIBLE_THRESHOLD,
   NUM_KEYPOINTS,
@@ -20,7 +21,6 @@ import {
   type FrameAnnotation,
 } from '../types';
 import useStore from '../store/useStore';
-import AUPanel from './AUPanel';
 import BreedPicker from './BreedPicker';
 import EmotionSelector from './EmotionSelector';
 
@@ -33,7 +33,7 @@ type TabId = 'keypoints' | 'au' | 'emotion' | 'breed';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'keypoints', label: 'Точки' },
-  { id: 'au',        label: 'AU' },
+  { id: 'au',        label: 'AU (справка)' },
   { id: 'emotion',   label: 'Эмоция' },
   { id: 'breed',     label: 'Порода' },
 ];
@@ -66,6 +66,9 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
   );
   const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  // Скрытые точки по умолчанию не рисуются — экран показывает то, что уйдёт
+  // в датасет. Переключатель нужен, чтобы точку можно было вернуть.
+  const [showHidden, setShowHidden] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
 
   const bbox = frame.bbox;
@@ -122,13 +125,17 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
     // Punkty
     for (let i = 0; i < localKPs.length; i++) {
       const kp = localKPs[i];
+      const hidden = kp.v <= KEYPOINT_VISIBLE_THRESHOLD;
+
+      // Скрытая точка НЕ рисуется вовсе: холст шире картинки, и точка за её
+      // краем ложилась на тёмное поле — разметчик видел её, но кликнуть не мог,
+      // потому что она вне изображения. Экран должен показывать ровно то, что
+      // уйдёт в датасет; вернуть точку можно, включив «показать скрытые».
+      if (hidden && !showHidden) continue;
+
       const cx = kp.x * sx + offsetX;
       const cy = kp.y * sy + offsetY;
       const color = getKeypointColor(i);
-      // Скрытая точка рисуется ПУСТЫМ кольцом, а не бледной заливкой: бледная
-      // читалась как обычная и разметчик не понимал, убрал он её или нет.
-      // Кольцо оставляем, чтобы точку можно было вернуть кликом.
-      const hidden = kp.v <= KEYPOINT_VISIBLE_THRESHOLD;
       const radius = i === hoveredIdx ? POINT_RADIUS + 2 : POINT_RADIUS;
 
       ctx.globalAlpha = hidden ? 0.5 : 1;
@@ -157,7 +164,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
       ctx.fillStyle = '#fff';
       ctx.fillText(label, cx + 12, cy - 1);
     }
-  }, [localKPs, hoveredIdx, bbox]);
+  }, [localKPs, hoveredIdx, bbox, showHidden]);
 
   // Ladowanie obrazu i konfiguracja canvas
   useEffect(() => {
@@ -316,6 +323,16 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
               </span>
             ))}
             <span className="text-gray-500">· Видимых: {visibleCount}/{NUM_KEYPOINTS}</span>
+            {visibleCount < NUM_KEYPOINTS && (
+              <button
+                onClick={() => setShowHidden((shown) => !shown)}
+                className="ml-2 px-2 py-0.5 rounded border border-gray-600 text-gray-300 hover:border-gray-400"
+              >
+                {showHidden
+                  ? 'скрыть спрятанные'
+                  : `показать спрятанные (${NUM_KEYPOINTS - visibleCount})`}
+              </button>
+            )}
           </div>
           <div className="flex gap-2 flex-shrink-0">
             <button
@@ -383,7 +400,44 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
           )}
 
           {activeTab === 'au' && (
-            <AUPanel frameIdx={frame.frame_idx} aus={frame.aus} />
+            <div className="space-y-3">
+              {/*
+                Вкладка СПРАВОЧНАЯ. Раньше здесь правился `aus` — замер правил,
+                а не вердикт человека. В датасет как метка уходит `au_verdicts`,
+                который ставится в основном режиме, поэтому движение ползунков
+                тут ничего не размечало: человек думал, что размечает, а метка
+                не появлялась.
+              */}
+              <div className="p-3 rounded-lg bg-amber-950/40 border border-amber-800/60">
+                <p className="text-amber-200 text-xs leading-relaxed">
+                  Здесь показан <strong>замер автомата</strong>, а не твоя оценка.
+                  Разметка AU ставится в основном режиме — клавишами 1–8 и кликом;
+                  только она уходит в датасет.
+                </p>
+              </div>
+              <div className="space-y-1">
+                {Object.entries(frame.aus ?? {})
+                  .sort((a, b) => Math.abs(b[1].ratio - 1) - Math.abs(a[1].ratio - 1))
+                  .map(([code, au]) => (
+                    <div
+                      key={code}
+                      className="flex items-center gap-2 px-2 py-1 rounded bg-gray-800/60"
+                    >
+                      <span className="font-mono text-xs text-gray-300 w-16 shrink-0">{code}</span>
+                      <span className="text-[11px] text-gray-400 flex-1 truncate">
+                        {AU_NAMES_RU[code] ?? code}
+                      </span>
+                      <span
+                        className={`text-xs font-mono shrink-0 ${
+                          au.is_active ? 'text-amber-400' : 'text-gray-500'
+                        }`}
+                      >
+                        {au.ratio.toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            </div>
           )}
 
           {activeTab === 'emotion' && (

@@ -76,9 +76,16 @@ _store = SessionStore()
 
 
 class UpdateKeypointsRequest(BaseModel):
-    """Request dla PATCH keypoints."""
+    """
+    Request dla PATCH keypoints.
 
-    keypoints: list[float]  # 138 wartości (46 × [x, y, visibility])
+    Attributes:
+        keypoints: 138 wartości (46 × [x, y, visibility])
+        annotator: Kto poprawiał; identyfikuje plik etykiet
+    """
+
+    keypoints: list[float]
+    annotator: Optional[str] = None
 
 
 class AUData(BaseModel):
@@ -431,10 +438,30 @@ async def update_keypoints(
             status_code=422,
             detail=f"Oczekiwano {expected} wartości keypoints, otrzymano {len(request.keypoints)}",
         )
+    session = _load_session_or_404(session_id)
     frame = _get_frame_or_404(session_id, frame_idx, track_id)
     frame.keypoints = request.keypoints
-    frame.annotation_status = "reviewed"
+    frame.annotation_status = ANNOTATION_STATUS_REVIEWED
     _store.update_frame(session_id, frame)
+
+    # Sesja jest kasowalnym cache'em przebudowywanym przy każdym otwarciu, więc
+    # poprawione punkty muszą trafić do pliku etykiet — inaczej najdroższa praca
+    # anotatora (przeciąganie 46 punktów) ginie po przełączeniu użytkownika.
+    dataset, _, _ = session.video_filename.partition("/")
+    append_label(
+        dataset or session.video_filename,
+        build_record(
+            annotator=request.annotator,
+            pair_key=_pair_key_of(frame),
+            au_verdicts=frame.au_verdicts,
+            usable=frame.usable,
+            keypoints_ok=frame.keypoints_ok,
+            breed=None,
+            emotion=None,
+            roles_swapped=frame.roles_swapped,
+            keypoints=list(request.keypoints),
+        ),
+    )
     return {"ok": True}
 
 

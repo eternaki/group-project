@@ -159,3 +159,44 @@ class TestAnnotatorFromInterface:
             append_label(DATASET, build_record(f"{who}.jpg", {}, True, None, None, None, annotator=who))
         names = sorted(p.stem for p in (labels_root / DATASET).glob("*.jsonl"))
         assert names == ["anton", "danek", "mafin", "masha"]
+
+
+class TestKeypointPersistence:
+    """
+    Ręcznie poprawione punkty muszą przeżyć przebudowanie sesji.
+
+    Sesja jest kasowalnym cache'em budowanym przy każdym otwarciu narzędzia,
+    więc punkty zapisane wyłącznie w niej ginęły po przełączeniu użytkownika —
+    a przeciąganie 46 punktów to najdroższa praca anotatora.
+    """
+
+    def test_punkty_zapisuja_sie_w_etykiecie(self, labels_root: Path) -> None:
+        points = [1.0] * 138
+        append_label(DATASET, build_record(PAIR, {}, True, None, None, None, keypoints=points))
+        assert latest_by_pair(DATASET)[PAIR].keypoints == points
+
+    def test_zapis_werdyktow_nie_kasuje_punktow(self) -> None:
+        """
+        Sedno: zapis AU nie niesie keypoints, więc zwykłe nadpisanie ostatnim
+        rekordem skasowałoby poprawki punktów zrobione wcześniej.
+        """
+        points = [2.0] * 138
+        append_label(
+            DATASET,
+            build_record(PAIR, {}, True, None, None, None,
+                         keypoints=points, annotator="anna"),
+        )
+        append_label(
+            DATASET,
+            build_record(PAIR, {"AU25": "active"}, True, True, "Pug", "happy",
+                         annotator="anna"),
+        )
+        merged = latest_by_pair(DATASET)[PAIR]
+        assert merged.keypoints == points
+        assert merged.au_verdicts == {"AU25": "active"}
+        assert merged.breed == "Pug"
+
+    def test_nowsze_punkty_zastepuja_starsze(self) -> None:
+        append_label(DATASET, build_record(PAIR, {}, True, None, None, None, keypoints=[1.0] * 138))
+        append_label(DATASET, build_record(PAIR, {}, True, None, None, None, keypoints=[9.0] * 138))
+        assert latest_by_pair(DATASET)[PAIR].keypoints == [9.0] * 138

@@ -323,6 +323,10 @@ def _apply_label(frame: FrameAnnotation, record) -> None:
     frame.usable = record.usable
     frame.keypoints_ok = record.keypoints_ok
     frame.roles_swapped = getattr(record, "roles_swapped", False)
+    # Ręcznie poprawione punkty mają pierwszeństwo przed pomiarem modelu —
+    # to one są tym, co człowiek uznał za prawdę o tej klatce.
+    if getattr(record, "keypoints", None):
+        frame.keypoints = list(record.keypoints)
     if record.breed is not None:
         frame.breed = record.breed
     if record.emotion is not None:

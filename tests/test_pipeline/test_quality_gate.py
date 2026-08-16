@@ -229,3 +229,27 @@ class TestHideOutOfFrame:
     def test_bez_wymiarow_i_boksu_nic_sie_nie_zmienia(self) -> None:
         kp = _as_list(make_frontal_kp())
         assert hide_out_of_frame(kp) == kp
+
+    def test_zly_boks_nie_kasuje_calej_mordy(self) -> None:
+        """
+        Gdy poza boksem wypada niemal cała morda, błędny jest BOKS, nie punkty.
+
+        Na materiale z kilkoma psami boks bywa opisem innego psa niż zmierzone
+        keypoints. Zaufanie boksowi kasowało wtedy wszystkie 46 punktów i para
+        znikała bez śladu — zmierzone 7 klatek na 566.
+        """
+        kp = _as_list(make_frontal_kp())
+        far_away_box = [900.0, 900.0, 50.0, 50.0]
+        result = hide_out_of_frame(kp, image_size=(2000, 2000), bbox=far_away_box)
+        _, confidences = split_keypoints(result)
+        assert (confidences > 0).sum() == NUM_KEYPOINTS
+
+    def test_pojedynczy_odstajacy_punkt_nadal_znika(self) -> None:
+        """Próg chroni przed złym boksem, ale nie rozbraja reguły."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        kp[KP.TONGUE_TIP] = [1500.0, 1500.0, 0.9]
+        result = hide_out_of_frame(
+            _as_list(kp.flatten()), image_size=(2000, 2000), bbox=[60.0, 60.0, 200.0, 220.0]
+        )
+        _, confidences = split_keypoints(result)
+        assert confidences[KP.TONGUE_TIP] == 0.0

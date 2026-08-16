@@ -260,6 +260,11 @@ def face_width(coords: np.ndarray) -> float:
 # poprawne pomiary. Poza tym zapasem punkt twarzy nie należy już do tego psa.
 BBOX_MARGIN_RATIO: float = 0.25
 
+# Powyżej tego udziału punktów poza boksem uznajemy, że błędny jest BOKS,
+# a nie punkty — i nie ukrywamy niczego. Bez tego progu klatka z boksem
+# opisującym innego psa traciła wszystkie 46 punktów i para znikała bez śladu.
+MAX_OUTSIDE_BOX_RATIO: float = 0.5
+
 
 def hide_out_of_frame(
     keypoints: KeypointsInput,
@@ -300,12 +305,19 @@ def hide_out_of_frame(
     if bbox is not None and len(bbox) == 4:
         x, y, box_width, box_height = (float(value) for value in bbox)
         margin_x, margin_y = box_width * margin_ratio, box_height * margin_ratio
-        hidden |= (
+        outside_box = (
             (coords[:, 0] < x - margin_x)
             | (coords[:, 0] > x + box_width + margin_x)
             | (coords[:, 1] < y - margin_y)
             | (coords[:, 1] > y + box_height + margin_y)
         )
+        # Reguła zakłada, że boks jest poprawny. Gdy poza boksem wypada niemal
+        # CAŁA morda, to nie punkty są błędne, tylko boks — na materiale z kilkoma
+        # psami bywa, że boks opisuje innego psa niż zmierzone keypoints.
+        # Zaufanie boksowi kasowało wtedy wszystkie 46 punktów i unieważniało
+        # parę bez śladu (zmierzone: 7 klatek na 566).
+        if outside_box.mean() <= MAX_OUTSIDE_BOX_RATIO:
+            hidden |= outside_box
 
     corrected = confidences.copy()
     corrected[hidden] = 0.0

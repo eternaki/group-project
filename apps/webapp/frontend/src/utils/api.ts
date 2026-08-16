@@ -165,11 +165,12 @@ export async function patchReview(
 export async function patchKeypoints(
   sessionId: string,
   frameIdx: number,
-  keypoints: number[]
+  keypoints: number[],
+  annotator?: string
 ): Promise<void> {
   await axios.patch(
     `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/keypoints`,
-    { keypoints }
+    { keypoints, annotator: annotator ?? localStorage.getItem('dogfacs.annotator') }
   );
 }
 

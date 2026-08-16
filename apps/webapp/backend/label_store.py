@@ -54,6 +54,10 @@ class LabelRecord:
         breed: Rasa po poprawce człowieka
         emotion: Emocja po poprawce człowieka
         roles_swapped: Czy role klatek są odwrotne (szczytowa jest spoczynkowa)
+        keypoints: Punkty poprawione ręcznie (138 wartości) albo None, gdy ta
+            decyzja ich nie dotyczyła. Przeciąganie 46 punktów to najdroższa
+            praca anotatora — bez zapisania jej TUTAJ ginęła przy każdym
+            przebudowaniu sesji, czyli przy każdym otwarciu narzędzia.
     """
 
     pair_key: str
@@ -65,6 +69,7 @@ class LabelRecord:
     breed: Optional[str] = None
     emotion: Optional[str] = None
     roles_swapped: bool = False
+    keypoints: Optional[list[float]] = None
 
     def to_json_line(self) -> str:
         """Serializuje rekord do jednej linii JSONL."""
@@ -78,6 +83,7 @@ class LabelRecord:
             "breed": self.breed,
             "emotion": self.emotion,
             "roles_swapped": self.roles_swapped,
+            "keypoints": self.keypoints,
         }
         return json.dumps(payload, ensure_ascii=False)
 
@@ -140,6 +146,7 @@ def build_record(
     emotion: Optional[str],
     roles_swapped: bool = False,
     annotator: Optional[str] = None,
+    keypoints: Optional[list[float]] = None,
 ) -> LabelRecord:
     """
     Składa rekord etykiety z bieżącym anotatorem i znacznikiem czasu.
@@ -170,6 +177,7 @@ def build_record(
         breed=breed,
         emotion=emotion,
         roles_swapped=roles_swapped,
+        keypoints=keypoints,
     )
 
 
@@ -204,21 +212,36 @@ def read_all(dataset: str) -> list[LabelRecord]:
     return sorted(records, key=lambda record: record.timestamp)
 
 
+# Pola, w których None znaczy „ta decyzja ich nie dotyczyła", a nie „wyczyść".
+# Nadpisanie ich wartością None gubiłoby wcześniejszą pracę: zapis werdyktów AU
+# nie niesie keypoints, więc skasowałby ręczne poprawki punktów.
+_MERGEABLE_FIELDS: tuple[str, ...] = ("keypoints", "breed", "emotion", "keypoints_ok")
+
+
 def latest_by_pair(dataset: str) -> dict[str, LabelRecord]:
     """
-    Zwraca NAJŚWIEŻSZĄ decyzję o każdej parze.
+    Zwraca obowiązujący stan każdej pary, SCALONY z kolejnych decyzji.
 
-    Historia zostaje w pliku — tu tylko rozstrzygamy, co pokazać anotatorowi
-    i co uznać za obowiązujące. Wcześniejsze wersje są nadal potrzebne do
-    policzenia zgodności między osobami.
+    Scalanie, a nie zwykłe nadpisanie ostatnim rekordem: zapis werdyktów AU nie
+    niesie poprawionych keypoints, więc nadpisanie skasowałoby przeciągnięte
+    ręcznie punkty — najdroższą pracę anotatora. Pole ustawione na None znaczy
+    „ta decyzja go nie dotyczyła", więc zostaje poprzednia wartość.
+
+    Historia zostaje w pliku nietknięta — jest potrzebna do policzenia zgodności
+    między osobami.
 
     Args:
         dataset: Nazwa zbioru
 
     Returns:
-        Mapa `pair_key` → ostatni rekord
+        Mapa `pair_key` → stan obowiązujący
     """
     latest: dict[str, LabelRecord] = {}
     for record in read_all(dataset):
+        previous = latest.get(record.pair_key)
+        if previous is not None:
+            for field_name in _MERGEABLE_FIELDS:
+                if getattr(record, field_name) is None:
+                    setattr(record, field_name, getattr(previous, field_name))
         latest[record.pair_key] = record
     return latest
