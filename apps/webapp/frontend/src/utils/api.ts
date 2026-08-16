@@ -258,6 +258,10 @@ export interface IngestStatus {
   videos_processed: number;
   running: boolean;
   pairs_ready: number;
+  /** idle | starting | processing | curating | done | failed */
+  stage: string;
+  /** Тот же этап по-русски, для показа */
+  stage_label: string;
 }
 
 /** Результат загрузки файлов в общую папку. */
@@ -267,12 +271,22 @@ export interface UploadResult {
   videos_total: number;
 }
 
-/** Загружает видео в общую папку команды. */
-export async function uploadVideos(files: File[]): Promise<UploadResult> {
+/**
+ * Загружает видео в общую папку команды.
+ *
+ * @param files Файлы для загрузки
+ * @param onProgress Сколько байт уже ушло — папка с видео весит гигабайты,
+ *   и без индикатора загрузка выглядит как зависание
+ */
+export async function uploadVideos(
+  files: File[],
+  onProgress?: (bytes: number) => void
+): Promise<UploadResult> {
   const form = new FormData();
   for (const file of files) form.append('files', file);
   const response = await axios.post<UploadResult>(`${API_BASE}/ingest/upload`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress: (event) => onProgress?.(event.loaded),
   });
   return response.data;
 }

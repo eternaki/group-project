@@ -8,6 +8,7 @@ import Timeline from './components/Timeline';
 import PeakFramesGrid from './components/PeakFramesGrid';
 import ExportPanel from './components/ExportPanel';
 import FastReview from './components/FastReview';
+import VideoIngest from './components/VideoIngest';
 import useStore from './store/useStore';
 
 /**
@@ -17,7 +18,7 @@ import useStore from './store/useStore';
  * anotatora bez ponownego przeliczania wideo. `video` to stara ścieżka —
  * wgraj nagranie i przepuść przez pipeline.
  */
-type Mode = 'review' | 'video';
+type Mode = 'review' | 'ingest' | 'video';
 
 export default function App() {
   const { error, videoData } = useStore();
@@ -39,7 +40,8 @@ export default function App() {
           <nav className="flex gap-1 bg-primary-800/40 p-1 rounded-lg shrink-0">
             {([
               ['review', 'Разметка AU'],
-              ['video', 'Обработка видео'],
+              ['ingest', 'Загрузка видео'],
+              ['video', 'Обработка одного видео'],
             ] as [Mode, string][]).map(([value, label]) => (
               <button
                 key={value}
@@ -56,9 +58,10 @@ export default function App() {
       </header>
 
       {mode === 'review' && <FastReview />}
+      {mode === 'ingest' && <VideoIngest />}
 
       {/* Main Content */}
-      <main className={`container mx-auto px-4 py-8 ${mode === 'review' ? 'hidden' : ''}`}>
+      <main className={`container mx-auto px-4 py-8 ${mode === 'video' ? '' : 'hidden'}`}>
         {/* Error Message */}
         {error && (
           <div className="mb-6 bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded">

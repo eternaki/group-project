@@ -78,7 +78,7 @@ async def ingest_status():
     Zwraca stan dosypywania.
 
     Returns:
-        `{videos_total, videos_processed, running, pairs_ready}`
+        `{videos_total, videos_processed, running, pairs_ready, stage, stage_label}`
     """
     current = status()
     return {
@@ -86,4 +86,6 @@ async def ingest_status():
         "videos_processed": current.videos_processed,
         "running": current.running,
         "pairs_ready": current.pairs_ready,
+        "stage": current.stage,
+        "stage_label": current.stage_label,
     }

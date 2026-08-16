@@ -14,6 +14,7 @@ wspólnego katalogu i ponowne uruchomienie przetwarza tylko nowe.
 """
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,20 @@ CURATE_EVERY: int = 20
 # Ile nagrań batch bierze na jedno wywołanie. Dzielimy przebieg na porcje, żeby
 # między nimi zmieścić kurację — batch sam nie daje takiego zaczepienia.
 CHUNK_VIDEOS: int = CURATE_EVERY
+
+
+def write_stage(dataset: Path, stage: str) -> None:
+    """
+    Zapisuje etap pracy, żeby interfejs mógł go pokazać.
+
+    Bez tego pasek postępu stoi nieruchomo przez pierwsze minuty (ładowanie
+    modeli trwa ~40 s) i anotator uznaje, że narzędzie się zawiesiło.
+
+    Args:
+        dataset: Katalog zbioru
+        stage: Nazwa etapu
+    """
+    (dataset / "stage.json").write_text(json.dumps({"stage": stage}), encoding="utf-8")
 
 
 def venv_python() -> str:
@@ -113,14 +128,18 @@ def main() -> None:
 
     try:
         print(f"[..] Przetwarzam nagrania z {args.videos}", flush=True)
+        write_stage(args.dataset, "processing")
         code = run_batch(args.videos, args.dataset)
         if code != 0:
             print(f"[UWAGA] Batch zakonczyl sie kodem {code}", flush=True)
 
+        write_stage(args.dataset, "curating")
         if run_curation(args.dataset):
             print("[OK] Kuracja odswiezona — nowe pary sa w kolejce", flush=True)
+            write_stage(args.dataset, "done")
         else:
             print("[UWAGA] Kuracja sie nie powiodla", flush=True)
+            write_stage(args.dataset, "failed")
     finally:
         # Blokada musi zniknąć nawet po awarii, inaczej dosypywanie zostanie
         # zablokowane na zawsze i nikt nie zgadnie dlaczego.

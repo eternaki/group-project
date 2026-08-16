@@ -29,7 +29,7 @@ VIDEOS_SUBDIR: str = "DOGS"
 
 # Gdzie ląduje zbiór budowany z dosypanych nagrań
 INBOX_DATASET_ENV: str = "DOGFACS_INBOX_DATASET"
-DEFAULT_INBOX_DATASET: str = "data/dataset_manual"
+DEFAULT_INBOX_DATASET: str = "data/dataset_new"
 
 # Rozszerzenia, które w ogóle przyjmujemy
 ALLOWED_SUFFIXES: frozenset[str] = frozenset({".mp4", ".webm", ".mkv", ".avi", ".mov"})
@@ -47,6 +47,25 @@ class IngestError(ValueError):
     """Wyjątek, gdy pliku nie da się przyjąć do obróbki."""
 
 
+# Etapy przetwarzania pokazywane anotatorowi. Bez nich pasek postępu stoi
+# nieruchomo przez pierwsze minuty (ładowanie modeli) i wygląda na zawieszony.
+STAGE_IDLE: str = "idle"
+STAGE_STARTING: str = "starting"
+STAGE_PROCESSING: str = "processing"
+STAGE_CURATING: str = "curating"
+STAGE_DONE: str = "done"
+STAGE_FAILED: str = "failed"
+
+STAGE_LABELS: dict[str, str] = {
+    STAGE_IDLE: "не запущено",
+    STAGE_STARTING: "загрузка моделей",
+    STAGE_PROCESSING: "обработка видео",
+    STAGE_CURATING: "подготовка пар к разметке",
+    STAGE_DONE: "готово",
+    STAGE_FAILED: "ошибка",
+}
+
+
 @dataclass(frozen=True)
 class IngestStatus:
     """
@@ -57,12 +76,16 @@ class IngestStatus:
         videos_processed: Ile z nich pipeline już przerobił
         running: Czy proces przetwarzania właśnie pracuje
         pairs_ready: Ile par czeka już na anotatora w zbiorze z dosypki
+        stage: Etap pracy (`STAGE_*`)
+        stage_label: Etap po rosyjsku, do pokazania anotatorowi
     """
 
     videos_total: int
     videos_processed: int
     running: bool
     pairs_ready: int
+    stage: str
+    stage_label: str
 
 
 def videos_root() -> Path:
@@ -189,6 +212,32 @@ def pairs_ready() -> int:
     )
 
 
+def _stage_path() -> Path:
+    """Ścieżka pliku z etapem pracy — pisze go proces przetwarzania."""
+    return inbox_dataset() / "stage.json"
+
+
+def current_stage() -> str:
+    """
+    Zwraca etap, na którym stoi przetwarzanie.
+
+    Returns:
+        Jedna z wartości `STAGE_*`; `idle`, gdy nic nie pracuje
+    """
+    path = _stage_path()
+    if not path.is_file():
+        return STAGE_IDLE
+    try:
+        with open(path, encoding="utf-8") as handle:
+            stage = json.load(handle).get("stage", STAGE_IDLE)
+    except (json.JSONDecodeError, OSError):
+        return STAGE_IDLE
+    # Proces padł, a plik został — bez tej poprawki pasek stałby w „obróbce"
+    if stage in (STAGE_PROCESSING, STAGE_CURATING, STAGE_STARTING) and not is_running():
+        return STAGE_FAILED
+    return stage
+
+
 def _lock_path() -> Path:
     """Ścieżka pliku blokady — trzyma PID pracującego procesu."""
     return inbox_dataset() / "worker.pid"
@@ -296,6 +345,7 @@ def start_processing(repo_root: Path, python_executable: Optional[str] = None) -
         creationflags=creation_flags,
     )
     _lock_path().write_text(str(process.pid), encoding="utf-8")
+    _stage_path().write_text(json.dumps({"stage": STAGE_STARTING}), encoding="utf-8")
     return process.pid
 
 
@@ -306,9 +356,12 @@ def status() -> IngestStatus:
     Returns:
         `IngestStatus` z licznikami i informacją, czy praca trwa
     """
+    stage = current_stage()
     return IngestStatus(
         videos_total=len(list_videos()),
         videos_processed=processed_count(),
         running=is_running(),
         pairs_ready=pairs_ready(),
+        stage=stage,
+        stage_label=STAGE_LABELS.get(stage, stage),
     )

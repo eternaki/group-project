@@ -40,7 +40,6 @@ import {
 } from '../utils/api';
 import useStore from '../store/useStore';
 import FullEditorModal from './FullEditorModal';
-import VideoIngest from './VideoIngest';
 
 /** Клавиши 1-8 у первых AU из VERIFIABLE_AU; остальные размечаются кликом */
 const AU_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
@@ -669,9 +668,9 @@ export default function FastReview() {
         {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
 
         {annotator && (
-          <div className="mt-6">
-            <VideoIngest />
-          </div>
+          <p className="mt-4 text-xs text-gray-400">
+            Новые видео добавляются на вкладке «Загрузка видео».
+          </p>
         )}
       </div>
     );
