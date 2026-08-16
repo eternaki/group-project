@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  KEYPOINT_VISIBLE_THRESHOLD,
   KEYPOINT_NAMES_RU,
   NUM_KEYPOINTS,
   SKELETON_CONNECTIONS,
@@ -103,7 +104,7 @@ export default function KeypointEditor({ frameIdx, imageUrl, keypoints }: Keypoi
       const cy = kp.y * sy + offsetY;
       const color = getKeypointColor(i);
       // Punkty o niskiej pewności pokazujemy półprzezroczyście (ale widocznie)
-      const alpha = kp.v < 0.3 ? 0.55 : 1;
+      const alpha = kp.v < KEYPOINT_VISIBLE_THRESHOLD ? 0.55 : 1;
 
       ctx.globalAlpha = alpha;
       ctx.beginPath();
@@ -198,7 +199,7 @@ export default function KeypointEditor({ frameIdx, imageUrl, keypoints }: Keypoi
     if (idx === -1) return;
     setLocalKPs((prev) => {
       const next = [...prev];
-      next[idx] = { ...next[idx], v: next[idx].v > 0.3 ? 0 : 1.0 };
+      next[idx] = { ...next[idx], v: next[idx].v > KEYPOINT_VISIBLE_THRESHOLD ? 0 : 1.0 };
       return next;
     });
     setIsDirty(true);
@@ -294,7 +295,7 @@ export default function KeypointEditor({ frameIdx, imageUrl, keypoints }: Keypoi
       {/* Info o liczbie punktów */}
       {localKPs.length > 0 && (
         <p className="text-[10px] text-gray-400 text-center">
-          Widocznych: {localKPs.filter((k) => k.v > 0.3).length} / {NUM_KEYPOINTS} · {KEYPOINT_NAMES_RU.length} названий
+          Widocznych: {localKPs.filter((k) => k.v > KEYPOINT_VISIBLE_THRESHOLD).length} / {NUM_KEYPOINTS} · {KEYPOINT_NAMES_RU.length} названий
         </p>
       )}
     </div>

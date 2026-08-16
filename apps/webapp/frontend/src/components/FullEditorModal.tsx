@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   KEYPOINT_NAMES_RU,
+  KEYPOINT_VISIBLE_THRESHOLD,
   NUM_KEYPOINTS,
   SKELETON_CONNECTIONS,
   getKeypointColor,
@@ -110,7 +111,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
     for (const [a, b] of SKELETON_CONNECTIONS) {
       const kpA = localKPs[a];
       const kpB = localKPs[b];
-      if (kpA.v > 0.3 && kpB.v > 0.3) {
+      if (kpA.v > KEYPOINT_VISIBLE_THRESHOLD && kpB.v > KEYPOINT_VISIBLE_THRESHOLD) {
         ctx.beginPath();
         ctx.moveTo(kpA.x * sx + offsetX, kpA.y * sy + offsetY);
         ctx.lineTo(kpB.x * sx + offsetX, kpB.y * sy + offsetY);
@@ -124,14 +125,19 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
       const cx = kp.x * sx + offsetX;
       const cy = kp.y * sy + offsetY;
       const color = getKeypointColor(i);
-      const alpha = kp.v < 0.3 ? 0.25 : 1;
+      // Скрытая точка рисуется ПУСТЫМ кольцом, а не бледной заливкой: бледная
+      // читалась как обычная и разметчик не понимал, убрал он её или нет.
+      // Кольцо оставляем, чтобы точку можно было вернуть кликом.
+      const hidden = kp.v <= KEYPOINT_VISIBLE_THRESHOLD;
       const radius = i === hoveredIdx ? POINT_RADIUS + 2 : POINT_RADIUS;
 
-      ctx.globalAlpha = alpha;
+      ctx.globalAlpha = hidden ? 0.5 : 1;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
+      if (!hidden) {
+        ctx.fillStyle = color;
+        ctx.fill();
+      }
       ctx.strokeStyle = i === hoveredIdx ? '#fff' : '#000';
       ctx.lineWidth = i === hoveredIdx ? 1.5 : 0.8;
       ctx.stroke();
@@ -241,7 +247,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
     if (idx === -1) return;
     setLocalKPs((prev) => {
       const next = [...prev];
-      next[idx] = { ...next[idx], v: next[idx].v > 0.3 ? 0 : 1.0 };
+      next[idx] = { ...next[idx], v: next[idx].v > KEYPOINT_VISIBLE_THRESHOLD ? 0 : 1.0 };
       return next;
     });
     setIsDirty(true);
@@ -263,7 +269,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
     onClose();
   };
 
-  const visibleCount = localKPs.filter((k) => k.v > 0.3).length;
+  const visibleCount = localKPs.filter((k) => k.v > KEYPOINT_VISIBLE_THRESHOLD).length;
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex bg-black/90">

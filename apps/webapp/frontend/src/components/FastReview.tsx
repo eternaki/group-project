@@ -22,6 +22,7 @@ import {
   EMOTION_CLASSES,
   EMOTION_EMOJI,
   EMOTION_NAMES_RU,
+  KEYPOINT_VISIBLE_THRESHOLD,
   VERIFIABLE_AU,
   getKeypointColor,
   type AUVerdict,
@@ -119,11 +120,8 @@ function cropRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
   };
 }
 
-/** Promień punktu keypoint jako ułamek szerokości wycinka — skaluje się z kadrem */
+/** Promien punktu keypoint jako ułamek szerokości wycinka — skaluje się z kadrem */
 const KEYPOINT_RADIUS_RATIO = 0.006;
-
-/** Poniżej tej pewności punkt rysujemy jako niepewny */
-const WEAK_KEYPOINT_CONF = 0.5;
 
 interface KeypointOverlayProps {
   keypoints: number[];
@@ -131,24 +129,29 @@ interface KeypointOverlayProps {
 }
 
 /**
- * Rysuje 46 punktów na kadrze.
+ * Рисует точки, которые ПОЙДУТ В ДАТАСЕТ, — и только их.
  *
- * viewBox ustawiony na wycinek sprawia, że współrzędne z COCO (w pikselach
- * oryginału) trafiają na swoje miejsce bez żadnego przeliczania — a przy
- * zmianie rozmiaru okna skalują się razem z obrazem.
+ * Скрытые точки (видимость ниже порога) не рисуются вовсе. Раньше они
+ * рисовались красным как «ненадёжные», и разметчик, спрятав точку в редакторе,
+ * видел её здесь ярко-красной — то есть два окна показывали разные данные.
+ *
+ * viewBox по вырезу кадра означает, что координаты из COCO (в пикселях
+ * оригинала) попадают на своё место без пересчёта и масштабируются вместе
+ * с картинкой при изменении окна.
  */
 function KeypointOverlay({ keypoints, region }: KeypointOverlayProps) {
   const radius = region.width * KEYPOINT_RADIUS_RATIO;
   const points = [];
   for (let i = 0; i < keypoints.length; i += 3) {
-    const [x, y, confidence] = [keypoints[i], keypoints[i + 1], keypoints[i + 2]];
+    const [x, y, visibility] = [keypoints[i], keypoints[i + 1], keypoints[i + 2]];
+    if (visibility <= KEYPOINT_VISIBLE_THRESHOLD) continue;
     points.push(
       <circle
         key={i}
         cx={x}
         cy={y}
         r={radius}
-        fill={confidence < WEAK_KEYPOINT_CONF ? '#ef4444' : getKeypointColor(i / 3)}
+        fill={getKeypointColor(i / 3)}
         stroke="rgba(0,0,0,0.6)"
         strokeWidth={radius * 0.3}
       />
