@@ -33,8 +33,10 @@ import {
   getSession,
   importCoco,
   listDatasets,
+  listTeam,
   patchReview,
   type AvailableDataset,
+  type TeamMember,
 } from '../utils/api';
 import useStore from '../store/useStore';
 import FullEditorModal from './FullEditorModal';
@@ -44,6 +46,14 @@ const AU_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
 
 /** Порядок анатомических групп на экране */
 const AU_GROUP_ORDER = ['Пасть', 'Глаза', 'Нос', 'Уши'];
+
+/**
+ * Где помним выбранного разметчика.
+ *
+ * Без запоминания каждый заход начинался бы с выбора имени, а промах по кнопке
+ * означал бы работу над чужой очередью и записи в чужой файл этикеток.
+ */
+const ANNOTATOR_STORAGE_KEY = 'dogfacs.annotator';
 
 interface ReviewPair {
   trackId: number;
@@ -286,6 +296,37 @@ const BREED_SUGGESTIONS = 6;
 // więc anotator musi mieć jak powiedzieć "nie wiem" zamiast zgadywać.
 const UNKNOWN_BREED = 'unknown';
 
+interface AnnotatorPickerProps {
+  team: TeamMember[];
+  current: string | null;
+  onPick: (key: string) => void;
+}
+
+/**
+ * Кто размечает. От выбора зависит, какие видео попадут в очередь и в чей файл
+ * этикеток уйдут вердикты, поэтому имя видно всегда, а не прячется в настройках.
+ */
+function AnnotatorPicker({ team, current, onPick }: AnnotatorPickerProps) {
+  if (!team.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-3">
+      {team.map((member) => (
+        <button
+          key={member.key}
+          onClick={() => onPick(member.key)}
+          className={`px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
+            current === member.key
+              ? 'bg-primary-700 border-primary-800 text-white'
+              : 'bg-white border-gray-200 text-gray-700 hover:border-primary-400'
+          }`}
+        >
+          {member.display}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 interface ChoiceRowProps {
   label: string;
   hint?: string;
@@ -331,6 +372,10 @@ function Pill({ active, onClick, children, tone = 'amber' }: PillProps) {
 }
 
 export default function FastReview() {
+  const [team, setTeam] = useState<TeamMember[]>([]);
+  const [annotator, setAnnotator] = useState<string | null>(
+    () => localStorage.getItem(ANNOTATOR_STORAGE_KEY)
+  );
   const [datasets, setDatasets] = useState<AvailableDataset[] | null>(null);
   const [session, setSession] = useState<SessionData | null>(null);
   const [pairs, setPairs] = useState<ReviewPair[]>([]);
@@ -350,6 +395,7 @@ export default function FastReview() {
   const [breed, setBreed] = useState<string | null>(null);
   const [emotion, setEmotion] = useState<string | null>(null);
   const [breedQuery, setBreedQuery] = useState('');
+  const [rolesSwapped, setRolesSwapped] = useState(false);
   // Pełny edytor (przeciąganie 46 punktów, zakładki AU/emocja/rasa) działa na
   // sesji trzymanej w store — dlatego ładujemy ją tam obok szybkiego trybu.
   const [editing, setEditing] = useState(false);
@@ -358,11 +404,21 @@ export default function FastReview() {
 
   const current = pairs[position];
 
+  const pickAnnotator = useCallback((key: string) => {
+    localStorage.setItem(ANNOTATOR_STORAGE_KEY, key);
+    setAnnotator(key);
+    // Смена человека меняет очередь целиком — сессию сбрасываем, иначе
+    // на экране осталась бы чужая пара.
+    setSession(null);
+    setPairs([]);
+    setDatasets(null);
+  }, []);
+
   const startSession = useCallback(async (path: string) => {
     setBusy(true);
     setError(null);
     try {
-      const imported = await importCoco(path);
+      const imported = await importCoco(path, annotator ?? undefined);
       const loaded = await getSession(imported.session_id);
       await loadStoreSession(imported.session_id);
       const built = buildPairs(loaded);
@@ -379,13 +435,18 @@ export default function FastReview() {
     } finally {
       setBusy(false);
     }
-  }, [loadStoreSession]);
+  }, [loadStoreSession, annotator]);
 
   // Zbiory znajdują się same. Gdy jest dokładnie jeden, od razu go otwieramy —
   // anotator ma zobaczyć pierwszą parę, a nie formularz.
   useEffect(() => {
+    listTeam().then(setTeam).catch(() => setTeam([]));
+  }, []);
+
+  useEffect(() => {
+    if (!annotator) return;
     let cancelled = false;
-    listDatasets()
+    listDatasets(annotator)
       .then(({ datasets: found }) => {
         if (cancelled) return;
         setDatasets(found);
@@ -397,7 +458,7 @@ export default function FastReview() {
     return () => {
       cancelled = true;
     };
-  }, [startSession]);
+  }, [startSession, annotator]);
 
   const goTo = useCallback(
     (index: number) => {
@@ -411,6 +472,7 @@ export default function FastReview() {
       setBreed(peak?.breed ?? null);
       setEmotion(peak?.emotion ?? null);
       setBreedQuery('');
+      setRolesSwapped(peak?.roles_swapped ?? false);
     },
     [pairs]
   );
@@ -452,12 +514,14 @@ export default function FastReview() {
           keypoints_ok: usable ? keypointsOk : false,
           breed,
           emotion,
+          roles_swapped: rolesSwapped,
         });
         current.peak.au_verdicts = complete;
         current.peak.keypoints_ok = usable ? keypointsOk : false;
         current.peak.breed = breed;
         current.peak.emotion = emotion;
         current.peak.usable = usable;
+        current.peak.roles_swapped = rolesSwapped;
         if (current.peak.annotation_status !== 'verified') {
           current.peak.annotation_status = 'verified';
           setVerifiedCount((count) => count + 1);
@@ -470,7 +534,7 @@ export default function FastReview() {
         setBusy(false);
       }
     },
-    [session, current, busy, verdicts, position, goTo, keypointsOk, breed, emotion]
+    [session, current, busy, verdicts, position, goTo, keypointsOk, breed, emotion, rolesSwapped]
   );
 
   useEffect(() => {
@@ -483,7 +547,10 @@ export default function FastReview() {
         toggle(VERIFIABLE_AU[digit].code, event.shiftKey ? 'not_observable' : 'active');
         return;
       }
-      if (event.key === 'e' || event.key === 'E') {
+      if (event.key === 's' || event.key === 'S') {
+        event.preventDefault();
+        setRolesSwapped((swapped) => !swapped);
+      } else if (event.key === 'e' || event.key === 'E') {
         event.preventDefault();
         setEditing(true);
       } else if (event.key === 'k' || event.key === 'K') {
@@ -530,7 +597,15 @@ export default function FastReview() {
     return (
       <div className="max-w-xl mx-auto mt-16 p-6 bg-white rounded-xl border border-gray-200">
         <h2 className="text-lg font-bold text-gray-800">Разметка AU</h2>
-        {datasets === null && !error && (
+
+        <AnnotatorPicker team={team} current={annotator} onPick={pickAnnotator} />
+
+        {!annotator && (
+          <p className="text-sm text-gray-500 mt-3">
+            Выбери, кто размечает — у каждого своя часть видео, чтобы не делать одно и то же.
+          </p>
+        )}
+        {annotator && datasets === null && !error && (
           <p className="text-sm text-gray-500 mt-2">Ищу наборы для разметки…</p>
         )}
         {busy && <p className="text-sm text-gray-500 mt-2">Загружаю набор…</p>}
@@ -597,17 +672,34 @@ export default function FastReview() {
     <div className="max-w-6xl mx-auto p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="text-sm text-gray-600">
-          Пара <strong>{position + 1}</strong> / {pairs.length} · размечено{' '}
+          <span className="font-semibold text-primary-700">
+            {team.find((m) => m.key === annotator)?.display ?? annotator}
+          </span>{' '}
+          · Пара <strong>{position + 1}</strong> / {pairs.length} · размечено{' '}
           <strong className="text-green-700">{verifiedCount}</strong> · отброшено{' '}
           <strong className="text-gray-600">{rejectedCount}</strong> · активных AU{' '}
           <strong className="text-amber-700">{activeCount}</strong>
         </div>
-        <button
-          onClick={() => exportSessionCOCO(session.session_id, session.video_filename)}
-          className="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700"
-        >
-          Экспорт COCO
-        </button>
+        <div className="flex gap-2 shrink-0">
+          <button
+            onClick={() => {
+              localStorage.removeItem(ANNOTATOR_STORAGE_KEY);
+              setAnnotator(null);
+              setSession(null);
+              setPairs([]);
+              setDatasets(null);
+            }}
+            className="text-xs px-3 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+          >
+            Сменить пользователя
+          </button>
+          <button
+            onClick={() => exportSessionCOCO(session.session_id, session.video_filename)}
+            className="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700"
+          >
+            Экспорт COCO
+          </button>
+        </div>
       </div>
 
       <div className="h-1.5 bg-gray-200 rounded-full mb-4 overflow-hidden">
@@ -617,21 +709,40 @@ export default function FastReview() {
         />
       </div>
 
-      <div className="flex gap-4 mb-4">
-        <FrameView
-          frame={current.neutral}
-          label="Нейтральный (база AU)"
-          accent="text-blue-600"
-          showFullFrame={showFullFrame}
-          showKeypoints={showKeypoints}
-        />
-        <FrameView
-          frame={current.peak}
-          label="Пиковый (оцениваем)"
-          accent="text-amber-600"
-          showFullFrame={showFullFrame}
-          showKeypoints={showKeypoints}
-        />
+      {/* Порядок кадров меняется вместе с ролями: если разметчик сказал, что
+          пайплайн перепутал, база отсчёта встаёт слева, как и должна. */}
+      <div className="flex gap-4 mb-2">
+        {(rolesSwapped ? [current.peak, current.neutral] : [current.neutral, current.peak]).map(
+          (frame, index) => (
+            <FrameView
+              key={frame.frame_idx}
+              frame={frame}
+              label={index === 0 ? 'Нейтральный (база AU)' : 'Пиковый (оцениваем)'}
+              accent={index === 0 ? 'text-blue-600' : 'text-amber-600'}
+              showFullFrame={showFullFrame}
+              showKeypoints={showKeypoints}
+            />
+          )
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 mb-3">
+        <button
+          onClick={() => setRolesSwapped((swapped) => !swapped)}
+          className={`px-3 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+            rolesSwapped
+              ? 'bg-blue-600 border-blue-700 text-white'
+              : 'bg-white border-gray-200 text-gray-600 hover:border-blue-300'
+          }`}
+          title="Если спокойным выглядит правый кадр — роли перепутаны"
+        >
+          ⇄ Поменять роли (S)
+        </button>
+        {rolesSwapped && (
+          <span className="text-xs text-blue-700">
+            роли переставлены — база отсчёта слева
+          </span>
+        )}
       </div>
 
       {/* Все 21 AU, сгруппированные по анатомии. Клавиши 1-8 у самых частых,
@@ -736,6 +847,7 @@ export default function FastReview() {
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Shift+1–8</kbd> не видно ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Enter</kbd> сохранить и дальше ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">X</kbd> кадр не годится ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">S</kbd> поменять роли ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">K</kbd> точки ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">E</kbd> полное редактирование ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">F</kbd>{' '}

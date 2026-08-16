@@ -53,6 +53,7 @@ class LabelRecord:
         keypoints_ok: Czy punkty leżą na mordzie; None = nieoceniono
         breed: Rasa po poprawce człowieka
         emotion: Emocja po poprawce człowieka
+        roles_swapped: Czy role klatek są odwrotne (szczytowa jest spoczynkowa)
     """
 
     pair_key: str
@@ -63,6 +64,7 @@ class LabelRecord:
     keypoints_ok: Optional[bool] = None
     breed: Optional[str] = None
     emotion: Optional[str] = None
+    roles_swapped: bool = False
 
     def to_json_line(self) -> str:
         """Serializuje rekord do jednej linii JSONL."""
@@ -75,6 +77,7 @@ class LabelRecord:
             "keypoints_ok": self.keypoints_ok,
             "breed": self.breed,
             "emotion": self.emotion,
+            "roles_swapped": self.roles_swapped,
         }
         return json.dumps(payload, ensure_ascii=False)
 
@@ -135,6 +138,7 @@ def build_record(
     keypoints_ok: Optional[bool],
     breed: Optional[str],
     emotion: Optional[str],
+    roles_swapped: bool = False,
 ) -> LabelRecord:
     """
     Składa rekord etykiety z bieżącym anotatorem i znacznikiem czasu.
@@ -146,6 +150,7 @@ def build_record(
         keypoints_ok: Ocena punktów; None = nieoceniono
         breed: Rasa po poprawce
         emotion: Emocja po poprawce
+        roles_swapped: Czy role klatek są odwrotne
 
     Returns:
         Gotowy `LabelRecord`
@@ -159,6 +164,7 @@ def build_record(
         keypoints_ok=keypoints_ok,
         breed=breed,
         emotion=emotion,
+        roles_swapped=roles_swapped,
     )
 
 

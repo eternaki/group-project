@@ -355,6 +355,12 @@ export interface FrameAnnotation {
    * punktach trzeba umieć odsiać bez ponownego przechodzenia zbioru.
    */
   keypoints_ok?: boolean | null;
+  /**
+   * Роли кадров перепутаны: «пиковый» на самом деле спокойный.
+   * Измерено: у 17% пар нейтральный кадр имеет больше мимики, чем пиковый,
+   * то есть база отсчёта AU испорчена. Обмен спасает пару вместо выбрасывания.
+   */
+  roles_swapped?: boolean;
   quality?: { asymmetry?: number; weak_keypoint_ratio?: number; face_width_px?: number };
   review_order?: number | null;
   track_id?: number | null;

@@ -110,6 +110,12 @@ class FrameAnnotation:
     # keypoints unieważnia etykiety AU tej klatki, a my dowiadujemy się o tym
     # dopiero przy kolejnym przejściu przez cały zbiór.
     keypoints_ok: Optional[bool] = None
+    # Czy człowiek uznał, że role klatek są ODWROTNE: to „szczytowa" jest
+    # spoczynkowa, a „neutralna" ma mimikę. Zmierzone: w 17% par klatka
+    # neutralna ma wyższy TFM niż szczytowa, czyli baza pomiaru bywa zepsuta.
+    # Zamiana ratuje parę zamiast ją wyrzucać, a zapisana flaga jest materiałem
+    # do naprawy samego wyboru klatki neutralnej.
+    roles_swapped: bool = False
 
 
 @dataclass

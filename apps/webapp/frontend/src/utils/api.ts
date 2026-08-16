@@ -76,6 +76,18 @@ export interface ImportCocoResponse {
   resumed: boolean;
 }
 
+/** Człon zespołu anotatorów. */
+export interface TeamMember {
+  key: string;
+  display: string;
+}
+
+/** Pobiera skład zespołu — po nim dzieli się przydział nagrań. */
+export async function listTeam(): Promise<TeamMember[]> {
+  const response = await axios.get<{ team: TeamMember[] }>(`${API_BASE}/sessions/team`);
+  return response.data.team;
+}
+
 /** Zbiór gotowy do weryfikacji, znaleziony przez backend w katalogu danych. */
 export interface AvailableDataset {
   path: string;
@@ -90,9 +102,12 @@ export interface AvailableDataset {
  *
  * Anotator nie wpisuje ścieżek — narzędzie samo pokazuje, co jest do zrobienia.
  */
-export async function listDatasets(): Promise<{ root: string; datasets: AvailableDataset[] }> {
+export async function listDatasets(
+  annotator?: string
+): Promise<{ root: string; datasets: AvailableDataset[] }> {
+  const params = annotator ? `?annotator=${encodeURIComponent(annotator)}` : '';
   const response = await axios.get<{ root: string; datasets: AvailableDataset[] }>(
-    `${API_BASE}/sessions/datasets/available`
+    `${API_BASE}/sessions/datasets/available${params}`
   );
   return response.data;
 }
@@ -103,10 +118,14 @@ export async function listDatasets(): Promise<{ root: string; datasets: Availabl
  * @param path Ścieżka do pliku po `curate_for_review.py` (widziana przez backend)
  * @param limit Najwyżej tyle par; pominięty = wszystkie
  */
-export async function importCoco(path: string, limit?: number): Promise<ImportCocoResponse> {
+export async function importCoco(
+  path: string,
+  annotator?: string,
+  limit?: number
+): Promise<ImportCocoResponse> {
   const response = await axios.post<ImportCocoResponse>(
     `${API_BASE}/sessions/import_coco`,
-    { path, limit: limit ?? null }
+    { path, limit: limit ?? null, annotator: annotator ?? null }
   );
   return response.data;
 }
@@ -118,6 +137,7 @@ export interface ReviewPayload {
   keypoints_ok: boolean | null;
   breed: string | null;
   emotion: string | null;
+  roles_swapped: boolean;
 }
 
 /**

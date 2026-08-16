@@ -309,6 +309,7 @@ def _apply_label(frame: FrameAnnotation, record) -> None:
     frame.au_verdicts = dict(record.au_verdicts)
     frame.usable = record.usable
     frame.keypoints_ok = record.keypoints_ok
+    frame.roles_swapped = getattr(record, "roles_swapped", False)
     if record.breed is not None:
         frame.breed = record.breed
     if record.emotion is not None:

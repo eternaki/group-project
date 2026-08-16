@@ -152,6 +152,7 @@ class ReviewRequest(BaseModel):
         breed: Rasa poprawiona przez człowieka; None = zostaw jak jest
         emotion: Emocja poprawiona przez człowieka; None = zostaw jak jest
         mark_verified: Czy oznaczyć klatkę jako sprawdzoną
+        roles_swapped: Czy role klatek są odwrotne — „szczytowa" jest spoczynkowa
     """
 
     verdicts: dict[str, str] = {}
@@ -160,6 +161,7 @@ class ReviewRequest(BaseModel):
     breed: Optional[str] = None
     emotion: Optional[str] = None
     mark_verified: bool = True
+    roles_swapped: bool = False
 
 
 # =============================================================================
@@ -476,6 +478,7 @@ async def update_review(
     frame.au_verdicts = {**frame.au_verdicts, **request.verdicts}
     frame.usable = request.usable
     frame.keypoints_ok = request.keypoints_ok
+    frame.roles_swapped = request.roles_swapped
     if request.breed is not None:
         frame.breed = request.breed
     if request.emotion is not None:
@@ -498,6 +501,7 @@ async def update_review(
             keypoints_ok=frame.keypoints_ok,
             breed=frame.breed,
             emotion=frame.emotion,
+            roles_swapped=frame.roles_swapped,
         ),
     )
     return {
@@ -507,6 +511,7 @@ async def update_review(
         "keypoints_ok": frame.keypoints_ok,
         "breed": frame.breed,
         "emotion": frame.emotion,
+        "roles_swapped": frame.roles_swapped,
     }
 
 
@@ -759,6 +764,9 @@ def _build_coco_annotation(
         # Trójstanowo: None znaczy „nieoceniono", a nie „punkty dobre".
         # Etykiety AU z klatki o złych keypoints trzeba umieć odsiać.
         "keypoints_ok": frame.keypoints_ok,
+        # Człowiek orzekł, że pipeline pomylił role: baza pomiaru to druga
+        # klatka pary. Bez tej flagi delta AU liczyłaby się od mimiki.
+        "roles_swapped": bool(frame.roles_swapped),
     }
     if frame.quality:
         ann["quality"] = dict(frame.quality)
