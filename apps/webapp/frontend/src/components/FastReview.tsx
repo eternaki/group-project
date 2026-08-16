@@ -40,6 +40,7 @@ import {
 } from '../utils/api';
 import useStore from '../store/useStore';
 import FullEditorModal from './FullEditorModal';
+import VideoIngest from './VideoIngest';
 
 /** Клавиши 1-8 у первых AU из VERIFIABLE_AU; остальные размечаются кликом */
 const AU_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
@@ -542,35 +543,53 @@ export default function FastReview() {
     if (!current) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement) return;
-      const digit = AU_KEYS.indexOf(event.key);
+
+      // Читаем ФИЗИЧЕСКУЮ клавишу (`code`), а не символ (`key`): на русской
+      // раскладке «S» даёт «ы», «K» даёт «л», и разметка переставала работать
+      // ровно у тех, кто ей пользуется.
+      const digit = AU_KEYS.indexOf(event.code.replace(/^(Digit|Numpad)/, ''));
       if (digit >= 0) {
         event.preventDefault();
         toggle(VERIFIABLE_AU[digit].code, event.shiftKey ? 'not_observable' : 'active');
         return;
       }
-      if (event.key === 's' || event.key === 'S') {
-        event.preventDefault();
-        setRolesSwapped((swapped) => !swapped);
-      } else if (event.key === 'e' || event.key === 'E') {
-        event.preventDefault();
-        setEditing(true);
-      } else if (event.key === 'k' || event.key === 'K') {
-        event.preventDefault();
-        setShowKeypoints((shown) => !shown);
-      } else if (event.key === 'f' || event.key === 'F') {
-        event.preventDefault();
-        setShowFullFrame((shown) => !shown);
-      } else if (event.key === 'x' || event.key === 'X') {
-        event.preventDefault();
-        void commit(false);
-      } else if (event.key === 'Enter') {
-        event.preventDefault();
-        void commit();
-      } else if (event.key === 'ArrowLeft') {
-        goTo(position - 1);
-      } else if (event.key === 'ArrowRight' || event.key === ' ') {
-        event.preventDefault();
-        goTo(position + 1);
+
+      switch (event.code) {
+        case 'KeyS':
+          event.preventDefault();
+          setRolesSwapped((swapped) => !swapped);
+          break;
+        case 'KeyE':
+          event.preventDefault();
+          setEditing(true);
+          break;
+        case 'KeyK':
+          event.preventDefault();
+          setShowKeypoints((shown) => !shown);
+          break;
+        case 'KeyF':
+          event.preventDefault();
+          setShowFullFrame((shown) => !shown);
+          break;
+        case 'KeyX':
+          event.preventDefault();
+          void commit(false);
+          break;
+        case 'Enter':
+        case 'NumpadEnter':
+          event.preventDefault();
+          void commit();
+          break;
+        case 'ArrowLeft':
+          goTo(position - 1);
+          break;
+        case 'ArrowRight':
+        case 'Space':
+          event.preventDefault();
+          goTo(position + 1);
+          break;
+        default:
+          break;
       }
     };
     window.addEventListener('keydown', onKey);
@@ -648,6 +667,12 @@ export default function FastReview() {
           </div>
         )}
         {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+
+        {annotator && (
+          <div className="mt-6">
+            <VideoIngest />
+          </div>
+        )}
       </div>
     );
   }

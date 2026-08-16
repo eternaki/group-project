@@ -43,6 +43,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
+from routers.ingest import router as ingest_router  # noqa: E402  # isort: skip
 from routers.sessions import router as sessions_router  # noqa: E402  # isort: skip
 from session_store import (  # noqa: E402  # isort: skip
     DogTrack,
@@ -95,6 +96,8 @@ if DATASET_FRAMES_DIR.is_dir():
 
 # Podłącz router sesji (Sprint 9)
 app.include_router(sessions_router)
+# Dosypywanie nagrań: przyjęcie plików i praca w tle obok anotacji
+app.include_router(ingest_router)
 
 # Global pipeline instance
 pipeline: Optional[InferencePipeline] = None

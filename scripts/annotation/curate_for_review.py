@@ -28,7 +28,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from packages.data.coco import FRAME_ROLE_NEUTRAL, FRAME_ROLE_PEAK
+from packages.data.coco import (
+    FRAME_ROLE_NEUTRAL,
+    FRAME_ROLE_PEAK,
+    MIN_SIGNAL_TO_NOISE,
+)
 from packages.pipeline.quality_gate import (
     FrameQuality,
     QualityThresholds,
@@ -57,8 +61,8 @@ class ReviewPair:
         peak: Anotacja klatki szczytowej
         neutral: Anotacja klatki neutralnej tego samego psa
         video: Klucz nagrania źródłowego (katalog klatek)
-        ambiguity: Ile AU leży w pasie niepewności — im więcej, tym cenniejsza
-            decyzja człowieka
+        signal: Ile AU przewyższa szum treku — po tym układa się kolejka
+        ambiguity: Ile AU leży w pasie niepewności — rozstrzyga przy równym sygnale
         peak_quality: Ocena jakości klatki szczytowej
         neutral_quality: Ocena jakości klatki neutralnej
     """
@@ -66,6 +70,7 @@ class ReviewPair:
     peak: dict
     neutral: dict
     video: str
+    signal: int
     ambiguity: int
     peak_quality: FrameQuality
     neutral_quality: FrameQuality
@@ -103,6 +108,32 @@ def video_key(file_name: str) -> str:
     normalized = file_name.replace(_WINDOWS_SEPARATOR, _POSIX_SEPARATOR)
     head, separator, _ = normalized.rpartition(_POSIX_SEPARATOR)
     return head if separator else normalized
+
+
+def signal_score(annotation: dict) -> int:
+    """
+    Liczy AU, których pomiar PRZEWYŻSZA szum treku.
+
+    To po tej liczbie układa się kolejkę, a nie po samej niepewności. Zmierzone
+    na zbiorze: 42% par nie ma ani jednego AU powyżej szumu, czyli anotator
+    ogląda pustą parę i naciska Enter. Puste pary są potrzebne jako przykłady
+    negatywne, ale nie muszą iść pierwsze — gdy praca się urwie, zdążone mają
+    być te, na których cokolwiek widać.
+
+    Args:
+        annotation: Anotacja COCO z polem `au_analysis`
+
+    Returns:
+        Liczba aktywnych AU o sygnale powyżej szumu
+    """
+    count = 0
+    for value in annotation.get("au_analysis", {}).values():
+        if not isinstance(value, dict) or not value.get("is_active"):
+            continue
+        snr = value.get("snr")
+        if isinstance(snr, (int, float)) and snr >= MIN_SIGNAL_TO_NOISE:
+            count += 1
+    return count
 
 
 def ambiguity_score(annotation: dict) -> int:
@@ -170,6 +201,7 @@ def build_pairs(
                 peak=peak,
                 neutral=neutral,
                 video=video_key(images[peak["image_id"]]["file_name"]),
+                signal=signal_score(peak),
                 ambiguity=ambiguity_score(peak),
                 peak_quality=peak_quality,
                 neutral_quality=neutral_quality,
@@ -192,7 +224,10 @@ def order_for_review(pairs: list[ReviewPair]) -> list[ReviewPair]:
     for pair in pairs:
         by_video[pair.video].append(pair)
     for bucket in by_video.values():
-        bucket.sort(key=lambda item: -item.ambiguity)
+        # Najpierw pary z realnym sygnałem, dopiero potem niepewne. Przeplot
+        # bierze z każdego nagrania pozycję zerową, więc na początku globalnej
+        # kolejki lądują najbardziej wyraziste pary całego zbioru.
+        bucket.sort(key=lambda item: (-item.signal, -item.ambiguity))
 
     queues = sorted(by_video.values(), key=lambda bucket: -len(bucket))
     ordered: list[ReviewPair] = []
@@ -239,6 +274,7 @@ def build_curated(coco: dict, ordered: list[ReviewPair]) -> dict:
         peak["review_order"] = order
         peak["quality"] = _quality_fields(pair.peak_quality)
         peak["ambiguity"] = pair.ambiguity
+        peak["signal"] = pair.signal
         neutral["review_order"] = order
         neutral["quality"] = _quality_fields(pair.neutral_quality)
 
@@ -275,7 +311,9 @@ def print_summary(
     print(f"Pary przyjete : {len(pairs)} z {total_peaks} ({100 * len(pairs) / max(total_peaks, 1):.1f}%)")
     print(f"Nagrania      : {len(videos)}")
     if pairs:
+        with_signal = sum(1 for pair in pairs if pair.signal > 0)
         ambiguous = sum(1 for pair in pairs if pair.ambiguity > 0)
+        print(f"Z AU powyzej szumu      : {with_signal} ({100 * with_signal / len(pairs):.1f}%)")
         print(f"Z AU w pasie niepewnosci: {ambiguous} ({100 * ambiguous / len(pairs):.1f}%)")
     print("\nPowody odrzucenia (kadry, nie pary):")
     for reason, count in sorted(rejected.items(), key=lambda item: -item[1]):

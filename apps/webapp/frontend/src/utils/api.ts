@@ -246,3 +246,45 @@ export async function exportSessionCOCO(sessionId: string, videoFilename: string
   );
   saveAs(response.data, `dogfacs_${sessionId}_${videoFilename}.json`);
 }
+
+
+// =============================================================================
+// Досыпка видео: общая папка + фоновая обработка
+// =============================================================================
+
+/** Состояние досыпки видео. */
+export interface IngestStatus {
+  videos_total: number;
+  videos_processed: number;
+  running: boolean;
+  pairs_ready: number;
+}
+
+/** Результат загрузки файлов в общую папку. */
+export interface UploadResult {
+  saved: string[];
+  skipped: { name: string; reason: string }[];
+  videos_total: number;
+}
+
+/** Загружает видео в общую папку команды. */
+export async function uploadVideos(files: File[]): Promise<UploadResult> {
+  const form = new FormData();
+  for (const file of files) form.append('files', file);
+  const response = await axios.post<UploadResult>(`${API_BASE}/ingest/upload`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return response.data;
+}
+
+/** Запускает обработку в отдельном процессе, чтобы не блокировать разметку. */
+export async function startIngest(): Promise<{ ok: boolean; pid: number }> {
+  const response = await axios.post<{ ok: boolean; pid: number }>(`${API_BASE}/ingest/start`);
+  return response.data;
+}
+
+/** Возвращает состояние обработки. */
+export async function getIngestStatus(): Promise<IngestStatus> {
+  const response = await axios.get<IngestStatus>(`${API_BASE}/ingest/status`);
+  return response.data;
+}
