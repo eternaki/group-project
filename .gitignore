@@ -165,3 +165,4 @@ data/*/curated.json
 data/*.log
 data/*.log.err
 *.stackdump
+data/review_samples/
