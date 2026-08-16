@@ -148,6 +148,33 @@ class UpdateAUVerdictsRequest(BaseModel):
     usable: bool = True
 
 
+class ReviewRequest(BaseModel):
+    """
+    Request dla PATCH review — CAŁA weryfikacja pary w jednym zapisie.
+
+    Osobne zapisy dla AU, rasy i emocji znaczyłyby, że przerwanie w połowie
+    zostawia parę zweryfikowaną częściowo, a przede wszystkim — że zbiór trzeba
+    przejść tyle razy, ile jest pól. Jedno przejście po materiale jest tu
+    warunkiem wykonalności: 518 par razy cztery przebiegi to praca, na którą
+    nie ma czasu.
+
+    Attributes:
+        verdicts: Werdykty AU {nazwa: active | inactive | not_observable}
+        usable: Czy kadr nadaje się do kodowania AU
+        keypoints_ok: Czy punkty leżą na mordzie; None = nieoceniono
+        breed: Rasa poprawiona przez człowieka; None = zostaw jak jest
+        emotion: Emocja poprawiona przez człowieka; None = zostaw jak jest
+        mark_verified: Czy oznaczyć klatkę jako sprawdzoną
+    """
+
+    verdicts: dict[str, str] = {}
+    usable: bool = True
+    keypoints_ok: Optional[bool] = None
+    breed: Optional[str] = None
+    emotion: Optional[str] = None
+    mark_verified: bool = True
+
+
 # =============================================================================
 # Funkcje pomocnicze
 # =============================================================================
@@ -381,6 +408,68 @@ async def update_keypoints(
     frame.annotation_status = "reviewed"
     _store.update_frame(session_id, frame)
     return {"ok": True}
+
+
+@router.patch("/{session_id}/frames/{frame_idx}/review")
+async def update_review(
+    session_id: str,
+    frame_idx: int,
+    request: ReviewRequest,
+    track_id: Optional[int] = None,
+):
+    """
+    Zapisuje CAŁĄ weryfikację pary: AU, keypoints, rasę i emocję naraz.
+
+    Jedno przejście po materiale zamiast czterech. Zły pomiar keypoints
+    unieważnia etykiety AU tej klatki, więc ocena punktów musi powstać w tym
+    samym momencie co ocena AU — inaczej dowiadujemy się o niej dopiero przy
+    kolejnym przejściu przez cały zbiór.
+
+    Args:
+        session_id: ID sesji
+        frame_idx: Numer klatki
+        request: Komplet ocen człowieka
+        track_id: Który pies w klatce
+
+    Returns:
+        Zapisany stan anotacji
+
+    Raises:
+        HTTPException: 422 przy nieznanym werdykcie AU albo nieznanej emocji
+    """
+    unknown = sorted(set(request.verdicts.values()) - AU_VERDICTS)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Nieznany werdykt AU: {unknown}. Dozwolone: {sorted(AU_VERDICTS)}",
+        )
+    if request.emotion is not None and request.emotion not in EMOTION_CLASSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Nieznana emocja: {request.emotion!r}. Dozwolone: {list(EMOTION_CLASSES)}",
+        )
+
+    frame = _get_frame_or_404(session_id, frame_idx, track_id)
+    frame.au_verdicts = {**frame.au_verdicts, **request.verdicts}
+    frame.usable = request.usable
+    frame.keypoints_ok = request.keypoints_ok
+    if request.breed is not None:
+        frame.breed = request.breed
+    if request.emotion is not None:
+        frame.emotion = request.emotion
+    frame.annotation_status = (
+        ANNOTATION_STATUS_VERIFIED if request.mark_verified else ANNOTATION_STATUS_REVIEWED
+    )
+    frame.source = "manual"
+    _store.update_frame(session_id, frame)
+    return {
+        "ok": True,
+        "au_verdicts": frame.au_verdicts,
+        "usable": frame.usable,
+        "keypoints_ok": frame.keypoints_ok,
+        "breed": frame.breed,
+        "emotion": frame.emotion,
+    }
 
 
 @router.patch("/{session_id}/frames/{frame_idx}/au_verdicts")
@@ -673,6 +762,9 @@ def _build_coco_annotation(
         # znika: „człowiek uznał to za nienadające się" jest etykietą uczącą
         # dla przyszłego filtra jakości, a milczenie nią nie jest.
         "usable": bool(frame.usable),
+        # Trójstanowo: None znaczy „nieoceniono", a nie „punkty dobre".
+        # Etykiety AU z klatki o złych keypoints trzeba umieć odsiać.
+        "keypoints_ok": frame.keypoints_ok,
     }
     if frame.quality:
         ann["quality"] = dict(frame.quality)

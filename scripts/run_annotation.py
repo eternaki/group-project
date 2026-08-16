@@ -110,6 +110,38 @@ def find_datasets() -> list[Path]:
     return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
+def _is_being_written(dataset_dir: Path) -> bool:
+    """
+    Zgaduje, czy batch wciąż dopisuje ten zbiór.
+
+    Nie wystarczy patrzeć na `annotations.json`: batch zapisuje go co sto
+    anotacji, więc przerwy między zapisami bywają dłuższe niż okno i zbiór
+    w trakcie pracy wygląda na skończony. Katalog klatek zmienia się przy
+    każdym nagraniu, czyli mniej więcej co minutę — i to jest wiarygodny
+    sygnał życia.
+
+    Args:
+        dataset_dir: Katalog zbioru
+
+    Returns:
+        True, gdy coś w zbiorze zmieniało się niedawno
+    """
+    candidates = [dataset_dir / ANNOTATIONS_NAME]
+    frames = dataset_dir / "frames"
+    if frames.is_dir():
+        # Klatki leżą w `frames/<zbior>/<nagranie>/`, więc sam `frames/` zmienia
+        # się raz na cały przebieg. Katalog nagrania powstaje przy KAŻDYM wideo
+        # i to on jest sygnałem życia — dlatego schodzimy dwa poziomy niżej.
+        candidates.append(frames)
+        candidates.extend(child for child in frames.iterdir() if child.is_dir())
+
+    newest = max(
+        (path.stat().st_mtime for path in candidates if path.exists()),
+        default=0.0,
+    )
+    return time.time() - newest < FRESH_WRITE_WINDOW_S
+
+
 def ensure_curated(limit: Optional[int]) -> list[Path]:
     """
     Przygotowuje do weryfikacji KAŻDY zbiór, który jeszcze nie ma kuracji.
@@ -138,8 +170,7 @@ def ensure_curated(limit: Optional[int]) -> list[Path]:
             ready.append(curated)
             continue
 
-        annotations = dataset_dir / ANNOTATIONS_NAME
-        if time.time() - annotations.stat().st_mtime < FRESH_WRITE_WINDOW_S:
+        if _is_being_written(dataset_dir):
             print(
                 f"[..] {dataset_dir.name}: pomijam — zbior jest wlasnie dopisywany "
                 "przez batch. Uruchom ponownie po zakonczeniu przegonu."

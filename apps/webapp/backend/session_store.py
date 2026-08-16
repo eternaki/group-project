@@ -105,6 +105,11 @@ class FrameAnnotation:
     # jest miarą lewo-prawo i na pochylenie głowy jest z definicji ślepa.
     # Odrzucenie ręczne zajmuje sekundę i jest samo w sobie etykietą.
     usable: bool = True
+    # Werdykt człowieka o keypoints: True = leżą na mordzie, False = nie.
+    # None znaczy „nieoceniony", a nie „dobre". Bez tego pola zły pomiar
+    # keypoints unieważnia etykiety AU tej klatki, a my dowiadujemy się o tym
+    # dopiero przy kolejnym przejściu przez cały zbiór.
+    keypoints_ok: Optional[bool] = None
 
 
 @dataclass

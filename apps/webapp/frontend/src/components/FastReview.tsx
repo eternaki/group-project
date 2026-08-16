@@ -19,7 +19,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AU_NAMES,
+  DOG_BREEDS,
+  EMOTION_CLASSES,
+  EMOTION_EMOJI,
+  EMOTION_NAMES,
   VERIFIABLE_AU,
+  getKeypointColor,
   type AUVerdict,
   type FrameAnnotation,
   type SessionData,
@@ -29,7 +34,7 @@ import {
   getSession,
   importCoco,
   listDatasets,
-  patchAUVerdicts,
+  patchReview,
   type AvailableDataset,
 } from '../utils/api';
 
@@ -100,17 +105,68 @@ function cropRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
   };
 }
 
+/** Promień punktu keypoint jako ułamek szerokości wycinka — skaluje się z kadrem */
+const KEYPOINT_RADIUS_RATIO = 0.006;
+
+/** Poniżej tej pewności punkt rysujemy jako niepewny */
+const WEAK_KEYPOINT_CONF = 0.5;
+
+interface KeypointOverlayProps {
+  keypoints: number[];
+  region: Rect;
+}
+
+/**
+ * Rysuje 46 punktów na kadrze.
+ *
+ * viewBox ustawiony na wycinek sprawia, że współrzędne z COCO (w pikselach
+ * oryginału) trafiają na swoje miejsce bez żadnego przeliczania — a przy
+ * zmianie rozmiaru okna skalują się razem z obrazem.
+ */
+function KeypointOverlay({ keypoints, region }: KeypointOverlayProps) {
+  const radius = region.width * KEYPOINT_RADIUS_RATIO;
+  const points = [];
+  for (let i = 0; i < keypoints.length; i += 3) {
+    const [x, y, confidence] = [keypoints[i], keypoints[i + 1], keypoints[i + 2]];
+    points.push(
+      <circle
+        key={i}
+        cx={x}
+        cy={y}
+        r={radius}
+        fill={confidence < WEAK_KEYPOINT_CONF ? '#ef4444' : getKeypointColor(i / 3)}
+        stroke="rgba(0,0,0,0.6)"
+        strokeWidth={radius * 0.3}
+      />
+    );
+  }
+  return (
+    <svg
+      className="absolute inset-0 w-full h-full pointer-events-none"
+      viewBox={`${region.x} ${region.y} ${region.width} ${region.height}`}
+      preserveAspectRatio="none"
+    >
+      {points}
+    </svg>
+  );
+}
+
 interface FrameViewProps {
   frame: FrameAnnotation;
   label: string;
   accent: string;
   showFullFrame: boolean;
+  showKeypoints: boolean;
 }
 
-function FrameView({ frame, label, accent, showFullFrame }: FrameViewProps) {
+function FrameView({ frame, label, accent, showFullFrame, showKeypoints }: FrameViewProps) {
   const [natural, setNatural] = useState<Rect | null>(null);
   const quality = frame.quality ?? {};
-  const crop = showFullFrame ? null : cropRect(frame, natural);
+
+  // Pełna klatka to po prostu wycinek obejmujący cały obraz. Dzięki temu punkty
+  // kluczowe rysują się tym samym mechanizmem w obu trybach — przy `object-contain`
+  // obraz bywa opasany pustym tłem i nakładka rozjeżdżałaby się z nim.
+  const region = showFullFrame ? natural : cropRect(frame, natural);
 
   // Klatka i pies się zmieniły — poprzedni rozmiar naturalny już nie obowiązuje
   useEffect(() => setNatural(null), [frame.image_url]);
@@ -132,24 +188,27 @@ function FrameView({ frame, label, accent, showFullFrame }: FrameViewProps) {
       </div>
       <div
         className="relative w-full overflow-hidden rounded-lg bg-gray-900"
-        style={crop ? { aspectRatio: `${crop.width} / ${crop.height}` } : undefined}
+        style={region ? { aspectRatio: `${region.width} / ${region.height}` } : undefined}
       >
         <img
           src={frame.image_url}
           alt={label}
           onLoad={onLoad}
-          className={crop ? 'absolute' : 'w-full max-h-[46vh] object-contain'}
+          className={region && natural ? 'absolute' : 'w-full'}
           style={
-            crop && natural
+            region && natural
               ? {
-                  width: `${(100 * natural.width) / crop.width}%`,
-                  left: `${(-100 * crop.x) / crop.width}%`,
-                  top: `${(-100 * crop.y) / crop.height}%`,
+                  width: `${(100 * natural.width) / region.width}%`,
+                  left: `${(-100 * region.x) / region.width}%`,
+                  top: `${(-100 * region.y) / region.height}%`,
                   maxWidth: 'none',
                 }
               : undefined
           }
         />
+        {showKeypoints && frame.keypoints && region && (
+          <KeypointOverlay keypoints={frame.keypoints} region={region} />
+        )}
       </div>
     </div>
   );
@@ -214,6 +273,57 @@ function AUButton({
   );
 }
 
+/** Ile propozycji rasy pokazujemy obok pola tekstowego */
+const BREED_SUGGESTIONS = 6;
+
+// Rasy klasyfikator myli notorycznie (mediana pewności 0.33 na tym materiale),
+// więc anotator musi mieć jak powiedzieć "nie wiem" zamiast zgadywać.
+const UNKNOWN_BREED = 'unknown';
+
+interface ChoiceRowProps {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}
+
+function ChoiceRow({ label, hint, children }: ChoiceRowProps) {
+  return (
+    <div className="flex items-start gap-3 py-2 border-t border-gray-100">
+      <div className="w-24 shrink-0 pt-1">
+        <div className="text-xs font-semibold text-gray-600">{label}</div>
+        {hint && <div className="text-[10px] text-gray-400 leading-tight">{hint}</div>}
+      </div>
+      <div className="flex-1 min-w-0 flex flex-wrap gap-1.5">{children}</div>
+    </div>
+  );
+}
+
+interface PillProps {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  tone?: 'amber' | 'green' | 'gray';
+}
+
+function Pill({ active, onClick, children, tone = 'amber' }: PillProps) {
+  const activeStyle =
+    tone === 'green'
+      ? 'bg-green-600 border-green-700 text-white'
+      : tone === 'gray'
+        ? 'bg-gray-700 border-gray-800 text-white'
+        : 'bg-amber-500 border-amber-600 text-white';
+  return (
+    <button
+      onClick={onClick}
+      className={`px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${
+        active ? activeStyle : 'bg-white border-gray-200 text-gray-700 hover:border-amber-300'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function FastReview() {
   const [datasets, setDatasets] = useState<AvailableDataset[] | null>(null);
   const [session, setSession] = useState<SessionData | null>(null);
@@ -227,6 +337,13 @@ export default function FastReview() {
   // Anotator czasem potrzebuje kontekstu sceny — np. gdy trzeba rozstrzygnąć,
   // czy pies reaguje na człowieka poza wycinkiem.
   const [showFullFrame, setShowFullFrame] = useState(false);
+  // Punkty domyślnie WIDOCZNE: ich ocena jest częścią tego samego przejścia,
+  // a niewidoczne trzeba by włączać przy każdej parze osobno.
+  const [showKeypoints, setShowKeypoints] = useState(true);
+  const [keypointsOk, setKeypointsOk] = useState<boolean | null>(null);
+  const [breed, setBreed] = useState<string | null>(null);
+  const [emotion, setEmotion] = useState<string | null>(null);
+  const [breedQuery, setBreedQuery] = useState('');
 
   const current = pairs[position];
 
@@ -273,8 +390,15 @@ export default function FastReview() {
   const goTo = useCallback(
     (index: number) => {
       if (index < 0 || index >= pairs.length) return;
+      const peak = pairs[index]?.peak;
       setPosition(index);
-      setVerdicts(pairs[index].peak.au_verdicts ?? {});
+      setVerdicts(peak?.au_verdicts ?? {});
+      setKeypointsOk(peak?.keypoints_ok ?? null);
+      // Rasa i emocja startują od tego, co policzył automat — tu poprawiamy
+      // gotową wartość, a nie etykietujemy od zera jak przy AU.
+      setBreed(peak?.breed ?? null);
+      setEmotion(peak?.emotion ?? null);
+      setBreedQuery('');
     },
     [pairs]
   );
@@ -310,15 +434,18 @@ export default function FastReview() {
           // w dół ma mimikę spoczynkową.
           for (const { code } of VERIFIABLE_AU) complete[code] = 'not_observable';
         }
-        await patchAUVerdicts(
-          session.session_id,
-          current.peak.frame_idx,
-          current.trackId,
-          complete,
-          true,
-          usable
-        );
+        await patchReview(session.session_id, current.peak.frame_idx, current.trackId, {
+          verdicts: complete,
+          usable,
+          keypoints_ok: usable ? keypointsOk : false,
+          breed,
+          emotion,
+        });
         current.peak.au_verdicts = complete;
+        current.peak.keypoints_ok = usable ? keypointsOk : false;
+        current.peak.breed = breed;
+        current.peak.emotion = emotion;
+        current.peak.usable = usable;
         if (current.peak.annotation_status !== 'verified') {
           current.peak.annotation_status = 'verified';
           setVerifiedCount((count) => count + 1);
@@ -331,7 +458,7 @@ export default function FastReview() {
         setBusy(false);
       }
     },
-    [session, current, busy, verdicts, position, goTo]
+    [session, current, busy, verdicts, position, goTo, keypointsOk, breed, emotion]
   );
 
   useEffect(() => {
@@ -344,7 +471,10 @@ export default function FastReview() {
         toggle(VERIFIABLE_AU[digit].code, event.shiftKey ? 'not_observable' : 'active');
         return;
       }
-      if (event.key === 'f' || event.key === 'F') {
+      if (event.key === 'k' || event.key === 'K') {
+        event.preventDefault();
+        setShowKeypoints((shown) => !shown);
+      } else if (event.key === 'f' || event.key === 'F') {
         event.preventDefault();
         setShowFullFrame((shown) => !shown);
       } else if (event.key === 'x' || event.key === 'X') {
@@ -466,12 +596,14 @@ export default function FastReview() {
           label="Neutralna (baza AU)"
           accent="text-blue-600"
           showFullFrame={showFullFrame}
+          showKeypoints={showKeypoints}
         />
         <FrameView
           frame={current.peak}
           label="Szczytowa (oceniana)"
           accent="text-amber-600"
           showFullFrame={showFullFrame}
+          showKeypoints={showKeypoints}
         />
       </div>
 
@@ -490,12 +622,77 @@ export default function FastReview() {
         ))}
       </div>
 
+      <div className="bg-white rounded-lg border border-gray-200 px-3 mb-3">
+        <ChoiceRow label="Punkty" hint="czy leżą na mordzie">
+          <Pill active={keypointsOk === true} onClick={() => setKeypointsOk(true)} tone="green">
+            dobre
+          </Pill>
+          <Pill active={keypointsOk === false} onClick={() => setKeypointsOk(false)} tone="gray">
+            złe
+          </Pill>
+          <button
+            onClick={() => setShowKeypoints((shown) => !shown)}
+            className="px-2.5 py-1 rounded-md border border-dashed border-gray-300 text-xs text-gray-500 hover:border-gray-400"
+          >
+            {showKeypoints ? 'ukryj punkty (K)' : 'pokaż punkty (K)'}
+          </button>
+        </ChoiceRow>
+
+        <ChoiceRow label="Emocja" hint="automat, popraw jeśli źle">
+          {EMOTION_CLASSES.map((value) => (
+            <Pill key={value} active={emotion === value} onClick={() => setEmotion(value)}>
+              {EMOTION_EMOJI[value]} {EMOTION_NAMES[value] ?? value}
+            </Pill>
+          ))}
+        </ChoiceRow>
+
+        <ChoiceRow label="Rasa" hint={`automat: ${(current.peak.breed_confidence * 100).toFixed(0)}% pewności`}>
+          <input
+            value={breedQuery}
+            onChange={(event) => setBreedQuery(event.target.value)}
+            placeholder={breed ?? 'wpisz, żeby szukać'}
+            className="px-2 py-1 border border-gray-200 rounded-md text-xs w-44"
+          />
+          {breedQuery
+            ? DOG_BREEDS.filter((name) =>
+                name.toLowerCase().includes(breedQuery.toLowerCase())
+              )
+                .slice(0, BREED_SUGGESTIONS)
+                .map((name) => (
+                  <Pill
+                    key={name}
+                    active={breed === name}
+                    onClick={() => {
+                      setBreed(name);
+                      setBreedQuery('');
+                    }}
+                  >
+                    {name}
+                  </Pill>
+                ))
+            : (
+                <>
+                  <Pill active={breed === current.peak.breed} onClick={() => setBreed(current.peak.breed ?? null)}>
+                    {current.peak.breed ?? 'brak'}
+                  </Pill>
+                  <Pill active={breed === 'Mixed Breed'} onClick={() => setBreed('Mixed Breed')}>
+                    Mixed Breed
+                  </Pill>
+                  <Pill active={breed === UNKNOWN_BREED} onClick={() => setBreed(UNKNOWN_BREED)} tone="gray">
+                    nie wiem
+                  </Pill>
+                </>
+              )}
+        </ChoiceRow>
+      </div>
+
       <div className="flex items-center justify-between text-xs text-gray-500">
         <span>
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">1–8</kbd> aktywne ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Shift+1–8</kbd> niewidoczne ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Enter</kbd> zapisz i dalej ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">X</kbd> kadr się nie nadaje ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">K</kbd> punkty ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">F</kbd>{' '}
           {showFullFrame ? 'wróć do kadru psa' : 'cała klatka'} ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">←→</kbd> nawigacja

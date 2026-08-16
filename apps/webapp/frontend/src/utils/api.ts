@@ -111,6 +111,33 @@ export async function importCoco(path: string, limit?: number): Promise<ImportCo
   return response.data;
 }
 
+/** Komplet ocen człowieka zapisywany jednym żądaniem. */
+export interface ReviewPayload {
+  verdicts: Record<string, AUVerdict>;
+  usable: boolean;
+  keypoints_ok: boolean | null;
+  breed: string | null;
+  emotion: string | null;
+}
+
+/**
+ * Zapisuje CAŁĄ weryfikację pary jednym żądaniem: AU, keypoints, rasę i emocję.
+ *
+ * Osobne zapisy znaczyłyby, że zbiór trzeba przejść tyle razy, ile jest pól —
+ * a przy 518 parach jedno przejście jest warunkiem wykonalności.
+ */
+export async function patchReview(
+  sessionId: string,
+  frameIdx: number,
+  trackId: number,
+  payload: ReviewPayload
+): Promise<void> {
+  await axios.patch(
+    `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/review?track_id=${trackId}`,
+    { ...payload, mark_verified: true }
+  );
+}
+
 /**
  * Zapisuje werdykty człowieka o AU danej klatki.
  *

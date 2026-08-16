@@ -244,6 +244,12 @@ export interface FrameAnnotation {
   frame_role?: 'neutral' | 'peak' | null;
   /** Czy człowiek uznał kadr za nadający się do kodowania AU */
   usable?: boolean;
+  /**
+   * Werdykt człowieka o keypoints: true = leżą na mordzie, false = nie.
+   * `null` znaczy „nieoceniony", a nie „dobre" — etykiety AU z klatki o złych
+   * punktach trzeba umieć odsiać bez ponownego przechodzenia zbioru.
+   */
+  keypoints_ok?: boolean | null;
   quality?: { asymmetry?: number; weak_keypoint_ratio?: number; face_width_px?: number };
   review_order?: number | null;
   track_id?: number | null;

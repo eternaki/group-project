@@ -325,6 +325,90 @@ class TestImportCocoEndpoint:
 
 
 @pytest.mark.anyio
+class TestReviewEndpoint:
+    """
+    Jeden zapis obejmuje AU, keypoints, rasę i emocję.
+
+    Osobne przejścia po zbiorze dla każdego pola znaczyłyby, że 518 par trzeba
+    obejrzeć cztery razy. Gorzej: zły pomiar keypoints unieważnia etykiety AU
+    tej klatki, więc bez oceny punktów w TYM SAMYM przejściu dowiadujemy się
+    o problemie dopiero przy kolejnym obiegu całego materiału.
+    """
+
+    async def _import(self, client, curated_path: Path) -> str:
+        resp = await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
+        return resp.json()["session_id"]
+
+    async def test_zapisuje_wszystkie_pola_naraz(self, client, curated_path: Path) -> None:
+        session_id = await self._import(client, curated_path)
+        resp = await client.patch(
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
+            json={
+                "verdicts": {"AU25": AU_VERDICT_ACTIVE},
+                "usable": True,
+                "keypoints_ok": True,
+                "breed": "Beagle",
+                "emotion": "happy",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["au_verdicts"]["AU25"] == AU_VERDICT_ACTIVE
+        assert body["keypoints_ok"] is True
+        assert body["breed"] == "Beagle"
+        assert body["emotion"] == "happy"
+
+    async def test_zle_keypoints_zapisuja_sie_jako_ostrzezenie(
+        self, client, curated_path: Path
+    ) -> None:
+        """Bez tego pola nie da się odsiać etykiet AU zmierzonych na złych punktach."""
+        session_id = await self._import(client, curated_path)
+        await client.patch(
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
+            json={"verdicts": {}, "usable": True, "keypoints_ok": False},
+        )
+        coco = json.loads((await client.post(f"/api/sessions/{session_id}/export_coco")).content)
+        broken = [a for a in coco["annotations"] if a.get("keypoints_ok") is False]
+        assert len(broken) == 1
+
+    async def test_nieoceniony_stan_punktow_zostaje_pusty(
+        self, client, curated_path: Path
+    ) -> None:
+        """None to brak wiedzy, nie „punkty dobre"."""
+        session_id = await self._import(client, curated_path)
+        await client.patch(
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
+            json={"verdicts": {}, "usable": True},
+        )
+        session = await client.get(f"/api/sessions/{session_id}")
+        peak = [f for f in session.json()["frames"] if f["frame_idx"] == 2][0]
+        assert peak["keypoints_ok"] is None
+
+    async def test_nieznana_emocja_odrzucona(self, client, curated_path: Path) -> None:
+        session_id = await self._import(client, curated_path)
+        resp = await client.patch(
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
+            json={"verdicts": {}, "emotion": "wesolutki"},
+        )
+        assert resp.status_code == 422
+
+    async def test_pominiete_pola_nie_kasuja_wartosci(self, client, curated_path: Path) -> None:
+        """Brak rasy w żądaniu znaczy „zostaw", a nie „wyczyść"."""
+        session_id = await self._import(client, curated_path)
+        await client.patch(
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
+            json={"verdicts": {}, "breed": "Beagle"},
+        )
+        await client.patch(
+            f"/api/sessions/{session_id}/frames/2/review?track_id=0",
+            json={"verdicts": {"AU26": AU_VERDICT_ACTIVE}},
+        )
+        session = await client.get(f"/api/sessions/{session_id}")
+        peak = [f for f in session.json()["frames"] if f["frame_idx"] == 2][0]
+        assert peak["breed"] == "Beagle"
+
+
+@pytest.mark.anyio
 class TestSessionReuse:
     """
     Ten sam zbiór to zawsze ta sama sesja.
