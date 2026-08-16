@@ -515,6 +515,7 @@ export default function FastReview() {
           breed,
           emotion,
           roles_swapped: rolesSwapped,
+          annotator,
         });
         current.peak.au_verdicts = complete;
         current.peak.keypoints_ok = usable ? keypointsOk : false;
@@ -780,7 +781,7 @@ export default function FastReview() {
       <div className="bg-white rounded-lg border border-gray-200 px-3 mb-3">
         <ChoiceRow label="Точки" hint="лежат ли на морде">
           <Pill active={keypointsOk === true} onClick={() => setKeypointsOk(true)} tone="green">
-            dobre
+            верно
           </Pill>
           <Pill active={keypointsOk === false} onClick={() => setKeypointsOk(false)} tone="gray">
             złe
@@ -801,7 +802,7 @@ export default function FastReview() {
           ))}
         </ChoiceRow>
 
-        <ChoiceRow label="Rasa" hint={`автомат: ${(current.peak.breed_confidence * 100).toFixed(0)}% уверенности`}>
+        <ChoiceRow label="Порода" hint={`автомат: ${(current.peak.breed_confidence * 100).toFixed(0)}% уверенности`}>
           <input
             value={breedQuery}
             onChange={(event) => setBreedQuery(event.target.value)}
@@ -834,7 +835,7 @@ export default function FastReview() {
                     Mixed Breed
                   </Pill>
                   <Pill active={breed === UNKNOWN_BREED} onClick={() => setBreed(UNKNOWN_BREED)} tone="gray">
-                    nie wiem
+                    не знаю
                   </Pill>
                 </>
               )}

@@ -138,6 +138,8 @@ export interface ReviewPayload {
   breed: string | null;
   emotion: string | null;
   roles_swapped: boolean;
+  /** Кто размечает — из интерфейса, а не из учётки Windows */
+  annotator: string | null;
 }
 
 /**

@@ -153,6 +153,9 @@ class ReviewRequest(BaseModel):
         emotion: Emocja poprawiona przez człowieka; None = zostaw jak jest
         mark_verified: Czy oznaczyć klatkę jako sprawdzoną
         roles_swapped: Czy role klatek są odwrotne — „szczytowa" jest spoczynkowa
+        annotator: Kto ocenia. MUSI przyjść z interfejsu, a nie z konta systemowego:
+            gdy przy jednym komputerze pracuje kilka osób, nazwa konta wpisałaby
+            werdykty wszystkich do pliku właściciela maszyny.
     """
 
     verdicts: dict[str, str] = {}
@@ -162,6 +165,7 @@ class ReviewRequest(BaseModel):
     emotion: Optional[str] = None
     mark_verified: bool = True
     roles_swapped: bool = False
+    annotator: Optional[str] = None
 
 
 # =============================================================================
@@ -495,6 +499,7 @@ async def update_review(
     append_label(
         dataset or session.video_filename,
         build_record(
+            annotator=request.annotator,
             pair_key=_pair_key_of(frame),
             au_verdicts=frame.au_verdicts,
             usable=frame.usable,

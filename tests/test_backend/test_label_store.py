@@ -134,3 +134,28 @@ class TestBuildRecord:
         first = build_record(PAIR, {}, True, None, None, None)
         second = build_record(PAIR, {}, True, None, None, None)
         assert first.timestamp <= second.timestamp
+
+
+class TestAnnotatorFromInterface:
+    """
+    Kto ocenia, przychodzi z INTERFEJSU, nie z konta systemowego.
+
+    Przy jednym komputerze dzielonym przez zespół nazwa konta Windows wpisałaby
+    werdykty wszystkich do pliku właściciela maszyny — i praca trzech osób
+    zniknęłaby w cudzym pliku bez żadnego komunikatu.
+    """
+
+    def test_jawny_anotator_wygrywa_z_kontem_systemowym(self, monkeypatch) -> None:
+        monkeypatch.setenv(ANNOTATOR_ENV, "wlasciciel_maszyny")
+        record = build_record(PAIR, {}, True, None, None, None, annotator="masha")
+        assert record.annotator == "masha"
+
+    def test_brak_jawnego_bierze_konto(self, monkeypatch) -> None:
+        monkeypatch.setenv(ANNOTATOR_ENV, "anna")
+        assert build_record(PAIR, {}, True, None, None, None).annotator == "anna"
+
+    def test_kazda_osoba_pisze_do_swojego_pliku(self, labels_root: Path) -> None:
+        for who in ("anton", "masha", "mafin", "danek"):
+            append_label(DATASET, build_record(f"{who}.jpg", {}, True, None, None, None, annotator=who))
+        names = sorted(p.stem for p in (labels_root / DATASET).glob("*.jsonl"))
+        assert names == ["anton", "danek", "mafin", "masha"]

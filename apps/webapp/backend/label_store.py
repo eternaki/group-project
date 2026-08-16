@@ -139,6 +139,7 @@ def build_record(
     breed: Optional[str],
     emotion: Optional[str],
     roles_swapped: bool = False,
+    annotator: Optional[str] = None,
 ) -> LabelRecord:
     """
     Składa rekord etykiety z bieżącym anotatorem i znacznikiem czasu.
@@ -151,13 +152,17 @@ def build_record(
         breed: Rasa po poprawce
         emotion: Emocja po poprawce
         roles_swapped: Czy role klatek są odwrotne
+        annotator: Kto ocenia; None znaczy „weź z konta systemowego". Przy
+            jednym komputerze dzielonym przez zespół nazwa konta wpisałaby
+            werdykty wszystkich do pliku właściciela maszyny, więc interfejs
+            zawsze podaje wybraną osobę jawnie.
 
     Returns:
         Gotowy `LabelRecord`
     """
     return LabelRecord(
         pair_key=pair_key,
-        annotator=current_annotator(),
+        annotator=annotator or current_annotator(),
         timestamp=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         au_verdicts=dict(au_verdicts),
         usable=usable,
