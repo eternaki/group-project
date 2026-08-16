@@ -150,3 +150,18 @@ drive_key.txt
 # Pobrane wideo z Google Drive (lokalne)
 data/drive_dogs/
 data/dataset_final/
+
+# Dane: klatki i wideo NIGDY do repozytorium (setki MB do gigabajtów).
+# Etykiety człowieka i gotowy zbiór w formacie finalnym — TAK, bo to one są
+# produktem projektu i muszą jeździć między maszynami zespołu.
+data/*/frames/
+data/drive_dogs/
+data/dogflw_raw/
+data/dogface_yolo/
+data/raw/
+data/collection/
+data/*/annotations.json
+data/*/curated.json
+data/*.log
+data/*.log.err
+*.stackdump

@@ -37,6 +37,8 @@ import {
   patchReview,
   type AvailableDataset,
 } from '../utils/api';
+import useStore from '../store/useStore';
+import FullEditorModal from './FullEditorModal';
 
 /** Klawisze przypisane do AU: pozycja w VERIFIABLE_AU → cyfra */
 const AU_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
@@ -344,6 +346,11 @@ export default function FastReview() {
   const [breed, setBreed] = useState<string | null>(null);
   const [emotion, setEmotion] = useState<string | null>(null);
   const [breedQuery, setBreedQuery] = useState('');
+  // Pełny edytor (przeciąganie 46 punktów, zakładki AU/emocja/rasa) działa na
+  // sesji trzymanej w store — dlatego ładujemy ją tam obok szybkiego trybu.
+  const [editing, setEditing] = useState(false);
+  const loadStoreSession = useStore((state) => state.loadSession);
+  const storeSession = useStore((state) => state.sessionData);
 
   const current = pairs[position];
 
@@ -353,6 +360,7 @@ export default function FastReview() {
     try {
       const imported = await importCoco(path);
       const loaded = await getSession(imported.session_id);
+      await loadStoreSession(imported.session_id);
       const built = buildPairs(loaded);
       setSession(loaded);
       setPairs(built);
@@ -367,7 +375,7 @@ export default function FastReview() {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [loadStoreSession]);
 
   // Zbiory znajdują się same. Gdy jest dokładnie jeden, od razu go otwieramy —
   // anotator ma zobaczyć pierwszą parę, a nie formularz.
@@ -471,7 +479,10 @@ export default function FastReview() {
         toggle(VERIFIABLE_AU[digit].code, event.shiftKey ? 'not_observable' : 'active');
         return;
       }
-      if (event.key === 'k' || event.key === 'K') {
+      if (event.key === 'e' || event.key === 'E') {
+        event.preventDefault();
+        setEditing(true);
+      } else if (event.key === 'k' || event.key === 'K') {
         event.preventDefault();
         setShowKeypoints((shown) => !shown);
       } else if (event.key === 'f' || event.key === 'F') {
@@ -498,6 +509,18 @@ export default function FastReview() {
     () => Object.values(verdicts).filter((value) => value === 'active').length,
     [verdicts]
   );
+
+  // Pełny edytor pracuje na klatce ze store'u — tej samej, którą sam zapisuje.
+  // Podanie mu kopii z szybkiego trybu znaczyłoby, że zapis idzie w próżnię.
+  const editorFrame = useMemo(() => {
+    if (!current || !storeSession) return null;
+    return (
+      storeSession.frames.find(
+        (frame) =>
+          frame.frame_idx === current.peak.frame_idx && frame.track_id === current.trackId
+      ) ?? null
+    );
+  }, [current, storeSession]);
 
   if (!session) {
     return (
@@ -693,6 +716,7 @@ export default function FastReview() {
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Enter</kbd> zapisz i dalej ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">X</kbd> kadr się nie nadaje ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">K</kbd> punkty ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">E</kbd> pełna edycja ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">F</kbd>{' '}
           {showFullFrame ? 'wróć do kadru psa' : 'cała klatka'} ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">←→</kbd> nawigacja
@@ -716,6 +740,22 @@ export default function FastReview() {
         </div>
       </div>
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+
+      {editing && editorFrame && (
+        <FullEditorModal
+          frame={editorFrame}
+          onClose={async () => {
+            setEditing(false);
+            // Edytor zapisuje przez store, więc świeże keypoints i przeliczone
+            // AU trzeba wciągnąć z powrotem do szybkiego trybu — inaczej
+            // anotator widziałby wersję sprzed poprawki.
+            if (session) {
+              const refreshed = await getSession(session.session_id);
+              setPairs(buildPairs(refreshed));
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
