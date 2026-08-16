@@ -33,13 +33,13 @@ export default function App() {
               🐕 DogFACS Dataset Generator
             </h1>
             <p className="text-primary-100 mt-1">
-              Narzędzie do anotacji emocji psów oparte na regułach (rule-based)
+              Инструмент разметки эмоций собак (DogFACS)
             </p>
           </div>
           <nav className="flex gap-1 bg-primary-800/40 p-1 rounded-lg shrink-0">
             {([
-              ['review', 'Weryfikacja AU'],
-              ['video', 'Przetwarzanie wideo'],
+              ['review', 'Разметка AU'],
+              ['video', 'Обработка видео'],
             ] as [Mode, string][]).map(([value, label]) => (
               <button
                 key={value}

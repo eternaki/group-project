@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  KEYPOINT_NAMES,
+  KEYPOINT_NAMES_RU,
   NUM_KEYPOINTS,
   SKELETON_CONNECTIONS,
   getKeypointColor,
@@ -294,7 +294,7 @@ export default function KeypointEditor({ frameIdx, imageUrl, keypoints }: Keypoi
       {/* Info o liczbie punktów */}
       {localKPs.length > 0 && (
         <p className="text-[10px] text-gray-400 text-center">
-          Widocznych: {localKPs.filter((k) => k.v > 0.3).length} / {NUM_KEYPOINTS} · {KEYPOINT_NAMES.length} nazw
+          Widocznych: {localKPs.filter((k) => k.v > 0.3).length} / {NUM_KEYPOINTS} · {KEYPOINT_NAMES_RU.length} названий
         </p>
       )}
     </div>

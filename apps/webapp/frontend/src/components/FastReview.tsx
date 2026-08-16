@@ -18,11 +18,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  AU_NAMES,
+  AU_NAMES_RU,
   DOG_BREEDS,
   EMOTION_CLASSES,
   EMOTION_EMOJI,
-  EMOTION_NAMES,
+  EMOTION_NAMES_RU,
   VERIFIABLE_AU,
   getKeypointColor,
   type AUVerdict,
@@ -250,7 +250,7 @@ function AUButton({
         onNotObservable();
       }}
       className={`text-left p-2.5 rounded-lg border-2 transition-colors ${style}`}
-      title="Klik = aktywne · prawy klik = niewidoczne"
+      title="Klik = активен · prawy klik = niewidoczne"
     >
       <div className="flex items-center gap-2">
         <kbd className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/10 shrink-0">
@@ -260,16 +260,16 @@ function AUButton({
         {ruleActive && verdict === undefined && (
           <span
             className="text-[10px] text-gray-400 ml-auto shrink-0"
-            title="Reguła uznała to AU za aktywne — to tylko podpowiedź"
+            title="Автомат счёл этот AU активным — это только подсказка"
           >
-            reguła: tak
+            правило: да
           </span>
         )}
       </div>
-      <div className="text-[11px] mt-1 opacity-80 leading-tight">{AU_NAMES[code] ?? code}</div>
+      <div className="text-[11px] mt-1 opacity-80 leading-tight">{AU_NAMES_RU[code] ?? code}</div>
       <div className="text-[10px] mt-0.5 opacity-60 leading-tight">{hint}</div>
       {verdict === 'not_observable' && (
-        <div className="text-[10px] mt-1 font-semibold">niewidoczne</div>
+        <div className="text-[10px] mt-1 font-semibold">не видно</div>
       )}
     </button>
   );
@@ -371,7 +371,7 @@ export default function FastReview() {
       const firstOpen = built.findIndex((p) => p.peak.annotation_status !== 'verified');
       setPosition(firstOpen === -1 ? built.length : firstOpen);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Nie udało się wczytać zbioru');
+      setError(caught instanceof Error ? caught.message : 'Не удалось загрузить набор');
     } finally {
       setBusy(false);
     }
@@ -388,7 +388,7 @@ export default function FastReview() {
         if (found.length === 1) void startSession(found[0].path);
       })
       .catch((caught) =>
-        setError(caught instanceof Error ? caught.message : 'Nie udało się odczytać katalogu danych')
+        setError(caught instanceof Error ? caught.message : 'Не удалось прочитать каталог данных')
       );
     return () => {
       cancelled = true;
@@ -461,7 +461,7 @@ export default function FastReview() {
         if (!usable) setRejectedCount((count) => count + 1);
         goTo(position + 1);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : 'Nie udało się zapisać');
+        setError(caught instanceof Error ? caught.message : 'Не удалось сохранить');
       } finally {
         setBusy(false);
       }
@@ -525,16 +525,16 @@ export default function FastReview() {
   if (!session) {
     return (
       <div className="max-w-xl mx-auto mt-16 p-6 bg-white rounded-xl border border-gray-200">
-        <h2 className="text-lg font-bold text-gray-800">Weryfikacja AU</h2>
+        <h2 className="text-lg font-bold text-gray-800">Разметка AU</h2>
         {datasets === null && !error && (
-          <p className="text-sm text-gray-500 mt-2">Szukam zbiorów do weryfikacji…</p>
+          <p className="text-sm text-gray-500 mt-2">Ищу наборы для разметки…</p>
         )}
-        {busy && <p className="text-sm text-gray-500 mt-2">Wczytywanie zbioru…</p>}
+        {busy && <p className="text-sm text-gray-500 mt-2">Загружаю набор…</p>}
         {datasets !== null && datasets.length === 0 && (
           <div className="mt-3 text-sm text-gray-600 space-y-2">
-            <p>Nie znalazłem żadnego zbioru gotowego do weryfikacji.</p>
+            <p>Не нашёл ни одного готового набора.</p>
             <p className="text-gray-500">
-              Zbiór przygotowuje polecenie:
+              Набор готовится командой:
               <code className="block mt-1 p-2 bg-gray-50 rounded font-mono text-xs">
                 python -m scripts.annotation.curate_for_review
               </code>
@@ -543,7 +543,7 @@ export default function FastReview() {
         )}
         {datasets !== null && datasets.length > 0 && (
           <div className="mt-3 space-y-2">
-            <p className="text-sm text-gray-500">Wybierz zbiór — praca zapisuje się i wznawia sama.</p>
+            <p className="text-sm text-gray-500">Выбери набор — работа сохраняется и продолжается сама.</p>
             {datasets.map((dataset) => {
               const done = dataset.pairs > 0 ? (100 * dataset.verified) / dataset.pairs : 0;
               return (
@@ -556,7 +556,7 @@ export default function FastReview() {
                   <div className="flex items-baseline justify-between">
                     <span className="font-semibold text-gray-800">{dataset.name}</span>
                     <span className="text-xs text-gray-500 font-mono">
-                      {dataset.verified} / {dataset.pairs} par
+                      {dataset.verified} / {dataset.pairs} пар
                     </span>
                   </div>
                   <div className="h-1.5 bg-gray-200 rounded-full mt-2 overflow-hidden">
@@ -575,15 +575,15 @@ export default function FastReview() {
   if (!current) {
     return (
       <div className="max-w-xl mx-auto mt-16 p-6 bg-white rounded-xl border border-gray-200 text-center">
-        <h2 className="text-lg font-bold text-gray-800">Koniec kolejki</h2>
+        <h2 className="text-lg font-bold text-gray-800">Очередь закончилась</h2>
         <p className="text-sm text-gray-500 mt-1">
-          Zweryfikowano {verifiedCount} z {pairs.length} par.
+          Размечено {verifiedCount} из {pairs.length} пар.
         </p>
         <button
           onClick={() => exportSessionCOCO(session.session_id, session.video_filename)}
           className="mt-4 px-4 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700"
         >
-          Eksportuj COCO
+          Экспорт COCO
         </button>
       </div>
     );
@@ -593,16 +593,16 @@ export default function FastReview() {
     <div className="max-w-6xl mx-auto p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="text-sm text-gray-600">
-          Para <strong>{position + 1}</strong> / {pairs.length} · zweryfikowane{' '}
-          <strong className="text-green-700">{verifiedCount}</strong> · odrzucone{' '}
-          <strong className="text-gray-600">{rejectedCount}</strong> · aktywne AU{' '}
+          Пара <strong>{position + 1}</strong> / {pairs.length} · размечено{' '}
+          <strong className="text-green-700">{verifiedCount}</strong> · отброшено{' '}
+          <strong className="text-gray-600">{rejectedCount}</strong> · активных AU{' '}
           <strong className="text-amber-700">{activeCount}</strong>
         </div>
         <button
           onClick={() => exportSessionCOCO(session.session_id, session.video_filename)}
           className="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700"
         >
-          Eksportuj COCO
+          Экспорт COCO
         </button>
       </div>
 
@@ -616,14 +616,14 @@ export default function FastReview() {
       <div className="flex gap-4 mb-4">
         <FrameView
           frame={current.neutral}
-          label="Neutralna (baza AU)"
+          label="Нейтральный (база AU)"
           accent="text-blue-600"
           showFullFrame={showFullFrame}
           showKeypoints={showKeypoints}
         />
         <FrameView
           frame={current.peak}
-          label="Szczytowa (oceniana)"
+          label="Пиковый (оцениваем)"
           accent="text-amber-600"
           showFullFrame={showFullFrame}
           showKeypoints={showKeypoints}
@@ -646,7 +646,7 @@ export default function FastReview() {
       </div>
 
       <div className="bg-white rounded-lg border border-gray-200 px-3 mb-3">
-        <ChoiceRow label="Punkty" hint="czy leżą na mordzie">
+        <ChoiceRow label="Точки" hint="лежат ли на морде">
           <Pill active={keypointsOk === true} onClick={() => setKeypointsOk(true)} tone="green">
             dobre
           </Pill>
@@ -657,23 +657,23 @@ export default function FastReview() {
             onClick={() => setShowKeypoints((shown) => !shown)}
             className="px-2.5 py-1 rounded-md border border-dashed border-gray-300 text-xs text-gray-500 hover:border-gray-400"
           >
-            {showKeypoints ? 'ukryj punkty (K)' : 'pokaż punkty (K)'}
+            {showKeypoints ? 'скрыть точки (K)' : 'показать точки (K)'}
           </button>
         </ChoiceRow>
 
-        <ChoiceRow label="Emocja" hint="automat, popraw jeśli źle">
+        <ChoiceRow label="Эмоция" hint="автомат, поправь если не так">
           {EMOTION_CLASSES.map((value) => (
             <Pill key={value} active={emotion === value} onClick={() => setEmotion(value)}>
-              {EMOTION_EMOJI[value]} {EMOTION_NAMES[value] ?? value}
+              {EMOTION_EMOJI[value]} {EMOTION_NAMES_RU[value] ?? value}
             </Pill>
           ))}
         </ChoiceRow>
 
-        <ChoiceRow label="Rasa" hint={`automat: ${(current.peak.breed_confidence * 100).toFixed(0)}% pewności`}>
+        <ChoiceRow label="Rasa" hint={`автомат: ${(current.peak.breed_confidence * 100).toFixed(0)}% уверенности`}>
           <input
             value={breedQuery}
             onChange={(event) => setBreedQuery(event.target.value)}
-            placeholder={breed ?? 'wpisz, żeby szukać'}
+            placeholder={breed ?? 'начни вводить для поиска'}
             className="px-2 py-1 border border-gray-200 rounded-md text-xs w-44"
           />
           {breedQuery
@@ -696,7 +696,7 @@ export default function FastReview() {
             : (
                 <>
                   <Pill active={breed === current.peak.breed} onClick={() => setBreed(current.peak.breed ?? null)}>
-                    {current.peak.breed ?? 'brak'}
+                    {current.peak.breed ?? 'нет'}
                   </Pill>
                   <Pill active={breed === 'Mixed Breed'} onClick={() => setBreed('Mixed Breed')}>
                     Mixed Breed
@@ -711,31 +711,31 @@ export default function FastReview() {
 
       <div className="flex items-center justify-between text-xs text-gray-500">
         <span>
-          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">1–8</kbd> aktywne ·{' '}
-          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Shift+1–8</kbd> niewidoczne ·{' '}
-          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Enter</kbd> zapisz i dalej ·{' '}
-          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">X</kbd> kadr się nie nadaje ·{' '}
-          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">K</kbd> punkty ·{' '}
-          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">E</kbd> pełna edycja ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">1–8</kbd> активен ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Shift+1–8</kbd> не видно ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">Enter</kbd> сохранить и дальше ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">X</kbd> кадр не годится ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">K</kbd> точки ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">E</kbd> полное редактирование ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">F</kbd>{' '}
-          {showFullFrame ? 'wróć do kadru psa' : 'cała klatka'} ·{' '}
-          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">←→</kbd> nawigacja
+          {showFullFrame ? 'вернуть кадр собаки' : 'весь кадр'} ·{' '}
+          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">←→</kbd> навигация
         </span>
         <div className="flex gap-2 shrink-0">
           <button
             onClick={() => void commit(false)}
             disabled={busy}
             className="px-3 py-2 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 disabled:opacity-50"
-            title="Głowa w dół, pies odwrócony, morda niewidoczna"
+            title="Голова опущена, собака отвернулась, морды не видно"
           >
-            Nie nadaje się ✕
+            Не годится ✕
           </button>
           <button
             onClick={() => void commit()}
             disabled={busy}
             className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-700 disabled:opacity-50"
           >
-            {busy ? 'Zapisywanie…' : 'Zapisz i dalej ⏎'}
+            {busy ? 'Сохраняю…' : 'Сохранить и дальше ⏎'}
           </button>
         </div>
       </div>

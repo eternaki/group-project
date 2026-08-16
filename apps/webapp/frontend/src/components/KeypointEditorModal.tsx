@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  KEYPOINT_NAMES,
+  KEYPOINT_NAMES_RU,
   NUM_KEYPOINTS,
   SKELETON_CONNECTIONS,
   getKeypointColor,
@@ -126,7 +126,7 @@ export default function KeypointEditorModal({
       const kp = localKPs[hoveredIdx];
       const cx = kp.x * sx + offsetX;
       const cy = kp.y * sy + offsetY;
-      const label = KEYPOINT_NAMES[hoveredIdx] ?? `kp${hoveredIdx}`;
+      const label = KEYPOINT_NAMES_RU[hoveredIdx] ?? `kp${hoveredIdx}`;
       ctx.font = '11px sans-serif';
       ctx.fillStyle = 'rgba(0,0,0,0.75)';
       const w = ctx.measureText(label).width + 8;
