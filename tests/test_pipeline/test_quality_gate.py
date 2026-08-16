@@ -21,6 +21,7 @@ from packages.pipeline.quality_gate import (
     assess_pair,
     face_asymmetry,
     face_width,
+    hide_out_of_frame,
     split_keypoints,
     weak_keypoint_ratio,
 )
@@ -172,3 +173,59 @@ class TestAssessPair:
         pair = assess_pair(make_profile_kp(), _as_list(make_low_visibility_kp()))
         assert any(reason.startswith("szczytowa") for reason in pair.reasons)
         assert any(reason.startswith("neutralna") for reason in pair.reasons)
+
+
+class TestHideOutOfFrame:
+    """
+    Ukrywanie punktów spoza kadru i spoza psa.
+
+    Taki punkt jest nie do poprawienia ręcznie: edytor kadruje widok do boksu
+    psa, więc anotator fizycznie nie może go kliknąć. Zostawiony widocznym psuje
+    zbiór po cichu — dlatego znika automatycznie.
+    """
+
+    def test_punkt_w_kadrze_zostaje(self) -> None:
+        kp = _as_list(make_frontal_kp())
+        result = hide_out_of_frame(kp, image_size=(400, 400))
+        _, confidences = split_keypoints(result)
+        assert (confidences > 0).sum() == NUM_KEYPOINTS
+
+    def test_punkt_poza_obrazem_znika(self) -> None:
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        kp[KP.LEFT_EAR_TIP] = [-50.0, 70.0, 0.9]
+        result = hide_out_of_frame(_as_list(kp.flatten()), image_size=(400, 400))
+        _, confidences = split_keypoints(result)
+        assert confidences[KP.LEFT_EAR_TIP] == 0.0
+
+    def test_punkt_poza_boksem_psa_znika(self) -> None:
+        """Punkt twarzy poza psem należy do czegoś innego niż ta morda."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        kp[KP.TONGUE_TIP] = [900.0, 900.0, 0.9]
+        result = hide_out_of_frame(
+            _as_list(kp.flatten()), image_size=(1000, 1000), bbox=[60.0, 60.0, 200.0, 220.0]
+        )
+        _, confidences = split_keypoints(result)
+        assert confidences[KP.TONGUE_TIP] == 0.0
+
+    def test_zapas_wokol_boksu_chroni_ucho(self) -> None:
+        """Ucho potrafi wystawać poza boks ciała — bez zapasu ucięlibyśmy pomiar."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        # Tuż poza boksem, ale w granicach zapasu
+        kp[KP.LEFT_EAR_TIP] = [55.0, 70.0, 0.9]
+        result = hide_out_of_frame(
+            _as_list(kp.flatten()), image_size=(1000, 1000), bbox=[60.0, 60.0, 200.0, 220.0]
+        )
+        _, confidences = split_keypoints(result)
+        assert confidences[KP.LEFT_EAR_TIP] > 0.0
+
+    def test_wspolrzedne_zostaja_nietkniete(self) -> None:
+        """Zerujemy widoczność, nie przesuwamy punktu — przesunięcie zmyśliłoby pomiar."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        kp[KP.TONGUE_TIP] = [-10.0, -10.0, 0.9]
+        result = hide_out_of_frame(_as_list(kp.flatten()), image_size=(400, 400))
+        coords, _ = split_keypoints(result)
+        assert coords[KP.TONGUE_TIP].tolist() == [-10.0, -10.0]
+
+    def test_bez_wymiarow_i_boksu_nic_sie_nie_zmienia(self) -> None:
+        kp = _as_list(make_frontal_kp())
+        assert hide_out_of_frame(kp) == kp

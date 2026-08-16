@@ -255,6 +255,64 @@ def face_width(coords: np.ndarray) -> float:
     )
 
 
+# Zapas wokół boksu psa, w którym punkt jeszcze uznajemy za jego. Ucho albo
+# broda potrafią wystawać poza boks ciała, więc bez zapasu odcinalibyśmy
+# poprawne pomiary. Poza tym zapasem punkt twarzy nie należy już do tego psa.
+BBOX_MARGIN_RATIO: float = 0.25
+
+
+def hide_out_of_frame(
+    keypoints: KeypointsInput,
+    image_size: Optional[tuple[float, float]] = None,
+    bbox: Optional[Sequence[float]] = None,
+    margin_ratio: float = BBOX_MARGIN_RATIO,
+) -> list[float]:
+    """
+    Ukrywa punkty leżące poza kadrem albo poza psem.
+
+    Punkt poza obrazem to ekstrapolacja modelu, a nie pomiar — nie ma tam czego
+    zobaczyć. Punkt poza boksem psa (z zapasem) należy do czegoś innego niż ta
+    morda. W obu wypadkach zostawienie go widocznym psuje zbiór po cichu, a przy
+    okazji jest nie do poprawienia ręcznie: edytor kadruje widok do boksu, więc
+    anotator fizycznie nie może takiego punktu kliknąć.
+
+    Args:
+        keypoints: 138 wartości COCO [x0, y0, v0, ...]
+        image_size: (szerokość, wysokość) kadru; None wyłącza to sprawdzenie
+        bbox: Boks psa [x, y, w, h]; None wyłącza to sprawdzenie
+        margin_ratio: Zapas wokół boksu jako ułamek jego wymiarów
+
+    Returns:
+        Nowa lista keypoints z wyzerowaną widocznością punktów poza kadrem
+    """
+    coords, confidences = split_keypoints(keypoints)
+    hidden = np.zeros(len(confidences), dtype=bool)
+
+    if image_size is not None:
+        width, height = image_size
+        hidden |= (
+            (coords[:, 0] < 0)
+            | (coords[:, 1] < 0)
+            | (coords[:, 0] >= width)
+            | (coords[:, 1] >= height)
+        )
+
+    if bbox is not None and len(bbox) == 4:
+        x, y, box_width, box_height = (float(value) for value in bbox)
+        margin_x, margin_y = box_width * margin_ratio, box_height * margin_ratio
+        hidden |= (
+            (coords[:, 0] < x - margin_x)
+            | (coords[:, 0] > x + box_width + margin_x)
+            | (coords[:, 1] < y - margin_y)
+            | (coords[:, 1] > y + box_height + margin_y)
+        )
+
+    corrected = confidences.copy()
+    corrected[hidden] = 0.0
+    flat = np.column_stack([coords, corrected]).reshape(-1)
+    return [float(value) for value in flat]
+
+
 def assess_frame(
     keypoints: Optional[KeypointsInput],
     thresholds: Optional[QualityThresholds] = None,

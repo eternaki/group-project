@@ -32,10 +32,10 @@ interface FullEditorModalProps {
 type TabId = 'keypoints' | 'au' | 'emotion' | 'breed';
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: 'keypoints', label: 'Punkty kluczowe' },
+  { id: 'keypoints', label: 'Точки' },
   { id: 'au',        label: 'AU' },
-  { id: 'emotion',   label: 'Emocja' },
-  { id: 'breed',     label: 'Rasa' },
+  { id: 'emotion',   label: 'Эмоция' },
+  { id: 'breed',     label: 'Порода' },
 ];
 
 const POINT_RADIUS = 3;
@@ -277,14 +277,14 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
       <div className="flex flex-col flex-1 min-w-0">
         {/* Naglowek */}
         <div className="flex items-center justify-between px-4 py-2 bg-gray-800 flex-shrink-0">
-          <span className="text-white text-sm font-medium">Klatka #{frame.frame_idx}</span>
-          <span className="text-gray-400 text-xs">PPM = przełącz widoczność · Esc = zamknij</span>
+          <span className="text-white text-sm font-medium">Кадр #{frame.frame_idx}</span>
+          <span className="text-gray-400 text-xs">Правый клик = скрыть/показать точку · Esc = закрыть</span>
         </div>
 
         {/* Canvas */}
         <div className="flex-1 bg-gray-900 overflow-auto flex items-center justify-center p-3">
           {localKPs.length === 0 ? (
-            <p className="text-gray-500">Brak punktów kluczowych dla tej klatki</p>
+            <p className="text-gray-500">У этого кадра нет точек</p>
           ) : (
             <canvas
               ref={canvasRef}
@@ -302,20 +302,20 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
         <div className="flex items-center gap-3 px-4 py-2.5 bg-gray-800 flex-shrink-0">
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-gray-400 flex-1">
             {[
-              { label: 'Oczy', color: '#00ff00' },
-              { label: 'Brwi', color: '#ff0080' },
-              { label: 'Uszy', color: '#00a5ff' },
-              { label: 'Nos', color: '#ff3030' },
-              { label: 'Usta', color: '#00ffff' },
-              { label: 'Pysk', color: '#ff00ff' },
-              { label: 'Kontur', color: '#4488ff' },
+              { label: 'Глаза', color: '#00ff00' },
+              { label: 'Брови', color: '#ff0080' },
+              { label: 'Уши', color: '#00a5ff' },
+              { label: 'Нос', color: '#ff3030' },
+              { label: 'Губы', color: '#00ffff' },
+              { label: 'Морда', color: '#ff00ff' },
+              { label: 'Контур', color: '#4488ff' },
             ].map(({ label, color }) => (
               <span key={label} className="flex items-center gap-1">
                 <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
                 {label}
               </span>
             ))}
-            <span className="text-gray-500">· Widocznych: {visibleCount}/{NUM_KEYPOINTS}</span>
+            <span className="text-gray-500">· Видимых: {visibleCount}/{NUM_KEYPOINTS}</span>
           </div>
           <div className="flex gap-2 flex-shrink-0">
             <button
@@ -323,14 +323,14 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
               disabled={saving || localKPs.length === 0}
               className="px-3 py-1.5 text-sm bg-amber-500 text-white rounded hover:bg-amber-600 disabled:opacity-40 transition-colors"
             >
-              {saving ? '…' : 'Przelicz AU'}
+              {saving ? '…' : 'Пересчитать AU'}
             </button>
             <button
               onClick={handleClose}
               disabled={saving}
               className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 transition-colors"
             >
-              {saving ? 'Zapisuję…' : isDirty ? 'Zapisz i zamknij *' : 'Zamknij'}
+              {saving ? 'Сохраняю…' : isDirty ? 'Сохранить и закрыть *' : 'Закрыть'}
             </button>
           </div>
         </div>
@@ -356,7 +356,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
           <button
             onClick={handleClose}
             className="px-3 text-gray-400 hover:text-gray-700 text-lg leading-none border-l border-gray-200"
-            title="Zamknij"
+            title="Закрыть"
           >
             ✕
           </button>
@@ -368,7 +368,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
             <div className="space-y-3 text-sm">
               <p className="text-gray-500 text-xs">
                 Przeciągaj punkty na obrazie po lewej stronie.<br />
-                PPM = przełącz widoczność punktu.
+                Правый клик скрывает или возвращает точку.
               </p>
               {isDirty && (
                 <button
@@ -376,7 +376,7 @@ export default function FullEditorModal({ frame, onClose }: FullEditorModalProps
                   disabled={saving}
                   className="w-full py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40"
                 >
-                  {saving ? 'Zapisuję…' : 'Zapisz punkty kluczowe *'}
+                  {saving ? 'Сохраняю…' : 'Сохранить точки *'}
                 </button>
               )}
             </div>

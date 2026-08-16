@@ -31,6 +31,7 @@ from session_store import (
 )
 
 from packages.data.coco import FRAME_ROLE_NEUTRAL, FRAME_ROLE_PEAK
+from packages.pipeline.quality_gate import hide_out_of_frame
 
 # Prefiks URL, pod którym backend wystawia klatki zbioru
 DATASET_URL_PREFIX: str = "/dataset"
@@ -196,6 +197,18 @@ def _annotation_to_frame(
     Returns:
         `FrameAnnotation` gotowa do zapisania w sesji
     """
+    keypoints = annotation.get("keypoints")
+    if keypoints:
+        # Punkt poza kadrem albo poza psem jest nie do poprawienia ręcznie:
+        # edytor kadruje widok do boksu, więc anotator fizycznie nie może go
+        # kliknąć. Zostawiony widocznym psułby zbiór po cichu.
+        width, height = image.get("width"), image.get("height")
+        keypoints = hide_out_of_frame(
+            keypoints,
+            image_size=(width, height) if width and height else None,
+            bbox=annotation.get("bbox"),
+        )
+
     return FrameAnnotation(
         frame_idx=int(annotation["image_id"]),
         image_url=_image_url(image["file_name"], frames_prefix),
@@ -203,7 +216,7 @@ def _annotation_to_frame(
         annotation_status=ANNOTATION_STATUS_AUTO,
         source="ai",
         bbox=annotation.get("bbox"),
-        keypoints=annotation.get("keypoints"),
+        keypoints=keypoints,
         aus=dict(annotation.get("au_analysis", {})),
         emotion=annotation.get("emotion"),
         emotion_confidence=float(
