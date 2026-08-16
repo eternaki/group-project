@@ -8,13 +8,15 @@ jakości. Wynik jest UPORZĄDKOWANY pod pracę człowieka, a nie pod numer klatk
 
 Dwie rzeczy decydują o kolejności:
 
-* **Przeplot po wideo** — anotator dostaje kolejne pary z RÓŻNYCH nagrań.
-  Gdy praca urwie się w połowie (a przy terminie trzech tygodni urwie się),
-  zweryfikowana część jest wtedy przekrojem materiału, a nie pięćdziesięcioma
-  klatkami jednego psa.
-* **Niepewność w obrębie wideo** — najpierw pary, w których pomiar AU leży
-  blisko progu decyzyjnego. Tam głos człowieka zmienia etykietę; tam, gdzie
-  sygnał jest dziesięć razy większy od szumu, reguła i tak trafia.
+* **Grupowanie po wideo** — anotator kończy całe nagranie, zanim przejdzie do
+  następnego. Pary jednego nagrania dzielą klatkę neutralną, więc ocenia je w
+  jednym kontekście, a zepsutą bazę poprawia raz dla całej grupy. Gdy praca
+  urwie się w połowie (a przy terminie trzech tygodni urwie się), zostaje zbiór
+  KOMPLETNYCH nagrań — a takie nadają się do treningu, w odróżnieniu od setki
+  nagrań rozgrzebanych po jednej parze.
+* **Sygnał** — nagrania idą od najbardziej wyrazistych, wewnątrz nagrania tak
+  samo. Pary z pomiarem blisko progu decyzyjnego wyprzedzają te, gdzie sygnał
+  jest dziesięć razy większy od szumu i reguła i tak trafia.
 
 Użycie:
     python -m scripts.annotation.curate_for_review \
@@ -46,6 +48,24 @@ AMBIGUOUS_SNR_MAX: float = 2.0
 
 DEFAULT_DATASET: str = "data/dataset_v2/annotations.json"
 DEFAULT_OUTPUT: str = "data/dataset_v2/curated.json"
+
+# Kuracja świadomie luzuje asymetrię ponad `QualityThresholds().max_asymmetry`
+# (0.20). Ostry próg chroni POMIAR reguł, który dzieli wszystko przez rozstaw
+# oczu i przy obrocie głowy zawyża każde AU. Kolejka trafia jednak do CZŁOWIEKA,
+# a człowiek czyta ucho i pysk także na ujęciu trzy czwarte, zaś dla zasłoniętej
+# połowy ma werdykt `not_observable`.
+#
+# Zmierzone na zbiorze: 0.20 daje 271 par, 0.50 daje 1082 pary przy spadku
+# udziału par bez żadnego sygnału z 42% do 34%. Wartość MUSI być domyślna, a nie
+# podawana flagą — przy dziedziczeniu z `QualityThresholds` ponowna kuracja
+# „na domyślnych" po cichu tnie kolejkę czterokrotnie.
+REVIEW_MAX_ASYMMETRY: float = 0.50
+
+# Ostry próg 40 px zakłada odczyt z klatki. Anotator ogląda POWIĘKSZONY kadr
+# mordy, więc czyta ucho i pysk także przy 30 px. Ten próg i tak nie jest tu
+# wiążący: odrzucone peaki mają medianę szerokości mordy 82 px — tracimy je na
+# obrocie głowy, nie na rozdzielczości.
+REVIEW_MIN_FACE_WIDTH: float = 30.0
 
 # Separator ścieżek w COCO bywa windowsowy — normalizujemy przed rozbiciem
 _WINDOWS_SEPARATOR: str = "\\"
@@ -212,7 +232,19 @@ def build_pairs(
 
 def order_for_review(pairs: list[ReviewPair]) -> list[ReviewPair]:
     """
-    Układa pary do weryfikacji: przeplot po nagraniach, w środku niepewność.
+    Układa pary NAGRANIAMI: najpierw całe jedno nagranie, potem następne.
+
+    Wcześniej kolejka przeplatała nagrania, żeby przerwana praca dawała przekrój
+    materiału. Grupowanie jest jednak lepsze z dwóch powodów:
+
+    * **Skończone nagranie to gotowa jednostka, niedokończone nie.** Przy przerwie
+      zostaje zbiór kompletnych nagrań, a nie kawałki kilkuset.
+    * **Pary jednego nagrania dzielą klatkę neutralną.** Anotator ocenia je w tym
+      samym kontekście, a gdy baza okaże się zepsuta, poprawia ją RAZ dla całej
+      grupy zamiast wyłapywać ten sam błąd rozrzucony po kolejce.
+
+    Same nagrania idą od najbardziej wyrazistych, więc pierwszeństwo materiału
+    z realnym sygnałem zostaje zachowane.
 
     Args:
         pairs: Pary przyjęte przez bramkę
@@ -224,20 +256,15 @@ def order_for_review(pairs: list[ReviewPair]) -> list[ReviewPair]:
     for pair in pairs:
         by_video[pair.video].append(pair)
     for bucket in by_video.values():
-        # Najpierw pary z realnym sygnałem, dopiero potem niepewne. Przeplot
-        # bierze z każdego nagrania pozycję zerową, więc na początku globalnej
-        # kolejki lądują najbardziej wyraziste pary całego zbioru.
         bucket.sort(key=lambda item: (-item.signal, -item.ambiguity))
 
-    queues = sorted(by_video.values(), key=lambda bucket: -len(bucket))
-    ordered: list[ReviewPair] = []
-    position = 0
-    while any(position < len(bucket) for bucket in queues):
-        for bucket in queues:
-            if position < len(bucket):
-                ordered.append(bucket[position])
-        position += 1
-    return ordered
+    # Nagranie reprezentuje jego najlepsza para: nagranie z jednym mocnym
+    # sygnałem jest ciekawsze niż nagranie z pięcioma pustymi parami.
+    videos = sorted(
+        by_video.values(),
+        key=lambda bucket: (-max(pair.signal for pair in bucket), -len(bucket)),
+    )
+    return [pair for bucket in videos for pair in bucket]
 
 
 def _quality_fields(quality: FrameQuality) -> dict:
@@ -328,7 +355,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-asymmetry",
         type=float,
-        default=QualityThresholds().max_asymmetry,
+        default=REVIEW_MAX_ASYMMETRY,
         help="Maksymalna asymetria połówek mordy",
     )
     parser.add_argument(
@@ -340,7 +367,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-face-width",
         type=float,
-        default=QualityThresholds().min_face_width,
+        default=REVIEW_MIN_FACE_WIDTH,
         help="Minimalna szerokość mordy w pikselach",
     )
     parser.add_argument(
