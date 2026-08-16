@@ -20,6 +20,7 @@ from dataclasses import asdict
 from typing import Optional
 
 import numpy as np
+from annotators import TEAM
 from coco_import import (
     DATASET_URL_PREFIX,
     CocoImportError,
@@ -131,6 +132,7 @@ class ImportCocoRequest(BaseModel):
     path: str
     limit: Optional[int] = None
     fresh: bool = False
+    annotator: Optional[str] = None
 
 
 class ReviewRequest(BaseModel):
@@ -269,7 +271,7 @@ async def import_coco(request: ImportCocoRequest):
     """
     try:
         path = resolve_import_path(request.path)
-        session_id = session_id_for(path)
+        session_id = session_id_for(path, request.annotator)
 
         # Sesję budujemy ZA KAŻDYM RAZEM od nowa, bo źródłem prawdy o pracy
         # ludzi są pliki etykiet w repozytorium, a nie sesja na dysku. Dzięki
@@ -283,6 +285,7 @@ async def import_coco(request: ImportCocoRequest):
             limit=request.limit,
             frames_prefix=frames_prefix_for(path),
             dataset=path.parent.name,
+            annotator=request.annotator,
         )
     except CocoImportError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -318,13 +321,28 @@ def _session_summary(session: SessionData, resumed: bool) -> dict:
     }
 
 
-@router.get("/datasets/available")
-async def list_datasets():
+@router.get("/team")
+async def list_team():
     """
-    Wylicza zbiory gotowe do weryfikacji razem z postępem pracy.
+    Zwraca skład zespołu anotatorów.
+
+    Returns:
+        `{"team": [{key, display}]}` — kolejność wyznacza przydział części kolejki
+    """
+    return {"team": [{"key": member.key, "display": member.display} for member in TEAM]}
+
+
+@router.get("/datasets/available")
+async def list_datasets(annotator: Optional[str] = None):
+    """
+    Wylicza zbiory gotowe do weryfikacji razem z postępem TEJ osoby.
 
     Anotator nie ma wpisywać ścieżek — narzędzie samo pokazuje, co jest do
-    zrobienia i ile już zrobione.
+    zrobienia i ile już zrobione. Liczby dotyczą jego części kolejki, bo każdy
+    z czwórki dostaje inne pary.
+
+    Args:
+        annotator: Klucz anotatora; None znaczy „cała kolejka"
 
     Returns:
         `{"root": str, "datasets": [{path, name, pairs, verified, session_id}]}`
@@ -332,7 +350,7 @@ async def list_datasets():
     root = import_root()
     datasets = []
     for path in find_datasets(root):
-        session_id = session_id_for(path)
+        session_id = session_id_for(path, annotator)
         verified = 0
         if _store.exists(session_id):
             session = _store.load(session_id)
@@ -346,7 +364,7 @@ async def list_datasets():
             {
                 "path": path.relative_to(root).as_posix(),
                 "name": path.parent.name,
-                "pairs": count_pairs(path),
+                "pairs": count_pairs(path, annotator),
                 "verified": verified,
                 "session_id": session_id,
             }

@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from annotators import owns_pair
 from label_store import latest_by_pair
 from session_store import (
     ANNOTATION_STATUS_AUTO,
@@ -55,23 +56,28 @@ class CocoImportError(ValueError):
     """Wyjątek, gdy zbioru nie da się zaimportować jako sesji anotacji."""
 
 
-def session_id_for(path: Path) -> str:
+def session_id_for(path: Path, annotator: Optional[str] = None) -> str:
     """
-    Wylicza STAŁY identyfikator sesji dla danego zbioru.
+    Wylicza STAŁY identyfikator sesji dla pary (zbiór, anotator).
 
     Identyfikator losowy znaczyłby, że każde otwarcie narzędzia zakłada nową
     sesję, a wczorajsza praca zostaje w osieroconej — anotator wracałby do
     pierwszej pary i nie miał jak odzyskać swoich werdyktów. Wyprowadzenie
-    identyfikatora ze ścieżki zbioru sprawia, że ten sam zbiór to zawsze ta
-    sama sesja, więc praca się kumuluje.
+    identyfikatora ze ścieżki sprawia, że ten sam zbiór to zawsze ta sama sesja.
+
+    Anotator wchodzi do skrótu, bo każdy dostaje INNĄ część kolejki. Wspólny
+    identyfikator znaczyłby, że kto otworzy narzędzie drugi, nadpisze kolejkę
+    pierwszego swoją — i zobaczy nie swoje pary.
 
     Args:
         path: Ścieżka zbioru po kuracji
+        annotator: Klucz anotatora; None dla kolejki nierozdzielonej
 
     Returns:
-        Identyfikator sesji (skrót ścieżki)
+        Identyfikator sesji (skrót ścieżki i anotatora)
     """
-    digest = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()
+    seed = f"{path.resolve()}|{annotator or ''}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     return digest[:SESSION_ID_LENGTH]
 
 
@@ -300,6 +306,7 @@ def build_session(
     limit: Optional[int] = None,
     frames_prefix: str = "",
     dataset: Optional[str] = None,
+    annotator: Optional[str] = None,
 ) -> SessionData:
     """
     Składa sesję anotacji ze zbioru COCO po kuracji.
@@ -312,6 +319,9 @@ def build_session(
         frames_prefix: Przedrostek katalogu klatek względem katalogu danych
         dataset: Nazwa zbioru — po niej odnajdujemy zapisane etykiety zespołu.
             None znaczy „nie wczytuj etykiet" (używane w testach jednostkowych).
+        annotator: Czyja to kolejka. Cztery osoby na jednym zbiorze muszą dostać
+            ROZŁĄCZNE części, inaczej połowa wysiłku idzie na to samo.
+            None znaczy „cała kolejka".
 
     Returns:
         `SessionData` z parami w kolejności weryfikacji, z nałożonymi etykietami
@@ -321,6 +331,11 @@ def build_session(
     """
     images = {image["id"]: image for image in coco.get("images", [])}
     pairs = _group_pairs(coco)
+    if annotator is not None:
+        pairs = [
+            pair for pair in pairs
+            if owns_pair(annotator, int(pair[1].get("review_order", 0)))
+        ]
     if limit is not None:
         pairs = pairs[:limit]
 
@@ -397,15 +412,16 @@ def find_datasets(root: Optional[Path] = None) -> list[Path]:
     return sorted(unique.values(), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
-def count_pairs(path: Path) -> int:
+def count_pairs(path: Path, annotator: Optional[str] = None) -> int:
     """
     Liczy pary w zbiorze bez budowania sesji.
 
     Args:
         path: Ścieżka zbioru po kuracji
+        annotator: Gdy podany, liczy tylko część przypisaną tej osobie
 
     Returns:
-        Liczba par gotowych do weryfikacji; 0 gdy pliku nie da się odczytać
+        Liczba par do weryfikacji; 0 gdy pliku nie da się odczytać
     """
     try:
         coco = load_coco(path)
@@ -416,7 +432,9 @@ def count_pairs(path: Path) -> int:
         for annotation in coco.get("annotations", [])
         if annotation.get("review_order") is not None
     }
-    return len(orders)
+    if annotator is None:
+        return len(orders)
+    return sum(1 for order in orders if owns_pair(annotator, int(order)))
 
 
 def load_coco(path: Path) -> dict:
