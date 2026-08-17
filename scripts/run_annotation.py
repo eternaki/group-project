@@ -32,6 +32,9 @@ FRONTEND_DIR: Path = REPO_ROOT / "apps" / "webapp" / "frontend"
 ANNOTATIONS_NAME: str = "annotations.json"
 CURATED_NAME: str = "curated.json"
 
+# Podkatalog paczki roboczej — jedyna postać zbioru, która jedzie w repozytorium
+WORK_DIRNAME: str = "work"
+
 BACKEND_HOST: str = "127.0.0.1"
 BACKEND_PORT: int = 8000
 FRONTEND_URL: str = "http://localhost:5173"
@@ -94,19 +97,33 @@ def check_prerequisites() -> None:
 
 def find_datasets() -> list[Path]:
     """
-    Znajduje zbiory wsadowe w katalogu danych.
+    Znajduje zbiory do anotacji w katalogu danych.
 
     Anotator nie wskazuje niczego ręcznie — narzędzie samo widzi, co jest
     do zrobienia.
 
+    Szukamy na DWÓCH poziomach i to jest sedno działania u kolegów. Materiał
+    surowy (`data/<zbior>/`) leży tylko na maszynie, która go wygenerowała —
+    waży półtora giga i nie wchodzi do repozytorium. To, co przyjeżdża z
+    `git clone`, to paczka robocza (`data/<zbior>/work/`): te same pary, tylko
+    w kadrach psów. Bez drugiego poziomu osoba po sklonowaniu widziałaby pustą
+    listę i nie miałaby czego anotować.
+
+    Paczka niesie SAM plik po kuracji, bez surowego COCO — bo surowe waży 63 MB
+    i nikomu poza autorem zbioru nie jest potrzebne. Dlatego zbiorem jest tu
+    katalog z klatkami i którymkolwiek z dwóch plików.
+
     Returns:
-        Katalogi zbiorów zawierające `annotations.json`, najświeższe pierwsze
+        Katalogi zbiorów gotowych albo do kuracji, najświeższe pierwsze
     """
-    found = [
+    levels = ("*", f"*/{WORK_DIRNAME}")
+    found = {
         path.parent
-        for path in DATA_DIR.glob(f"*/{ANNOTATIONS_NAME}")
+        for level in levels
+        for name in (ANNOTATIONS_NAME, CURATED_NAME)
+        for path in DATA_DIR.glob(f"{level}/{name}")
         if (path.parent / "frames").is_dir()
-    ]
+    }
     return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
 
 

@@ -53,6 +53,12 @@ from packages.data.schemas import (  # noqa: E402
     SKELETON_CONNECTIONS,
 )
 from packages.models.delta_action_units import ACTION_UNIT_NAMES  # noqa: E402
+from scripts.annotation.cropping import (  # noqa: E402
+    bbox_from_keypoints,
+    crop_and_scale,
+    face_box,
+    remap_keypoints,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -68,13 +74,6 @@ FACE_MARGIN: float = 0.25
 MAX_CROP_SIDE: int = 512
 
 JPEG_QUALITY: int = 90
-
-# Punkt poniżej tej pewności nie wyznacza kadru — inaczej jedna zabłąkana
-# predykcja na tle rozdmuchuje wycinek na pół obrazu.
-KEYPOINT_VISIBLE_MIN: float = 0.3
-
-# Minimalna liczba pewnych punktów, żeby w ogóle liczyć kadr mordy
-MIN_VISIBLE_KEYPOINTS: int = 6
 
 DEFAULT_DATASET: str = "dataset_final"
 
@@ -99,26 +98,6 @@ LICENSES: list[dict] = [
 ]
 
 
-@dataclass(frozen=True)
-class CropBox:
-    """Prostokąt kadru w pikselach pełnej klatki."""
-
-    x0: int
-    y0: int
-    x1: int
-    y1: int
-
-    @property
-    def width(self) -> int:
-        """Szerokość kadru."""
-        return self.x1 - self.x0
-
-    @property
-    def height(self) -> int:
-        """Wysokość kadru."""
-        return self.y1 - self.y0
-
-
 @dataclass
 class BuildStats:
     """Licznik tego, co weszło do zbioru i co odpadło."""
@@ -131,84 +110,6 @@ class BuildStats:
     images_written: int = 0
     bytes_written: int = 0
     disagreements: int = 0
-
-
-def face_box(keypoints: list[float], width: int, height: int) -> Optional[CropBox]:
-    """
-    Wyznacza kadr mordy z rozpiętości pewnych punktów.
-
-    Args:
-        keypoints: Płaska lista 138 wartości (x, y, widoczność)
-        width: Szerokość pełnej klatki
-        height: Wysokość pełnej klatki
-
-    Returns:
-        Kadr albo None, gdy pewnych punktów jest za mało
-    """
-    points = np.asarray(keypoints, dtype=float).reshape(NUM_KEYPOINTS, 3)
-    visible = points[points[:, 2] > KEYPOINT_VISIBLE_MIN]
-    if len(visible) < MIN_VISIBLE_KEYPOINTS:
-        return None
-
-    x0, y0 = visible[:, 0].min(), visible[:, 1].min()
-    x1, y1 = visible[:, 0].max(), visible[:, 1].max()
-    pad_x = max((x1 - x0) * FACE_MARGIN, 1.0)
-    pad_y = max((y1 - y0) * FACE_MARGIN, 1.0)
-
-    box = CropBox(
-        x0=int(max(0, x0 - pad_x)),
-        y0=int(max(0, y0 - pad_y)),
-        x1=int(min(width, x1 + pad_x)),
-        y1=int(min(height, y1 + pad_y)),
-    )
-    return box if box.width > 1 and box.height > 1 else None
-
-
-def crop_and_scale(image: np.ndarray, box: CropBox) -> tuple[np.ndarray, float]:
-    """
-    Wycina kadr i zmniejsza go do `MAX_CROP_SIDE`, jeśli trzeba.
-
-    Args:
-        image: Pełna klatka
-        box: Kadr do wycięcia
-
-    Returns:
-        Para (wycinek, współczynnik skali zastosowany po wycięciu)
-    """
-    crop = image[box.y0 : box.y1, box.x0 : box.x1]
-    longest = max(crop.shape[0], crop.shape[1])
-    if longest <= MAX_CROP_SIDE:
-        return crop, 1.0
-
-    scale = MAX_CROP_SIDE / longest
-    resized = cv2.resize(
-        crop,
-        (max(1, int(crop.shape[1] * scale)), max(1, int(crop.shape[0] * scale))),
-        interpolation=cv2.INTER_AREA,
-    )
-    return resized, scale
-
-
-def remap_keypoints(keypoints: list[float], box: CropBox, scale: float) -> list[float]:
-    """
-    Przenosi punkty z układu pełnej klatki do układu wycinka.
-
-    Bez tego JSON opisywałby punkty w pikselach oryginału, a obrazy byłyby
-    wycinkami — czyli zbiór wskazywałby punkty poza własnymi zdjęciami.
-
-    Args:
-        keypoints: Płaska lista 138 wartości
-        box: Kadr, względem którego liczymy
-        scale: Skala nałożona po wycięciu
-
-    Returns:
-        Nowa płaska lista 138 wartości
-    """
-    points = np.asarray(keypoints, dtype=float).reshape(NUM_KEYPOINTS, 3)
-    moved = points.copy()
-    moved[:, 0] = (points[:, 0] - box.x0) * scale
-    moved[:, 1] = (points[:, 1] - box.y0) * scale
-    return [float(value) for value in moved.reshape(-1)]
 
 
 def resolve_labels(dataset: str) -> tuple[dict[str, LabelRecord], int]:
@@ -376,11 +277,11 @@ def write_crop(
     if image is None:
         return None
 
-    box = face_box(keypoints, image.shape[1], image.shape[0])
+    box = face_box(keypoints, image.shape[1], image.shape[0], FACE_MARGIN)
     if box is None:
         return None
 
-    crop, scale = crop_and_scale(image, box)
+    crop, scale = crop_and_scale(image, box, MAX_CROP_SIDE)
     target = images_root / image_entry["file_name"]
     target.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(target), crop, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
@@ -400,30 +301,6 @@ def write_crop(
         "source_size": [image_entry.get("width"), image_entry.get("height")],
     }
     return entry, remap_keypoints(keypoints, box, scale), target.stat().st_size
-
-
-def bbox_from_keypoints(keypoints: list[float]) -> list[float]:
-    """
-    Liczy `bbox` anotacji jako obrys pewnych punktów w układzie kadru.
-
-    Obrazem jest kadr mordy, więc boks CAŁEGO psa nie ma tu sensu: w tym układzie
-    wychodziłby poza zdjęcie i narzędzia COCO uznałyby go za błędny. Boks opisuje
-    to, co na obrazie faktycznie jest — mordę. Położenie psa w oryginale zostaje
-    w `source_body_bbox`.
-
-    Args:
-        keypoints: Płaska lista 138 wartości w układzie kadru
-
-    Returns:
-        Boks [x, y, szerokość, wysokość]
-    """
-    points = np.asarray(keypoints, dtype=float).reshape(NUM_KEYPOINTS, 3)
-    visible = points[points[:, 2] > KEYPOINT_VISIBLE_MIN]
-    if len(visible) == 0:
-        return [0.0, 0.0, 0.0, 0.0]
-    x0, y0 = float(visible[:, 0].min()), float(visible[:, 1].min())
-    x1, y1 = float(visible[:, 0].max()), float(visible[:, 1].max())
-    return [x0, y0, x1 - x0, y1 - y0]
 
 
 def build_annotation(

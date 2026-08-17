@@ -36,6 +36,10 @@ from packages.pipeline.quality_gate import hide_out_of_frame
 # Prefiks URL, pod którym backend wystawia klatki zbioru
 DATASET_URL_PREFIX: str = "/dataset"
 
+# Podkatalog paczki roboczej. Zbiór w tej postaci przyjeżdża z repozytorium
+# i musi nosić nazwę zbioru nadrzędnego — patrz `dataset_name_for`.
+WORK_DIRNAME: str = "work"
+
 # Długość identyfikatora sesji (jak w sesjach z wideo)
 SESSION_ID_LENGTH: int = 8
 
@@ -131,6 +135,27 @@ def resolve_import_path(raw_path: str) -> Path:
     if not resolved.is_file():
         raise CocoImportError("Nie znaleziono zbioru pod podaną ścieżką")
     return resolved
+
+
+def dataset_name_for(dataset_path: Path) -> str:
+    """
+    Zwraca nazwę zbioru, po której odnajduje się etykiety zespołu.
+
+    Ta sama praca dociera do ludzi na dwa sposoby: autor zbioru ma materiał
+    surowy (`data/dataset_final/curated.json`), a reszta zespołu paczkę roboczą
+    z repozytorium (`data/dataset_final/work/curated.json`). Nazwa wzięta wprost
+    z katalogu nadrzędnego dałaby w drugim przypadku `work`, więc werdykty
+    kolegów lądowałyby w `data/labels/work/` i NIE scaliłyby się z resztą —
+    każdy widziałby tylko własną połowę pracy zespołu.
+
+    Args:
+        dataset_path: Ścieżka pliku po kuracji
+
+    Returns:
+        Nazwa zbioru, wspólna dla materiału surowego i paczki roboczej
+    """
+    parent = dataset_path.resolve().parent
+    return parent.parent.name if parent.name == WORK_DIRNAME else parent.name
 
 
 def frames_prefix_for(dataset_path: Path) -> str:

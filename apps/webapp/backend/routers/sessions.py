@@ -26,6 +26,7 @@ from coco_import import (
     CocoImportError,
     build_session,
     count_pairs,
+    dataset_name_for,
     find_datasets,
     frames_prefix_for,
     import_root,
@@ -294,10 +295,10 @@ async def import_coco(request: ImportCocoRequest):
         session = build_session(
             coco=load_coco(path),
             session_id=session_id,
-            source_name=f"{path.parent.name}/{path.name}",
+            source_name=f"{dataset_name_for(path)}/{path.name}",
             limit=request.limit,
             frames_prefix=frames_prefix_for(path),
-            dataset=path.parent.name,
+            dataset=dataset_name_for(path),
             annotator=request.annotator,
         )
     except CocoImportError as error:
@@ -376,7 +377,7 @@ async def list_datasets(annotator: Optional[str] = None):
         datasets.append(
             {
                 "path": path.relative_to(root).as_posix(),
-                "name": path.parent.name,
+                "name": dataset_name_for(path),
                 "pairs": count_pairs(path, annotator),
                 "verified": verified,
                 "session_id": session_id,
