@@ -5,8 +5,15 @@ Wykrywa "neutralną klatkę bazową" w sekwencji wideo, gdzie wyraz twarzy
 psa jest najbardziej rozluźniony i stabilny (minimalne ruchy).
 
 Neutralna klatka służy jako punkt odniesienia do obliczania delta AU.
+
+Znane ograniczenia (data-free):
+- Stabilność ≠ neutralność: detektor mierzy brak ruchu, nie rozluźnienie wyrazu.
+  Łagodzone heurystyką "typowej konfiguracji" (_select_most_typical), ale to proxy 2D.
+- Medianowy baseline zakłada ~stałą skalę twarzy w obrębie okna (frontalny, krótki
+  odcinek czasu). Per-AU progi i kalibracja wyrazu — poza zakresem (wariant C).
 """
 
+import math
 from typing import Optional
 
 import numpy as np
@@ -18,6 +25,16 @@ from packages.models.head_pose import (
     HeadPose,
     estimate_head_pose,
 )
+
+# Skala wariancji w jednostkach znormalizowanych (po podziale przez eye-distance).
+# Dobrana tak, by ~0.05 (5% odległości oczu) jitteru dawało wyraźnie niższy score.
+VARIANCE_SCALE: float = 1000.0
+
+# Próg widoczności keypointa, by wszedł do medianowej bazy.
+BASELINE_VIS_THRESHOLD: float = 0.3
+
+# Frakcja najstabilniejszych kandydatów branych pod uwagę przy wyborze "typowej" klatki.
+TOP_STABLE_FRACTION: float = 0.34
 
 
 class NeutralFrameDetector:
@@ -65,6 +82,7 @@ class NeutralFrameDetector:
         keypoints_list: list[Optional[np.ndarray]],
         head_poses: Optional[list[Optional[HeadPose]]] = None,
         debug: bool = False,
+        frame_indices: Optional[list[int]] = None,
     ) -> int:
         """
         Automatycznie wykrywa neutralną klatkę z sekwencji wideo.
@@ -74,6 +92,7 @@ class NeutralFrameDetector:
             keypoints_list: Lista tablic keypoints (138 wartości każda)
             head_poses: Opcjonalna lista HeadPose (obliczana jeśli None)
             debug: Włącz logowanie debugowania
+            frame_indices: Oryginalne indeksy klatek w wideo (opcjonalne)
 
         Returns:
             Indeks neutralnej klatki
@@ -109,21 +128,22 @@ class NeutralFrameDetector:
                 "Wideo może mieć za mało wykrytych keypoints."
             )
 
-        # Wynik = stabilność × frontalność. Przy podobnej stabilności preferujemy
-        # klatkę bardziej frontalną — odwrócona/pochylona głowa daje złą bazę
-        # (szczególnie dla geometrii uszu), psując wszystkie delta AU.
-        scores = [
-            (
-                idx,
-                self._compute_stability_score(keypoints_list, idx)
-                * _frontal_factor(
-                    head_poses[idx], self.max_yaw_asymmetry, self.max_roll
-                ),
-            )
+        # Wynik = stabilność × frontalność, a wybór spośród najlepszych idzie po
+        # typowości konfiguracji. Trzy niezależne poprawki, z których każda łata
+        # inną wadę bazy AU, więc żadna nie zastępuje pozostałych:
+        #   * stabilność liczona po REALNYM czasie (`frame_indices`) — próbkowanie
+        #     bywa nierówne, a okno w indeksach listy obejmowałoby raz sekundę,
+        #     raz dziesięć;
+        #   * frontalność — odwrócona lub pochylona głowa daje złą bazę,
+        #     zwłaszcza dla geometrii uszu, psując wszystkie delta AU naraz;
+        #   * typowość — spośród stabilnych bierzemy konfigurację najbliższą
+        #     medianie, a nie pierwszą z brzegu.
+        score_map = {
+            idx: self._compute_stability_score(keypoints_list, idx, frame_indices)
+            * _frontal_factor(head_poses[idx], self.max_yaw_asymmetry, self.max_roll)
             for idx in candidates
-        ]
-        best_idx, _ = max(scores, key=lambda x: x[1])
-        return best_idx
+        }
+        return _select_most_typical(candidates, score_map, keypoints_list)
 
     def detect_manual(self, frame_idx: int) -> int:
         """
@@ -251,25 +271,39 @@ class NeutralFrameDetector:
         self,
         keypoints_list: list[Optional[np.ndarray]],
         center_idx: int,
+        frame_indices: Optional[list[int]] = None,
     ) -> float:
         """
-        Oblicza wynik stabilności klatki.
+        Oblicza wynik stabilności klatki na znormalizowanych współrzędnych.
 
-        Stabilność = 1 / (1 + wariancja). Wyższy = bardziej neutralna.
+        Stabilność = 1 / (1 + wariancja * VARIANCE_SCALE). Wyższy = bardziej neutralna.
+        Gdy frame_indices podane, okno obejmuje klatki o oryginalnym indeksie w zasięgu
+        ±window_size//2 od center (poprawne sąsiedztwo czasowe mimo luk detekcji).
 
         Args:
             keypoints_list: Lista wszystkich keypoints (może zawierać None)
             center_idx: Indeks klatki do oceny
+            frame_indices: Oryginalne indeksy klatek w wideo (opcjonalne)
 
         Returns:
             Wynik stabilności (wyższy = bardziej stabilna)
         """
-        start = max(0, center_idx - self.window_size // 2)
-        end = min(len(keypoints_list), center_idx + self.window_size // 2 + 1)
+        half = self.window_size // 2
+        if frame_indices is not None:
+            center_frame = frame_indices[center_idx]
+            members = [
+                keypoints_list[j]
+                for j in range(len(keypoints_list))
+                if abs(frame_indices[j] - center_frame) <= half
+            ]
+        else:
+            start = max(0, center_idx - half)
+            end = min(len(keypoints_list), center_idx + half + 1)
+            members = keypoints_list[start:end]
 
         window_coords = [
-            kp.reshape(NUM_KEYPOINTS, 3)[:, :2]
-            for kp in keypoints_list[start:end]
+            _normalize_shape(kp.reshape(NUM_KEYPOINTS, 3)[:, :2])
+            for kp in members
             if kp is not None
         ]
 
@@ -278,7 +312,7 @@ class NeutralFrameDetector:
 
         coords_array = np.array(window_coords)   # (window, 46, 2)
         mean_variance = float(np.mean(np.var(coords_array, axis=0)))
-        return 1.0 / (1.0 + mean_variance * 10)
+        return 1.0 / (1.0 + mean_variance * VARIANCE_SCALE)
 
 
 # =============================================================================
@@ -292,13 +326,44 @@ _RELAXED_MIN_CONF: float = 0.4
 _RELAXED_YAW_ASYMMETRY: float = 0.7
 _RELAXED_ROLL: float = 60.0
 
-# Indeksy krytycznych keypoints (oczy, nos, uszy)
+
+def _dist(p1: np.ndarray, p2: np.ndarray) -> float:
+    """Odległość euklidesowa między dwoma punktami."""
+    return float(np.sqrt(np.sum((p1 - p2) ** 2)))
+
+
+def _normalize_shape(coords: np.ndarray) -> np.ndarray:
+    """
+    Normalizuje kształt twarzy: centruje na punkcie środkowym oczu i skaluje
+    przez odległość między oczami. Usuwa translację i skalę (blisko/daleko),
+    zostawiając samą zmianę kształtu wyrazu.
+
+    Args:
+        coords: Współrzędne keypoints (46, 2)
+
+    Returns:
+        Znormalizowane współrzędne (46, 2)
+    """
+    left_center = (coords[KP.LEFT_EYE_INNER] + coords[KP.LEFT_EYE_OUTER]) / 2
+    right_center = (coords[KP.RIGHT_EYE_INNER] + coords[KP.RIGHT_EYE_OUTER]) / 2
+    mid_eye = (left_center + right_center) / 2
+    eye_dist = _dist(left_center, right_center)
+    scale = eye_dist if eye_dist > 1e-6 else 1.0
+    return (coords - mid_eye) / scale
+
+
+# Indeksy krytycznych keypoints (oczy, nos, uszy ORAZ usta/wargi — kluczowe dla
+# baseline AU dolnej twarzy: bez nich mouth-AU liczone od śmiecia).
 _CRITICAL_KP_INDICES: list[int] = [
     KP.LEFT_EYE_INNER,
     KP.RIGHT_EYE_INNER,
     KP.NOSE_TIP,
     KP.LEFT_EAR_BASE_FRONT,
     KP.RIGHT_EAR_BASE_FRONT,
+    KP.MOUTH_LEFT_CORNER,
+    KP.MOUTH_RIGHT_CORNER,
+    KP.UPPER_LIP_CENTER,
+    KP.LOWER_LIP_CENTER,
 ]
 
 
@@ -391,3 +456,114 @@ def _critical_keypoints_visible(kp: np.ndarray, threshold: float) -> bool:
 def _count_visible_critical_kps(kp: np.ndarray, threshold: float) -> int:
     """Liczy widoczne krytyczne keypoints."""
     return sum(1 for idx in _CRITICAL_KP_INDICES if kp[idx, 2] >= threshold)
+
+
+def _select_most_typical(
+    candidates: list[int],
+    scores: dict[int, float],
+    keypoints_list: list[Optional[np.ndarray]],
+) -> int:
+    """
+    Wybiera klatkę o konfiguracji najbliższej globalnej medianie kształtu.
+
+    Łagodzi fakt, że "stabilna" ≠ "neutralna": wśród najstabilniejszych kandydatów
+    preferuje tego najbliższego typowej (modalnej) konfiguracji po wszystkich kandydatach.
+    Założenie heurystyczne: typowe = rozluźnione. To proxy, nie twardy fakt.
+
+    Args:
+        candidates: Indeksy kandydatów
+        scores: Mapa indeks → stability score
+        keypoints_list: Lista keypoints (None dozwolone)
+
+    Returns:
+        Indeks wybranej klatki
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+
+    shapes = {
+        idx: _normalize_shape(keypoints_list[idx].reshape(NUM_KEYPOINTS, 3)[:, :2])
+        for idx in candidates
+    }
+
+    ranked = sorted(candidates, key=lambda i: scores[i], reverse=True)
+    top_n = max(1, math.ceil(len(ranked) * TOP_STABLE_FRACTION))
+    shortlist = ranked[:top_n]
+
+    # Wzorzec „typowego" liczymy po LIŚCIE KRÓTKIEJ, a nie po wszystkich kandydatach.
+    # Wynik kandydata to stabilność × frontalność, więc na krótkiej liście są klatki
+    # już uznane za dobre. Mediana po wszystkich kandydatach bierze też te odrzucone:
+    # gdy pies przez pół treku ma odwróconą głowę, „typowa" konfiguracja jest
+    # odwrócona i baza AU wychodzi z obróconej głowy — a obrót o 30° sam podbija
+    # każde AU o 1.155 przy progu aktywacji 1.15, czyli fałszuje wszystkie 21 naraz.
+    median_shape = np.median(np.array([shapes[idx] for idx in shortlist]), axis=0)
+
+    # Remis rozstrzyga wynik kandydata. Przy dwóch klatkach mediana leży dokładnie
+    # w połowie, więc obie są równo odległe i wybór zależałby od błędu
+    # zaokrąglenia — a przez to od kolejności klatek w treku.
+    return min(
+        shortlist,
+        key=lambda i: (float(np.sum((shapes[i] - median_shape) ** 2)), -scores[i]),
+    )
+
+
+# =============================================================================
+# Funkcje publiczne
+# =============================================================================
+
+
+def compute_neutral_baseline(
+    keypoints_list: list[Optional[np.ndarray]],
+    neutral_idx: int,
+    head_poses: list[Optional[HeadPose]],
+    window_size: int = 10,
+    max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+    max_roll: float = DEFAULT_MAX_ROLL,
+) -> np.ndarray:
+    """
+    Buduje odporny baseline neutralny jako per-keypoint medianę po oknie klatek.
+
+    Zamiast jednej (szumnej) klatki neutralnej bierze medianę x,y po valid+frontalnych
+    klatkach w oknie ±window_size//2 wokół neutral_idx (po realnym indeksie). Gasi szum
+    lokalizacji keypoints (±piksele). Punkt bez widocznych próbek → wartość z neutral_idx.
+
+    Args:
+        keypoints_list: Lista keypoints (138 wartości) lub None, indeksowana po klatkach
+        neutral_idx: Indeks wybranej klatki neutralnej (w tej samej liście)
+        head_poses: Lista HeadPose lub None (równoległa do keypoints_list)
+        window_size: Rozmiar okna czasowego
+        max_yaw_asymmetry: Maks. asymetria nos↔oczy klatki wchodzącej do mediany.
+            Funkcja powstała na `HeadPose` z polami `yaw`/`pitch` w stopniach;
+            oba zniknęły — `pitch` świadomie (filtr po nim odrzucał dobre kadry),
+            a `yaw` ustąpił bezwymiarowej asymetrii, niezależnej od długości pyska
+            i skali obrazu. Bez tej zmiany funkcja wywalała się na `AttributeError`.
+        max_roll: Maks. przechylenie w stopniach
+
+    Returns:
+        Wektor (138,) medianowej bazy neutralnej
+    """
+    neutral = keypoints_list[neutral_idx].reshape(NUM_KEYPOINTS, 3)
+    half = window_size // 2
+    lo, hi = neutral_idx - half, neutral_idx + half
+
+    members = [
+        keypoints_list[j].reshape(NUM_KEYPOINTS, 3)
+        for j in range(max(0, lo), min(len(keypoints_list), hi + 1))
+        if keypoints_list[j] is not None
+        and head_poses[j] is not None
+        and abs(head_poses[j].yaw_asymmetry) <= max_yaw_asymmetry
+        and abs(head_poses[j].roll) <= max_roll
+    ]
+    if not members:
+        return neutral.flatten()
+
+    stack = np.array(members)  # (M, 46, 3)
+    baseline = neutral.copy()
+    for k in range(NUM_KEYPOINTS):
+        visible = stack[stack[:, k, 2] >= BASELINE_VIS_THRESHOLD, k, :]
+        if len(visible) > 0:
+            baseline[k, 0] = float(np.median(visible[:, 0]))
+            baseline[k, 1] = float(np.median(visible[:, 1]))
+            baseline[k, 2] = float(np.median(visible[:, 2]))
+        # else: zostaw wartość z klatki neutral (fallback)
+    return baseline.flatten()

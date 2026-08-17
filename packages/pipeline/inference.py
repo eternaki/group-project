@@ -1260,6 +1260,11 @@ class InferencePipeline:
             frames=[frames_list[frame.frame_idx] for frame in track_frames],
             keypoints_list=[frame.keypoints for frame in track_frames],
             head_poses=[frame.head_pose for frame in track_frames],
+            # Okno stabilności liczy się po REALNYM czasie, a nie po pozycji na
+            # liście. Trek jest próbkowany nierówno i bywa dziurawy, więc bez tego
+            # to samo okno obejmowałoby raz sekundę nagrania, raz dziesięć — a
+            # „stabilna" wychodziłaby klatka z rzadko próbkowanego fragmentu.
+            frame_indices=[frame.frame_idx for frame in track_frames],
         )
         return position, NEUTRAL_SOURCE_AUTO
 
