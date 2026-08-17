@@ -38,7 +38,7 @@ from scripts.debug.sample_rejected_frames import (
     render,
 )
 
-DEFAULT_DATASET: str = "data/dataset_v2"
+DEFAULT_DATASET: str = "data/dataset_final"
 DEFAULT_OUTPUT: str = "data/review_by_video"
 
 # Ile najbardziej i najmniej wydajnych nagrań pokazać z miniaturami. Reszta

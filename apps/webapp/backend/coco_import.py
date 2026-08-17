@@ -10,7 +10,7 @@ Jednostką importu jest PARA (klatka neutralna, klatka szczytowa), a nie klatka:
 AU jest z definicji różnicą względem klatki neutralnej, więc bez niej nie ma
 czego oceniać. Każda para dostaje własny `track_id` równy pozycji w kolejce
 weryfikacji, bo `track_id` z batcha jest unikalny tylko w obrębie nagrania
-(w `dataset_v2` na 1359 treków przypada 12 różnych wartości).
+(w `dataset_final` na 1359 treków przypada 12 różnych wartości).
 """
 
 import hashlib
@@ -139,14 +139,14 @@ def frames_prefix_for(dataset_path: Path) -> str:
 
     Backend wystawia CAŁY katalog danych, a nie katalog jednego zbioru — inaczej
     dałoby się pracować tylko na jednym zbiorze naraz, a mamy ich kilka
-    (`dataset_v2`, `dataset_v3`). Ścieżki w COCO są względne wobec katalogu
+    (`dataset_final`, `dataset_probny`). Ścieżki w COCO są względne wobec katalogu
     klatek swojego zbioru, więc przedrostek dokłada brakującą część.
 
     Args:
         dataset_path: Ścieżka pliku po kuracji
 
     Returns:
-        Przedrostek względem katalogu danych, np. `dataset_v2/frames`
+        Przedrostek względem katalogu danych, np. `dataset_final/frames`
     """
     dataset_dir = dataset_path.resolve().parent
     try:

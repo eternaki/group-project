@@ -35,7 +35,7 @@ from scripts.annotation.curate_for_review import (
     REVIEW_MIN_FACE_WIDTH,
 )
 
-DEFAULT_DATASET: str = "data/dataset_v2"
+DEFAULT_DATASET: str = "data/dataset_final"
 DEFAULT_OUTPUT: str = "data/review_samples"
 
 # Kadr mordy powiększamy o ten margines — anotator też ogląda z zapasem.

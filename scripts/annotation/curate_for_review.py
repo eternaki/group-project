@@ -20,8 +20,8 @@ Dwie rzeczy decydują o kolejności:
 
 Użycie:
     python -m scripts.annotation.curate_for_review \
-        --dataset data/dataset_v2/annotations.json \
-        --out data/dataset_v2/curated.json
+        --dataset data/dataset_final/annotations.json \
+        --out data/dataset_final/curated.json
 """
 
 import argparse
@@ -46,8 +46,8 @@ from packages.pipeline.quality_gate import (
 AMBIGUOUS_SNR_MIN: float = 0.5
 AMBIGUOUS_SNR_MAX: float = 2.0
 
-DEFAULT_DATASET: str = "data/dataset_v2/annotations.json"
-DEFAULT_OUTPUT: str = "data/dataset_v2/curated.json"
+DEFAULT_DATASET: str = "data/dataset_final/annotations.json"
+DEFAULT_OUTPUT: str = "data/dataset_final/curated.json"
 
 # Asymetria jest tu PREFERENCJĄ, a nie realnym sitem, i próg odpowiada temu.
 #

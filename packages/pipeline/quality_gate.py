@@ -43,7 +43,7 @@ KeypointsInput = Union[Sequence[float], np.ndarray]
 # do decyzji o wpuszczeniu kadru do zbioru bierzemy ostrzejszy.
 WEAK_KEYPOINT_CONFIDENCE: float = 0.5
 
-# Progi domyślne. Zmierzone na `data/dataset_v2` (4145 anotacji): przepuszczają
+# Progi domyślne. Zmierzone na `data/dataset_final` (4145 anotacji): przepuszczają
 # ~55% par, a średnia liczba aktywnych AU spada z 5.65 do 4.56 — odsiew zabiera
 # przede wszystkim aktywacje wyprodukowane obrotem głowy.
 DEFAULT_MAX_ASYMMETRY: float = 0.20
