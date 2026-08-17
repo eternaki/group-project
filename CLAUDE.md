@@ -138,21 +138,40 @@ bierze to, co zweryfikowano do tej pory, i nadpisuje poprzedni wynik.
 - **Bramka jakości ma DWA zestawy progów i to jest celowe**: `DEFAULT_FRAME_QUALITY` w `inference.py` (luźny, asym ≤0.45, morda ≥20 px) rządzi WYBOREM peaków i jest preferencją — musi coś zwrócić, więc przy zbyt małej liczbie kandydatów bierze najbardziej frontalne kadry treku. `QualityThresholds()` w `quality_gate.py` (ostry, asym ≤0.20, morda ≥40 px) rządzi KURACJĄ i jest wetem. Użycie ostrych progów przy wyborze daje zero peaków w całym zbiorze (sam próg rozmiaru odrzuca 67 klatek na 100 — mediana szerokości mordy na materiale stockowym to 26 px).
 - **Ograniczanie kandydatów na peaki idzie przez `allowed_positions`, nigdy przez skrócenie list**: separacja peaków liczy się w POZYCJACH listy, więc na liście przefiltrowanej jedna pozycja odpowiada wielu klatkom nagrania i twardy odstęp wycina prawie wszystko.
 - **Asymetria mordy mierzy się od PROSTEJ, nie od punktu**: odległość od środka mordy jest zdominowana przez położenie w pionie i asymetria lewo-prawo w niej tonie (mediana 0.113 zamiast poprawnych 0.366).
-- **Werdykt człowieka (`au_verdicts`) jest osobnym polem od pomiaru reguł (`au_analysis`) i startuje PUSTY**. Trójstanowy: `not_observable` znaczy brak wiedzy, nie brak ruchu. Predefiniowanie werdyktu wartością reguły zamienia weryfikację w zatwierdzanie błędu jednym kliknięciem.
+- **Werdykt człowieka (`au_verdicts`) jest osobnym polem od pomiaru reguł (`au_analysis`)** i trójstanowym: `not_observable` znaczy brak wiedzy, nie brak ruchu. W ZAPISIE startuje pusty — pusty werdykt nigdy nie trafia do zbioru jako „nieaktywny".
+- **Formularz weryfikacji jest jednak WSTĘPNIE WYPEŁNIANY regułami** (decyzja właściciela projektu, 17.08.2026): anotator dostaje odpowiedzi ustawione tak, jak policzyły reguły, i poprawia to, z czym się nie zgadza. Ryzyko jest zmierzone i realne — reguły potrafią zaznaczyć 12 z 21 AU naraz na spokojnym psie, w tym EAD101 („uszy do przodu") i EAD103 („uszy położone") JEDNOCZEŚNIE, co jest fizycznie sprzeczne. Jeśli etykiety zaczną być kopią reguł, sieć z Sprintu 16 nauczy się reguł, a nie mimiki. Wskaźnik do pilnowania: odsetek par, w których człowiek NIC nie zmienił względem reguł.
 - **Poprawka punktów zapisuje się pod ścieżką POPRAWIANEJ klatki, nie pod kluczem pary**: `_pair_key_of()` bierze URL tej klatki, którą właśnie edytowano. Poprawka klatki NEUTRALNEJ ma więc własny klucz i szukanie jej po kluczu pary nic nie znajdzie — a to najdroższa cicha strata, bo błędna baza przesuwa wszystkie 21 AU tego psa naraz. Składanie zbioru szuka poprawek po ścieżce klatki (`_correction_for`), nie po parze.
 - **`data/dataset_final/` NIE jest gotowym zbiorem** — gotowy jest `release/` w środku. Cały katalog był kiedyś ignorowany hurtem przez gita, przez co wypadał z repozytorium jedyny artefakt, który oddajemy.
 - **Scalanie części batcha przenumerowuje `neutral_frame_id` razem z `image_id`** — pole wskazuje OBRAZ, więc pominięte cicho wiąże peak z klatką neutralną innego psa.
 
 ---
 
-## Deliverables (1. semestr)
-DPP (proces projektowania), Specyfikacja Oprogramowania (funkcje, interfejs, kod, wyniki), Raport Roczny (szablon WETI), Prezentacja przed komisją. Dokumenty po polsku w `docs/`.
+## Dokumentacja
+
+**Obowiązująca dokumentacja projektu leży w `docs/Moja_pg/`** — to dokumenty
+oddawane uczelni i tylko one są aktualne:
+
+| plik | co to |
+|------|-------|
+| `PG_WETI_DPP_wer. 2.00.docx` | DPP — dokumentacja procesu projektowego |
+| `PG_WETI_DTP_wer. 2.00.docx`, `DTP_Technical_Documentation.pdf` | DTP — dokumentacja techniczna |
+| `Plan_Projektu_Grupowego.pdf` | plan projektu |
+| `Raport_DogFACS_1_semestr.pdf` | raport roczny (szablon WETI) |
+| `Prezentacja.pdf`, `Plakat.docx` | obrona przed komisją |
+
+**`docs/sprints/` i `docs/plans/` to materiał HISTORYCZNY.** Rozjechały się z
+kodem i ich liczb nie wolno cytować bez sprawdzenia w kodzie. Zmierzone
+rozbieżności: spec formatu COCO (`docs/plans/2025-01-16-coco-format-spec.md`)
+obiecuje 20 keypoints i 6 emocji, a jest 46 i 9, o AU nie wspomina wcale;
+Sprint 17 wymaga „25 000+ frames" przy zmierzonej wydajności materiału ~2400;
+Sprint 15 odsyła do `data/dataset_final/annotations_clean.json`, którego nie ma.
+Aktualny status zadań żyje w Linear.
 
 ---
 
-## Sprinty
+## Sprinty (materiał historyczny — patrz wyżej)
 
-18 sprintów: narzędzia i modele → dane → weryfikacja → sieć neuronowa AU. Szczegóły i aktualny status w `docs/sprints/` oraz Linear.
+18 sprintów: narzędzia i modele → dane → weryfikacja → sieć neuronowa AU.
 
 | # | Sprint | Status |
 |---|--------|--------|
