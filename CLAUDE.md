@@ -65,6 +65,7 @@ cd apps/webapp/frontend && npm run dev           # sam frontend (React + Vite)
 # Zbieranie zbioru
 python -m scripts.annotation.run_batch_parallel --workers 4   # anotacja wsadowa w N procesach
 python -m scripts.annotation.curate_for_review                # bramka jakości + kolejność pod anotatora
+python -m scripts.annotation.build_final_dataset             # złożenie zbioru do oddania
 
 pytest                                           # testy
 ruff check . --fix                               # linter
@@ -104,6 +105,22 @@ Obraz/Klatka → BBox (YOLOv8) → Crop → Rasa
 ### Katalogi danych
 `data/raw/`, `data/frames/`, `data/annotations/` — w `.gitignore` (duże pliki lokalne). Tymczasowe podglądy w korzeniu `data/` też ignorowane.
 
+**Jeden zbiór roboczy: `data/dataset_final/`.** W środku dwa światy i to jest celowe:
+
+| ścieżka | co to | git |
+|---------|-------|-----|
+| `frames/` | pełne klatki 1920×900 (1.3 GB) | nie |
+| `annotations.json` | surowe COCO z batcha (63 MB) | nie |
+| `curated.json` | po bramce jakości (23 MB) | nie |
+| **`release/`** | **gotowy zbiór: kadry mordy + COCO + CSV** | **tak** |
+| `data/labels/<zbior>/<kto>.jsonl` | dziennik decyzji człowieka | tak |
+
+Do repozytorium jadą tylko dwie ostatnie pozycje — one są produktem projektu.
+Nagrania źródłowe leżą w `data/drive_dogs/` i nigdy nie wchodzą do gita.
+
+`release/` składa się jedną komendą i wolno ją uruchamiać na dowolnym etapie —
+bierze to, co zweryfikowano do tej pory, i nadpisuje poprzedni wynik.
+
 ---
 
 ## Gotchas (niełatwe do odgadnięcia)
@@ -122,6 +139,8 @@ Obraz/Klatka → BBox (YOLOv8) → Crop → Rasa
 - **Ograniczanie kandydatów na peaki idzie przez `allowed_positions`, nigdy przez skrócenie list**: separacja peaków liczy się w POZYCJACH listy, więc na liście przefiltrowanej jedna pozycja odpowiada wielu klatkom nagrania i twardy odstęp wycina prawie wszystko.
 - **Asymetria mordy mierzy się od PROSTEJ, nie od punktu**: odległość od środka mordy jest zdominowana przez położenie w pionie i asymetria lewo-prawo w niej tonie (mediana 0.113 zamiast poprawnych 0.366).
 - **Werdykt człowieka (`au_verdicts`) jest osobnym polem od pomiaru reguł (`au_analysis`) i startuje PUSTY**. Trójstanowy: `not_observable` znaczy brak wiedzy, nie brak ruchu. Predefiniowanie werdyktu wartością reguły zamienia weryfikację w zatwierdzanie błędu jednym kliknięciem.
+- **Poprawka punktów zapisuje się pod ścieżką POPRAWIANEJ klatki, nie pod kluczem pary**: `_pair_key_of()` bierze URL tej klatki, którą właśnie edytowano. Poprawka klatki NEUTRALNEJ ma więc własny klucz i szukanie jej po kluczu pary nic nie znajdzie — a to najdroższa cicha strata, bo błędna baza przesuwa wszystkie 21 AU tego psa naraz. Składanie zbioru szuka poprawek po ścieżce klatki (`_correction_for`), nie po parze.
+- **`data/dataset_final/` NIE jest gotowym zbiorem** — gotowy jest `release/` w środku. Cały katalog był kiedyś ignorowany hurtem przez gita, przez co wypadał z repozytorium jedyny artefakt, który oddajemy.
 - **Scalanie części batcha przenumerowuje `neutral_frame_id` razem z `image_id`** — pole wskazuje OBRAZ, więc pominięte cicho wiąże peak z klatką neutralną innego psa.
 
 ---
