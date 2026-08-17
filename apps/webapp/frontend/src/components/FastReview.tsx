@@ -3,12 +3,16 @@
  *
  * Четыре решения, на которых он держится:
  *
- * 1. **Ничего не отмечено заранее.** Автоматические метки видны серой
- *    подписью, но не заполняют ответ. Иначе разметка выродилась бы в
- *    подтверждение ошибки одним нажатием: аудит показал, что правила
- *    бывают прямо противоположны тому, что видно на кадре.
- * 2. **Отмечается только то, что видно.** Enter означает «я просмотрел все
- *    AU, активны отмеченные», и лишь тогда остальные пишутся как `inactive`.
+ * 1. **Ответы предзаполнены замером правил, но правило — не ответ.** Сводка
+ *    сверху показывает, что насчитал автомат, и разметчик правит то, с чем не
+ *    согласен. Держать в голове измеренное: правила ставят по 12 активных AU
+ *    из 21 на спокойной собаке, включая EAD101 («уши вперёд») и EAD103 («уши
+ *    прижаты») одновременно — то есть заведомо противоречивые. Предзаполнение
+ *    экономит клики ровно до тех пор, пока его перепроверяют.
+ * 2. **Нельзя сохранить пару с пробелами.** Каждая из 21 AU, положение точек
+ *    и эмоция должны иметь ответ. Раньше неотвеченное молча уходило как
+ *    `inactive`, и пропущенное по невнимательности выглядело в датасете так
+ *    же, как осмотренное и признанное спокойным.
  * 3. **Пара рядом.** AU по определению есть разница относительно нейтрального
  *    кадра, поэтому оба кадра должны быть перед глазами одновременно.
  * 4. **Все 21 AU, а не подмножество.** Видимость решается на каждом кадре
@@ -87,6 +91,47 @@ function buildPairs(session: SessionData): ReviewPair[] {
 /** Czy reguły uznały to AU za aktywne (tylko podpowiedź, nie odpowiedź). */
 function ruleSaysActive(peak: FrameAnnotation, code: string): boolean {
   return Boolean(peak.aus?.[code]?.is_active);
+}
+
+/** Kody AU, które reguły uznały za aktywne — w kolejności ekranu. */
+function activeByRules(peak: FrameAnnotation): string[] {
+  return VERIFIABLE_AU.map(({ code }) => code).filter((code) => ruleSaysActive(peak, code));
+}
+
+/**
+ * Przekłada pomiar reguł na komplet werdyktów — punkt wyjścia do poprawiania.
+ *
+ * Reguły znają tylko „ruszyło się / nie ruszyło", więc `not_observable` stąd nie
+ * wyjdzie: to stan, który widzi wyłącznie człowiek (ucho poza kadrem, oko
+ * zasłonięte łapą). Zostaje do wyklikania ręcznie.
+ */
+function verdictsFromRules(peak: FrameAnnotation): Record<string, AUVerdict> {
+  const filled: Record<string, AUVerdict> = {};
+  for (const { code } of VERIFIABLE_AU) {
+    filled[code] = ruleSaysActive(peak, code) ? 'active' : 'inactive';
+  }
+  return filled;
+}
+
+/**
+ * Wylicza, czego brakuje, żeby parę dało się zatwierdzić.
+ *
+ * Zwraca listę braków po polsku anotatora (rosyjsku), a nie samo `true/false`:
+ * „nie da się zapisać" bez powodu zmusza do zgadywania, czego szukać na ekranie.
+ */
+function missingAnswers(
+  verdicts: Record<string, AUVerdict>,
+  keypointsOk: boolean | null,
+  emotion: string | null
+): string[] {
+  const gaps: string[] = [];
+  const unmarked = VERIFIABLE_AU.filter(({ code }) => verdicts[code] === undefined);
+  if (unmarked.length > 0) {
+    gaps.push(`AU без ответа: ${unmarked.map(({ code }) => code).join(', ')}`);
+  }
+  if (keypointsOk === null) gaps.push('не отмечено, верно ли лежат точки');
+  if (!emotion) gaps.push('не выбрана эмоция');
+  return gaps;
 }
 
 /** Zapas wokół boksu psa przy kadrowaniu — ułamek jego szerokości i wysokości */
@@ -463,6 +508,84 @@ function AUButton({
   );
 }
 
+interface RulesSummaryProps {
+  peak: FrameAnnotation;
+  recomputing: boolean;
+  onRecompute: () => void;
+  onAcceptAll: () => void;
+}
+
+/**
+ * Сводка того, что насчитал автомат, — в одном месте и без раскопок по карточкам.
+ *
+ * Раньше замер правил был размазан подписью «правило: да» по 21 карточке: чтобы
+ * понять, что вообще увидела модель, приходилось глазами собирать список.
+ * Здесь он собран, рядом стоит пересчёт (после правки точек замер устаревает)
+ * и кнопка принять всё разом.
+ */
+function RulesSummary({ peak, recomputing, onRecompute, onAcceptAll }: RulesSummaryProps) {
+  const active = activeByRules(peak);
+
+  return (
+    <div className="mb-3 p-3 rounded-lg border border-gray-200 bg-gray-50">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 shrink-0">
+          Автомат насчитал
+        </span>
+
+        {active.length > 0 ? (
+          <span className="flex flex-wrap gap-1">
+            {active.map((code) => (
+              <span
+                key={code}
+                className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200"
+                title={AU_NAMES_RU[code] ?? code}
+              >
+                {code}
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className="text-xs text-gray-500">активных AU нет</span>
+        )}
+
+        <span className="text-xs text-gray-600">
+          эмоция{' '}
+          <b className="text-gray-800">
+            {peak.emotion ? (EMOTION_NAMES_RU[peak.emotion] ?? peak.emotion) : '—'}
+          </b>
+        </span>
+
+        <div className="flex gap-2 ml-auto shrink-0">
+          <button
+            onClick={onAcceptAll}
+            className="px-3 py-1.5 rounded-md border border-gray-300 bg-white text-xs text-gray-700 hover:border-gray-500"
+            title="Проставит ответы так, как насчитал автомат. Дальше правишь то, с чем не согласен."
+          >
+            Принять всё
+          </button>
+          <button
+            onClick={onRecompute}
+            disabled={recomputing}
+            className="px-3 py-1.5 rounded-md border border-amber-300 bg-amber-50 text-xs text-amber-800 hover:border-amber-500 disabled:opacity-50"
+            title="Пересчитает замер по текущим точкам. Твои ответы не трогает."
+          >
+            {recomputing ? 'Считаю…' : '↻ Пересчитать'}
+          </button>
+        </div>
+      </div>
+
+      {/* Мера, а не мнение: шум правил измерен и он выше порога активации на
+          большинстве пар трек–AU. Подпись держит это перед глазами, чтобы
+          «принять всё» не превращалось в единственный способ работы. */}
+      <p className="mt-2 text-[10px] leading-tight text-gray-400">
+        Это замер правил по геометрии точек, а не ответ. Измеренный шум правил выше порога
+        активации у 68.9% пар трек–AU, поэтому метку ставит человек.
+      </p>
+    </div>
+  );
+}
+
 /** Ile propozycji rasy pokazujemy obok pola tekstowego */
 const BREED_SUGGESTIONS = 6;
 
@@ -603,12 +726,24 @@ export default function FastReview() {
       const built = buildPairs(loaded);
       setSession(loaded);
       setPairs(built);
-      setVerdicts({});
       setVerifiedCount(built.filter((p) => p.peak.annotation_status === 'verified').length);
       setRejectedCount(built.filter((p) => p.peak.usable === false).length);
       // Wracamy tam, gdzie praca się urwała — a nie na początek kolejki.
       const firstOpen = built.findIndex((p) => p.peak.annotation_status !== 'verified');
-      setPosition(firstOpen === -1 ? built.length : firstOpen);
+      const start = firstOpen === -1 ? built.length : firstOpen;
+      setPosition(start);
+      // Pierwsza para po otwarciu musi dostać to samo co każda następna. `goTo`
+      // tu nie zadziała — czyta `pairs` ze stanu, którego React jeszcze nie
+      // zaktualizował — więc wypełniamy z listy policzonej przed chwilą.
+      const first = built[start]?.peak;
+      const saved = first?.au_verdicts;
+      setVerdicts(
+        saved && Object.keys(saved).length > 0 ? saved : first ? verdictsFromRules(first) : {}
+      );
+      setKeypointsOk(first?.keypoints_ok ?? null);
+      setBreed(first?.breed ?? null);
+      setEmotion(first?.emotion ?? null);
+      setRolesSwapped(first?.roles_swapped ?? false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось загрузить набор');
     } finally {
@@ -644,7 +779,17 @@ export default function FastReview() {
       if (index < 0 || index >= pairs.length) return;
       const peak = pairs[index]?.peak;
       setPosition(index);
-      setVerdicts(peak?.au_verdicts ?? {});
+      // Odpowiedzi startują od pomiaru reguł i anotator poprawia to, z czym się
+      // nie zgadza. Praca człowieka ma pierwszeństwo: raz zapisane werdykty
+      // wracają jak były, żeby powrót do pary nie kasował jego decyzji regułą.
+      const saved = peak?.au_verdicts;
+      setVerdicts(
+        saved && Object.keys(saved).length > 0
+          ? saved
+          : peak
+            ? verdictsFromRules(peak)
+            : {}
+      );
       setKeypointsOk(peak?.keypoints_ok ?? null);
       // Rasa i emocja startują od tego, co policzył automat — tu poprawiamy
       // gotową wartość, a nie etykietujemy od zera jak przy AU.
@@ -668,6 +813,11 @@ export default function FastReview() {
     });
   }, []);
 
+  /** Przepisuje pomiar reguł na odpowiedzi — punkt wyjścia, nie zatwierdzenie. */
+  const acceptAll = useCallback(() => {
+    if (current) setVerdicts(verdictsFromRules(current.peak));
+  }, [current]);
+
   /**
    * Zatwierdza parę: wszystko niezaznaczone staje się `inactive`.
    *
@@ -678,6 +828,14 @@ export default function FastReview() {
   const commit = useCallback(
     async (usable = true) => {
       if (!session || !current || busy) return;
+      // Zapis niepełnej pary zapisywał ciszą: nieodpowiedziane AU szły jako
+      // „nieaktywne", więc pominięte przez nieuwagę wyglądało tak samo jak
+      // obejrzane i uznane za spokojne. Teraz brak odpowiedzi zatrzymuje zapis.
+      const blocking = missingAnswers(verdicts, keypointsOk, emotion);
+      if (usable && blocking.length > 0) {
+        setError(`Не хватает: ${blocking.join(' · ')}`);
+        return;
+      }
       setBusy(true);
       setError(null);
       try {
@@ -831,6 +989,18 @@ export default function FastReview() {
     [verdicts]
   );
 
+  /**
+   * Czego brakuje, żeby zapisać parę.
+   *
+   * Dotyczy tylko zapisu „nadaje się". Odrzucenie kadru (`X`) jest kompletną
+   * odpowiedzią samo w sobie: skoro kadr się nie nadaje, nie ma czego na nim
+   * oceniać i wymaganie wypełnienia 21 AU byłoby żądaniem zmyślania.
+   */
+  const gaps = useMemo(
+    () => missingAnswers(verdicts, keypointsOk, emotion),
+    [verdicts, keypointsOk, emotion]
+  );
+
   if (!session) {
     return (
       <div className="max-w-xl mx-auto mt-16 p-6 bg-white rounded-xl border border-gray-200">
@@ -872,6 +1042,17 @@ export default function FastReview() {
                 >
                   <div className="flex items-baseline justify-between">
                     <span className="font-semibold text-gray-800">{dataset.name}</span>
+                    {/* Один набор виден дважды только у того, кто его сгенерировал:
+                        сырой материал лежит локально, паковка приходит из git.
+                        Имя у них общее — по нему сходится разметка команды. */}
+                    {dataset.variant === 'work' && (
+                      <span
+                        className="ml-2 text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200"
+                        title="Из репозитория — это же видят коллеги"
+                      >
+                        из git
+                      </span>
+                    )}
                     <span className="text-xs text-gray-500 font-mono">
                       {dataset.verified} / {dataset.pairs} пар
                     </span>
@@ -987,22 +1168,12 @@ export default function FastReview() {
           ✎ Править точки (P)
         </button>
         {editPoints && (
-          <>
-            <button
-              onClick={() => setShowHiddenPoints((on) => !on)}
-              className="px-3 py-1.5 rounded-md border border-gray-200 text-xs text-gray-600 hover:border-gray-400"
-            >
-              {showHiddenPoints ? 'скрыть спрятанные' : 'показать спрятанные'}
-            </button>
-            <button
-              onClick={() => void recompute()}
-              disabled={recomputing}
-              className="px-3 py-1.5 rounded-md border border-amber-300 bg-amber-50 text-xs text-amber-800 hover:border-amber-500 disabled:opacity-50"
-              title="Обновит подсказку автомата по исправленным точкам. Твою оценку не меняет."
-            >
-              {recomputing ? 'Считаю…' : '↻ Пересчитать AU и эмоцию'}
-            </button>
-          </>
+          <button
+            onClick={() => setShowHiddenPoints((on) => !on)}
+            className="px-3 py-1.5 rounded-md border border-gray-200 text-xs text-gray-600 hover:border-gray-400"
+          >
+            {showHiddenPoints ? 'скрыть спрятанные' : 'показать спрятанные'}
+          </button>
         )}
         <button
           onClick={() => setRolesSwapped((swapped) => !swapped)}
@@ -1021,6 +1192,13 @@ export default function FastReview() {
           </span>
         )}
       </div>
+
+      <RulesSummary
+        peak={current.peak}
+        recomputing={recomputing}
+        onRecompute={() => void recompute()}
+        onAcceptAll={acceptAll}
+      />
 
       {/* Все 21 AU, сгруппированные по анатомии. Клавиши 1-8 у самых частых,
           остальные кликом — цифр всего девять, а AU двадцать одна. */}
@@ -1130,6 +1308,11 @@ export default function FastReview() {
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">F</kbd>{' '}
           {showFullFrame ? 'вернуться к морде' : 'весь кадр'} ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">←→</kbd> навигация
+          {gaps.length > 0 && (
+            <span className="block mt-1 text-amber-700 font-medium">
+              Не хватает: {gaps.join(' · ')}
+            </span>
+          )}
         </span>
         <div className="flex gap-2 shrink-0">
           <button
@@ -1142,8 +1325,9 @@ export default function FastReview() {
           </button>
           <button
             onClick={() => void commit()}
-            disabled={busy}
-            className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-700 disabled:opacity-50"
+            disabled={busy || gaps.length > 0}
+            title={gaps.length > 0 ? `Не хватает: ${gaps.join(' · ')}` : undefined}
+            className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy ? 'Сохраняю…' : 'Сохранить и дальше ⏎'}
           </button>

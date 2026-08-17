@@ -95,6 +95,8 @@ export interface AvailableDataset {
   pairs: number;
   verified: number;
   session_id: string;
+  /** `work` = паковка из репозитория, `raw` = сырой материал (только у автора набора) */
+  variant?: 'work' | 'raw';
 }
 
 /**

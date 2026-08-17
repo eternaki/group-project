@@ -23,6 +23,7 @@ import numpy as np
 from annotators import TEAM
 from coco_import import (
     DATASET_URL_PREFIX,
+    WORK_DIRNAME,
     CocoImportError,
     build_session,
     count_pairs,
@@ -378,6 +379,11 @@ async def list_datasets(annotator: Optional[str] = None):
             {
                 "path": path.relative_to(root).as_posix(),
                 "name": dataset_name_for(path),
+                # Ten sam zbiór bywa dostępny dwa razy: jako materiał surowy
+                # (tylko u autora) i jako paczka z repozytorium. Nazwa jest
+                # WSPÓLNA, bo po niej scalają się etykiety — więc bez tego
+                # znacznika lista pokazywałaby dwie identyczne pozycje.
+                "variant": "work" if path.parent.name == WORK_DIRNAME else "raw",
                 "pairs": count_pairs(path, annotator),
                 "verified": verified,
                 "session_id": session_id,
