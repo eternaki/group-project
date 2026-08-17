@@ -31,7 +31,6 @@ import {
   type SessionData,
 } from '../types';
 import {
-  exportSessionCOCO,
   getSession,
   importCoco,
   listDatasets,
@@ -93,6 +92,20 @@ function ruleSaysActive(peak: FrameAnnotation, code: string): boolean {
 /** Zapas wokół boksu psa przy kadrowaniu — ułamek jego szerokości i wysokości */
 const CROP_PADDING = 0.18;
 
+/**
+ * Zapas wokół rozpiętości punktów przy kadrowaniu mordy.
+ *
+ * Ćwierć szerokości z każdej strony zostawia ucho i podgardle — sam obrys punktów
+ * ucina je i anotator traci odniesienie, na którą część psa patrzy.
+ */
+const FACE_CROP_PADDING = 0.25;
+
+/** Punkt poniżej tej pewności nie wyznacza kadru mordy */
+const FACE_CROP_MIN_VISIBILITY = 0.3;
+
+/** Poniżej tylu pewnych punktów kadr mordy jest zgadywaniem — wracamy do boksu psa */
+const FACE_CROP_MIN_POINTS = 6;
+
 interface Rect {
   x: number;
   y: number;
@@ -101,14 +114,12 @@ interface Rect {
 }
 
 /**
- * Wylicza wycinek kadru pokazywany anotatorowi.
+ * Wylicza wycinek wokół boksu CAŁEGO psa.
  *
- * Pełna klatka jest bezużyteczna do oceny AU: bramka dopuszcza mordy od 40 px
- * szerokości, a klatka 1920 px pokazana w kolumnie szerokiej na 380 px kurczy
- * je do ośmiu. Do tego na nagraniu bywa kilka psów i bez wycinka nie wiadomo,
- * którego dotyczy anotacja.
+ * Zapasowy sposób kadrowania: używany, gdy punktów jest za mało, żeby wyznaczyć
+ * z nich mordę.
  */
-function cropRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
+function bodyRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
   if (!natural || !frame.bbox) return null;
   const [x, y, width, height] = frame.bbox;
   const padX = width * CROP_PADDING;
@@ -121,6 +132,53 @@ function cropRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
     width: Math.min(natural.width - left, width + 2 * padX),
     height: Math.min(natural.height - top, height + 2 * padY),
   };
+}
+
+/**
+ * Wylicza wycinek MORDY z rozpiętości pewnych punktów.
+ *
+ * Kadr po boksie psa jest za szeroki do pracy: na leżącym psie ma około 1000 px,
+ * a morda w nim jakieś 50 — czyli 46 punktów zlewa się w plamę i trafienie
+ * w konkretny jest loterią. Kadr liczony z samych punktów daje mordę na całą
+ * kolumnę niezależnie od tego, ile psa jest w kadrze.
+ *
+ * Pełna klatka zostaje pod klawiszem `F` — potrzebna, żeby zobaczyć kontekst
+ * (który to pies, co robi), ale nie do oceny ruchu mięśni.
+ */
+function faceRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
+  const keypoints = frame.keypoints;
+  if (!natural || !keypoints) return null;
+
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let i = 0; i < keypoints.length / 3; i++) {
+    if (keypoints[i * 3 + 2] <= FACE_CROP_MIN_VISIBILITY) continue;
+    xs.push(keypoints[i * 3]);
+    ys.push(keypoints[i * 3 + 1]);
+  }
+  if (xs.length < FACE_CROP_MIN_POINTS) return null;
+
+  const x0 = Math.min(...xs);
+  const x1 = Math.max(...xs);
+  const y0 = Math.min(...ys);
+  const y1 = Math.max(...ys);
+  const padX = Math.max((x1 - x0) * FACE_CROP_PADDING, 1);
+  const padY = Math.max((y1 - y0) * FACE_CROP_PADDING, 1);
+  const left = Math.max(0, x0 - padX);
+  const top = Math.max(0, y0 - padY);
+  return {
+    x: left,
+    y: top,
+    width: Math.min(natural.width - left, x1 - x0 + 2 * padX),
+    height: Math.min(natural.height - top, y1 - y0 + 2 * padY),
+  };
+}
+
+/**
+ * Wybiera kadr roboczy: morda, a gdy jej nie da się wyznaczyć — cały pies.
+ */
+function cropRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
+  return faceRect(frame, natural) ?? bodyRect(frame, natural);
 }
 
 /** Promien punktu keypoint jako ułamek szerokości wycinka — skaluje się z kadrem */
@@ -844,12 +902,15 @@ export default function FastReview() {
         <p className="text-sm text-gray-500 mt-1">
           Размечено {verifiedCount} из {pairs.length} пар.
         </p>
-        <button
-          onClick={() => exportSessionCOCO(session.session_id, session.video_filename)}
-          className="mt-4 px-4 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700"
-        >
-          Экспорт COCO
-        </button>
+        {/* Раньше здесь была кнопка «Экспорт COCO». Она отдавала только текущую
+            сессию — без width/height и лицензий, то есть COCO хуже пакетного, —
+            и работала лишь пока набор открыт в браузере. Готовый датасет
+            собирает `python -m scripts.annotation.build_final_dataset`, и он
+            же кладёт его в `data/dataset_final/release/`. */}
+        <p className="text-xs text-gray-400 mt-3">
+          Разметка сохраняется сама. Готовый датасет собирается командой{' '}
+          <code className="px-1 py-0.5 bg-gray-100 rounded">build_final_dataset</code>.
+        </p>
       </div>
     );
   }
@@ -878,12 +939,6 @@ export default function FastReview() {
             className="text-xs px-3 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
           >
             Сменить пользователя
-          </button>
-          <button
-            onClick={() => exportSessionCOCO(session.session_id, session.video_filename)}
-            className="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700"
-          >
-            Экспорт COCO
           </button>
         </div>
       </div>
@@ -1073,7 +1128,7 @@ export default function FastReview() {
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">K</kbd> точки ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">P</kbd> править точки ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">F</kbd>{' '}
-          {showFullFrame ? 'вернуть кадр собаки' : 'весь кадр'} ·{' '}
+          {showFullFrame ? 'вернуться к морде' : 'весь кадр'} ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">←→</kbd> навигация
         </span>
         <div className="flex gap-2 shrink-0">
