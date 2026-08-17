@@ -7,6 +7,7 @@ Endpoints:
 - GET /api/health - Health check
 """
 
+import os
 import sys
 import tempfile
 import uuid
@@ -42,6 +43,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
+from routers.ingest import router as ingest_router  # noqa: E402  # isort: skip
 from routers.sessions import router as sessions_router  # noqa: E402  # isort: skip
 from session_store import (  # noqa: E402  # isort: skip
     DogTrack,
@@ -76,8 +78,26 @@ STATIC_DIR = _BACKEND_DIR / "static" / "frames"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Klatki zbiorów wsadowych — sesje z importu COCO wskazują na nie przez /dataset.
+# Wystawiamy CAŁY katalog danych, a nie katalog jednego zbioru: inaczej dałoby
+# się pracować tylko na jednym zbiorze naraz, a mamy ich kilka i anotator ma
+# móc przełączać się między nimi bez restartu serwera.
+DATASET_FRAMES_ENV: str = "DOGFACS_DATASET_FRAMES"
+DEFAULT_DATASET_FRAMES: str = "data"
+DATASET_FRAMES_DIR = Path(
+    os.environ.get(DATASET_FRAMES_ENV, DEFAULT_DATASET_FRAMES)
+).resolve()
+if DATASET_FRAMES_DIR.is_dir():
+    app.mount(
+        "/dataset",
+        StaticFiles(directory=str(DATASET_FRAMES_DIR)),
+        name="dataset",
+    )
+
 # Podłącz router sesji (Sprint 9)
 app.include_router(sessions_router)
+# Dosypywanie nagrań: przyjęcie plików i praca w tle obok anotacji
+app.include_router(ingest_router)
 
 # Global pipeline instance
 pipeline: Optional[InferencePipeline] = None

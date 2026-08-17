@@ -8,7 +8,7 @@ Reguły AU są pre-etykietami, a nie celem treningowym, więc przed Sprintem 16
 trzeba wiedzieć, jaka część etykiet pochodzi z drgania keypoints.
 
 Użycie:
-    python scripts/debug/dataset_stats.py --dataset data/dataset_v2/annotations.json
+    python scripts/debug/dataset_stats.py --dataset data/dataset_final/annotations.json
 """
 
 import argparse
@@ -183,7 +183,7 @@ def main() -> int:
     parser.add_argument(
         "--dataset",
         type=Path,
-        default=Path("data/dataset_v2/annotations.json"),
+        default=Path("data/dataset_final/annotations.json"),
         help="Plik annotations.json",
     )
     args = parser.parse_args()

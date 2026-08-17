@@ -28,6 +28,25 @@ ANNOTATION_STATUS_REVIEWED: str = "reviewed"
 ANNOTATION_STATUS_VERIFIED: str = "verified"
 
 
+# Werdykt człowieka o pojedynczym AU. Trzymany OSOBNO od `aus` (pomiaru reguł),
+# bo audyt pokazał, że pomiar bywa odwrotnością tego, co widać: dyszący pies
+# z otwartym pyskiem dostawał `neutral`, a siedzący spaniel `surprise`.
+# Gdyby werdykt startował od wartości reguły, anotator zatwierdzałby błąd
+# jednym kliknięciem — a to jest dokładnie to, czego zbiór nie przetrwa.
+AU_VERDICT_ACTIVE: str = "active"
+AU_VERDICT_INACTIVE: str = "inactive"
+
+# `not_observable` NIE ZNACZY „nieaktywny". Ucho schowane za głową to brak
+# wiedzy, a nie brak ruchu — wpisanie tu zera nauczyłoby sieć, że niewidoczne
+# znaczy spoczynkowe. To rozróżnienie jest powodem, dla którego pole ma trzy
+# stany zamiast być zwykłym `bool`.
+AU_VERDICT_NOT_OBSERVABLE: str = "not_observable"
+
+AU_VERDICTS: frozenset[str] = frozenset(
+    {AU_VERDICT_ACTIVE, AU_VERDICT_INACTIVE, AU_VERDICT_NOT_OBSERVABLE}
+)
+
+
 @dataclass
 class FrameAnnotation:
     """
@@ -53,6 +72,13 @@ class FrameAnnotation:
         breed: Rasa psa
         breed_confidence: Pewność klasyfikacji rasy (0-1)
         tfm_score: Temporal Feature Map score klatki
+        au_verdicts: Werdykty człowieka o poszczególnych AU
+            {nazwa AU: active | inactive | not_observable}. BRAK klucza znaczy
+            „jeszcze nieoceniony" — dlatego domyślnie słownik jest pusty, a nie
+            wypełniony wartościami z reguł.
+        frame_role: `neutral` albo `peak` — która klatka pary
+        quality: Miary bramki jakości {asymmetry, weak_keypoint_ratio, face_width_px}
+        review_order: Pozycja pary w kolejce weryfikacji
     """
 
     frame_idx: int
@@ -69,6 +95,27 @@ class FrameAnnotation:
     breed: Optional[str] = None
     breed_confidence: float = 0.0
     tfm_score: float = 0.0
+    au_verdicts: dict = field(default_factory=dict)
+    frame_role: Optional[str] = None
+    quality: dict = field(default_factory=dict)
+    review_order: Optional[int] = None
+    # Czy człowiek uznał kadr za nadający się do kodowania AU. Miary geometryczne
+    # tego nie rozstrzygają: przegląd kadrów pokazał, że nawet przy najniższej
+    # asymetrii połowa ujęć to psy z głową w dół albo odwrócone, bo asymetria
+    # jest miarą lewo-prawo i na pochylenie głowy jest z definicji ślepa.
+    # Odrzucenie ręczne zajmuje sekundę i jest samo w sobie etykietą.
+    usable: bool = True
+    # Werdykt człowieka o keypoints: True = leżą na mordzie, False = nie.
+    # None znaczy „nieoceniony", a nie „dobre". Bez tego pola zły pomiar
+    # keypoints unieważnia etykiety AU tej klatki, a my dowiadujemy się o tym
+    # dopiero przy kolejnym przejściu przez cały zbiór.
+    keypoints_ok: Optional[bool] = None
+    # Czy człowiek uznał, że role klatek są ODWROTNE: to „szczytowa" jest
+    # spoczynkowa, a „neutralna" ma mimikę. Zmierzone: w 17% par klatka
+    # neutralna ma wyższy TFM niż szczytowa, czyli baza pomiaru bywa zepsuta.
+    # Zamiana ratuje parę zamiast ją wyrzucać, a zapisana flaga jest materiałem
+    # do naprawy samego wyboru klatki neutralnej.
+    roles_swapped: bool = False
 
 
 @dataclass

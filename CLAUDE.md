@@ -58,8 +58,14 @@ Commity atomowe (jedna zmiana = jeden commit). Po ukończeniu zadania: testy (`p
 # Instalacja (po zmianach w strukturze pakietów uruchom ponownie — patrz Gotchas)
 pip install -e ".[dev,download,notebooks]"
 
-uvicorn apps.webapp.backend.main:app --reload   # backend (FastAPI)
-cd apps/webapp/frontend && npm run dev           # frontend (React + Vite)
+python scripts/run_annotation.py                 # stanowisko weryfikacji AU (backend + frontend)
+uvicorn apps.webapp.backend.main:app --reload   # sam backend (FastAPI)
+cd apps/webapp/frontend && npm run dev           # sam frontend (React + Vite)
+
+# Zbieranie zbioru
+python -m scripts.annotation.run_batch_parallel --workers 4   # anotacja wsadowa w N procesach
+python -m scripts.annotation.curate_for_review                # bramka jakości + kolejność pod anotatora
+python -m scripts.annotation.build_final_dataset             # złożenie zbioru do oddania
 
 pytest                                           # testy
 ruff check . --fix                               # linter
@@ -99,6 +105,22 @@ Obraz/Klatka → BBox (YOLOv8) → Crop → Rasa
 ### Katalogi danych
 `data/raw/`, `data/frames/`, `data/annotations/` — w `.gitignore` (duże pliki lokalne). Tymczasowe podglądy w korzeniu `data/` też ignorowane.
 
+**Jeden zbiór roboczy: `data/dataset_final/`.** W środku dwa światy i to jest celowe:
+
+| ścieżka | co to | git |
+|---------|-------|-----|
+| `frames/` | pełne klatki 1920×900 (1.3 GB) | nie |
+| `annotations.json` | surowe COCO z batcha (63 MB) | nie |
+| `curated.json` | po bramce jakości (23 MB) | nie |
+| **`release/`** | **gotowy zbiór: kadry mordy + COCO + CSV** | **tak** |
+| `data/labels/<zbior>/<kto>.jsonl` | dziennik decyzji człowieka | tak |
+
+Do repozytorium jadą tylko dwie ostatnie pozycje — one są produktem projektu.
+Nagrania źródłowe leżą w `data/drive_dogs/` i nigdy nie wchodzą do gita.
+
+`release/` składa się jedną komendą i wolno ją uruchamiać na dowolnym etapie —
+bierze to, co zweryfikowano do tej pory, i nadpisuje poprzedni wynik.
+
 ---
 
 ## Gotchas (niełatwe do odgadnięcia)
@@ -112,17 +134,44 @@ Obraz/Klatka → BBox (YOLOv8) → Crop → Rasa
 - **`is_active` NIE WYSTARCZA jako etykieta**: zmierzony szum ratio AU (mediana 0.232 na 40 wideo) przewyższa sygnał aktywacji 0.15 dla 68.9% par trek–AU. Do odsiewu służy `packages.data.coco.au_signal_above_noise()`, który jest **trójstanowy**: `None` znaczy „nie zmierzono szumu", a nie „szum zerowy" — potraktowanie tego jako `False` wyrzuci dobre próbki, jako `True` wpuści etykiety z drgania keypoints. Szczegóły i liczby: `docs/sprints/14-batch-annotation/AUDYT.md`.
 - **`au_noise` zawsze razem z `au_sample_count`**: sigma z 3 klatek ma ~11% obciążenia i ~50% rozrzutu własnego, więc bez liczby prób nie da się jej zważyć. `TrackAnnotation` wymusza to strukturalnie (`ValueError`).
 - **Dwa boksy, nie jeden**: `TrackFrame.body_box` to pies (idzie do `bbox` anotacji i z niego liczy się rasa — klasyfikator uczono na całych psach), `face_box` to kadr mordy (wygładzanie, próg godności treku). Pomylenie ich po cichu zmienia znaczenie pola w całym zbiorze.
+- **Obrót głowy PRODUKUJE fałszywe AU**: każdy pomiar w `delta_action_units.py` dzieli się przez rozstaw oczu, a ten skraca się jak `cos(yaw)`. Obrót o ~30° daje mnożnik 1.155 przy progu aktywacji 1.15 — czyli sam obrót aktywuje wszystkie AU „na wzrost". Zmierzone: u 30.5% peaków zmiana pozy sama przekracza próg; korelacja Spearmana ze liczbą aktywnych AU +0.274 (p=5e-49); przy zaostrzaniu bramki jakości średnia liczba aktywnych AU spada 5.65 → 2.27. **`is_active` z reguł nie jest etykietą.**
+- **Bramka jakości ma DWA zestawy progów i to jest celowe**: `DEFAULT_FRAME_QUALITY` w `inference.py` (luźny, asym ≤0.45, morda ≥20 px) rządzi WYBOREM peaków i jest preferencją — musi coś zwrócić, więc przy zbyt małej liczbie kandydatów bierze najbardziej frontalne kadry treku. `QualityThresholds()` w `quality_gate.py` (ostry, asym ≤0.20, morda ≥40 px) rządzi KURACJĄ i jest wetem. Użycie ostrych progów przy wyborze daje zero peaków w całym zbiorze (sam próg rozmiaru odrzuca 67 klatek na 100 — mediana szerokości mordy na materiale stockowym to 26 px).
+- **Ograniczanie kandydatów na peaki idzie przez `allowed_positions`, nigdy przez skrócenie list**: separacja peaków liczy się w POZYCJACH listy, więc na liście przefiltrowanej jedna pozycja odpowiada wielu klatkom nagrania i twardy odstęp wycina prawie wszystko.
+- **Asymetria mordy mierzy się od PROSTEJ, nie od punktu**: odległość od środka mordy jest zdominowana przez położenie w pionie i asymetria lewo-prawo w niej tonie (mediana 0.113 zamiast poprawnych 0.366).
+- **Werdykt człowieka (`au_verdicts`) jest osobnym polem od pomiaru reguł (`au_analysis`)** i trójstanowym: `not_observable` znaczy brak wiedzy, nie brak ruchu. W ZAPISIE startuje pusty — pusty werdykt nigdy nie trafia do zbioru jako „nieaktywny".
+- **Formularz weryfikacji jest jednak WSTĘPNIE WYPEŁNIANY regułami** (decyzja właściciela projektu, 17.08.2026): anotator dostaje odpowiedzi ustawione tak, jak policzyły reguły, i poprawia to, z czym się nie zgadza. Ryzyko jest zmierzone i realne — reguły potrafią zaznaczyć 12 z 21 AU naraz na spokojnym psie, w tym EAD101 („uszy do przodu") i EAD103 („uszy położone") JEDNOCZEŚNIE, co jest fizycznie sprzeczne. Jeśli etykiety zaczną być kopią reguł, sieć z Sprintu 16 nauczy się reguł, a nie mimiki. Wskaźnik do pilnowania: odsetek par, w których człowiek NIC nie zmienił względem reguł.
+- **Poprawka punktów zapisuje się pod ścieżką POPRAWIANEJ klatki, nie pod kluczem pary**: `_pair_key_of()` bierze URL tej klatki, którą właśnie edytowano. Poprawka klatki NEUTRALNEJ ma więc własny klucz i szukanie jej po kluczu pary nic nie znajdzie — a to najdroższa cicha strata, bo błędna baza przesuwa wszystkie 21 AU tego psa naraz. Składanie zbioru szuka poprawek po ścieżce klatki (`_correction_for`), nie po parze.
+- **`data/dataset_final/` NIE jest gotowym zbiorem** — gotowy jest `release/` w środku. Cały katalog był kiedyś ignorowany hurtem przez gita, przez co wypadał z repozytorium jedyny artefakt, który oddajemy.
+- **Scalanie części batcha przenumerowuje `neutral_frame_id` razem z `image_id`** — pole wskazuje OBRAZ, więc pominięte cicho wiąże peak z klatką neutralną innego psa.
 
 ---
 
-## Deliverables (1. semestr)
-DPP (proces projektowania), Specyfikacja Oprogramowania (funkcje, interfejs, kod, wyniki), Raport Roczny (szablon WETI), Prezentacja przed komisją. Dokumenty po polsku w `docs/`.
+## Dokumentacja
+
+**Obowiązująca dokumentacja projektu leży w `docs/Moja_pg/`** — to dokumenty
+oddawane uczelni i tylko one są aktualne:
+
+| plik | co to |
+|------|-------|
+| `PG_WETI_DPP_wer. 2.00.docx` | DPP — dokumentacja procesu projektowego |
+| `PG_WETI_DTP_wer. 2.00.docx`, `DTP_Technical_Documentation.pdf` | DTP — dokumentacja techniczna |
+| `Plan_Projektu_Grupowego.pdf` | plan projektu |
+| `Raport_DogFACS_1_semestr.pdf` | raport roczny (szablon WETI) |
+| `Prezentacja.pdf`, `Plakat.docx` | obrona przed komisją |
+
+**`docs/sprints/` i `docs/plans/` to materiał HISTORYCZNY.** Rozjechały się z
+kodem i ich liczb nie wolno cytować bez sprawdzenia w kodzie. Zmierzone
+rozbieżności: spec formatu COCO (`docs/plans/2025-01-16-coco-format-spec.md`)
+obiecuje 20 keypoints i 6 emocji, a jest 46 i 9, o AU nie wspomina wcale;
+Sprint 17 wymaga „25 000+ frames" przy zmierzonej wydajności materiału ~2400;
+Sprint 15 odsyła do `data/dataset_final/annotations_clean.json`, którego nie ma.
+Aktualny status zadań żyje w Linear.
 
 ---
 
-## Sprinty
+## Sprinty (materiał historyczny — patrz wyżej)
 
-18 sprintów: narzędzia i modele → dane → weryfikacja → sieć neuronowa AU. Szczegóły i aktualny status w `docs/sprints/` oraz Linear.
+18 sprintów: narzędzia i modele → dane → weryfikacja → sieć neuronowa AU.
 
 | # | Sprint | Status |
 |---|--------|--------|

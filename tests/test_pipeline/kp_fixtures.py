@@ -82,6 +82,28 @@ def make_frontal_kp() -> np.ndarray:
     kp[KP.RIGHT_CHEEK_LOWER] = [212, 202, 0.8]
     kp[KP.JAW_CENTER]        = [150, 245, 0.85]
 
+    # Punkty bez stałej w `KP` — dawniej zostawały w (0, 0), czyli dwanaście
+    # z czterdziestu sześciu punktów „frontalnej mordy" leżało w rogu układu.
+    # Miara `shape_distance` to wyłapała (0.164 przy p99 realnych psów 0.133),
+    # więc fixtura nie była realistyczna mimo nazwy.
+    #
+    # Punkty ucha leżą NA narysowanej krawędzi (baza → środek → czubek), a nie
+    # tam, gdzie stawia je średni kształt DogFLW: uśredniony pies ma uszy wiszące
+    # i wypchnąłby te punkty szerzej niż czubki uszu tej fixtury, rozdymając boks
+    # mordy. Reszta wyliczona z dopasowania średniego kształtu.
+    kp[2]  = [70, 82, 0.85]     # ear_left_upper_bend
+    kp[3]  = [230, 82, 0.85]    # ear_right_upper_bend
+    kp[8]  = [74, 108, 0.85]    # ear_left_lower_mid
+    kp[9]  = [226, 108, 0.85]   # ear_right_lower_mid
+    kp[10] = [73, 101, 0.85]    # ear_left_lower_23
+    kp[11] = [227, 101, 0.85]   # ear_right_lower_23
+    kp[26] = [135, 191, 0.85]   # nose_left_upper_edge
+    kp[27] = [164, 191, 0.85]   # nose_right_upper_edge
+    kp[32] = [150, 205, 0.85]   # nostril_mid
+    kp[36] = [120, 207, 0.85]   # whisker_pad_left
+    kp[37] = [179, 207, 0.85]   # whisker_pad_right
+    kp[KP.TONGUE_TIP] = [150, 239, 0.85]
+
     return kp.flatten()
 
 

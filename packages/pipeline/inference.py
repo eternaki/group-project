@@ -44,6 +44,7 @@ from packages.pipeline.dog_tracker import DogTracker
 from packages.pipeline.landmark_smoothing import KeypointSmoother
 from packages.pipeline.neutral_frame import NeutralFrameDetector, collect_neutral_baseline
 from packages.pipeline.peak_selector import DEFAULT_MIN_TFM, PeakFrameSelector
+from packages.pipeline.quality_gate import QualityThresholds, assess_frame
 from packages.pipeline.track_processing import (
     DEFAULT_TRACK_QUALITY,
     NEUTRAL_SOURCE_AUTO,
@@ -73,13 +74,52 @@ DEFAULT_MIN_SHARPNESS: float = 60.0
 # Po ilu sekundach bez detekcji trek wygasa (3 klatki przy próbkowaniu 1 kl./s)
 DEFAULT_MAX_TRACK_GAP_S: float = 3.0
 
+# Progi bramki jakości kadru stosowane PRZED wyborem peaków.
+#
+# Kolejność jest tu istotą rzeczy, a nie szczegółem. TFM rośnie od tego samego
+# skrócenia rozstawu oczu, co asymetria, więc selektor peaków systematycznie
+# wybierał kadry, które bramka potem odrzucała: w najwyższym kwartylu TFM
+# frontalnych kadrów było 15.5%, w najniższym 33.9% (Spearman +0.157,
+# p=8.7e-17, n=2786). Filtrując przed wyborem, szukamy szczytu wśród kadrów
+# nadających się do pomiaru, zamiast wybierać najsilniejszy obrót głowy.
+#
+# Progi są LUŹNIEJSZE niż przy kuracji zbioru i to jest celowe. Kuracja pyta
+# „czy człowiek zweryfikuje ten kadr" i ma prawo odrzucić wszystko; selektor
+# pyta „które kadry TEGO treku nadają się najlepiej" i musi coś zwrócić.
+# Zmierzone na materiale stockowym: przy progach kuracyjnych (morda ≥40 px)
+# z 100 klatek treków przechodziło 7, a peaków wychodziło zero — sam próg
+# rozmiaru odrzucał 67 klatek, bo mediana szerokości mordy to 26 px.
+DEFAULT_FRAME_QUALITY: QualityThresholds = QualityThresholds(
+    max_asymmetry=0.45,
+    max_weak_ratio=0.50,
+    min_face_width=20.0,
+    # Kształt jest tu WYŁĄCZONY celowo. Ten zestaw progów rządzi WYBOREM peaków
+    # i musi coś zwrócić — weto na kształcie potrafiłoby wyzerować trek, a to
+    # dokładnie ta pułapka, przez którą progi kuracyjne nie mogą tu trafiać.
+    # O odrzuceniu kadru z punktami postawionymi byle gdzie decyduje kuracja.
+    max_shape_distance=float("inf"),
+)
+
+# Ile kadrów treku musi zostać po bramce, żeby wybór peaków miał z czego wybierać.
+# Gdy bramka zostawi mniej, bierzemy NAJBARDZIEJ FRONTALNE kadry treku zamiast
+# odrzucać trek w całości: trek nagrany w gorszych warunkach ma dawać gorsze
+# kadry, a nie zero kadrów — o tym, czy trafią do zbioru, decyduje kuracja.
+MIN_PEAK_CANDIDATES: int = 4
+
 # Progi używane przy ZBIERANIU zbioru — wspólne dla batch annotation i webappu.
 # Muszą być te same po obu stronach: Sprint 15 weryfikuje ręcznie dokładnie ten
 # materiał, który wyprodukował batch. Gdy progi się rozjeżdżają, anotator ogląda
 # inne peaki i inne klatki niż te, które trafiły do zbioru, i weryfikuje materiał,
 # którego w zbiorze nie ma.
 DATASET_MIN_KEYPOINT_CONF: float = 0.3
-DATASET_PEAK_SEPARATION_S: float = 3.0
+
+# Minimalny odstęp między peakami [s]. Musi być mały wobec DŁUGOŚCI TREKU, nie
+# wobec długości nagrania — a treki na materiale stockowym są krótkie: zmierzona
+# mediana to 10 pozycji, czyli około 3.3 s. Przy poprzednich 3.0 s na trek
+# mieścił się dokładnie JEDEN peak (zmierzony sufit z separacji: mediana 1.0,
+# realnie wybieranych 0.90 peaka na trek wobec 2.05 w poprzednim zbiorze).
+# Próg TFM nie ma z tym nic wspólnego — nie przechodzi go tylko 5% klatek.
+DATASET_PEAK_SEPARATION_S: float = 1.0
 # Promień okna wokół klatki neutralnej, z którego liczona jest baza median.
 # UWAGA: to promień w POZYCJACH treku, nie w klatkach wideo — na treku dziurawym
 # (pies wychodzi z kadru) okno ±2 pozycje może objąć klatki oddalone o sekundy.
@@ -157,6 +197,7 @@ class VideoDatasetConfig:
     min_tfm: float = DEFAULT_MIN_TFM
     max_track_gap_s: float = DEFAULT_MAX_TRACK_GAP_S
     track_quality: TrackQuality = DEFAULT_TRACK_QUALITY
+    frame_quality: QualityThresholds = DEFAULT_FRAME_QUALITY
 
     def __post_init__(self) -> None:
         """
@@ -1219,6 +1260,11 @@ class InferencePipeline:
             frames=[frames_list[frame.frame_idx] for frame in track_frames],
             keypoints_list=[frame.keypoints for frame in track_frames],
             head_poses=[frame.head_pose for frame in track_frames],
+            # Okno stabilności liczy się po REALNYM czasie, a nie po pozycji na
+            # liście. Trek jest próbkowany nierówno i bywa dziurawy, więc bez tego
+            # to samo okno obejmowałoby raz sekundę nagrania, raz dziesięć — a
+            # „stabilna" wychodziłaby klatka z rzadko próbkowanego fragmentu.
+            frame_indices=[frame.frame_idx for frame in track_frames],
         )
         return position, NEUTRAL_SOURCE_AUTO
 
@@ -1241,6 +1287,10 @@ class InferencePipeline:
         Returns:
             Pozycje peaków w `track_frames`, od najsilniejszego
         """
+        candidates = self._gated_positions(track_frames, neutral_position, config)
+        if not candidates:
+            return []
+
         selector = PeakFrameSelector(
             min_separation_frames=config.peak_separation_frames,
             min_tfm_threshold=config.min_tfm,
@@ -1252,6 +1302,10 @@ class InferencePipeline:
             max_roll=config.max_roll,
             min_sharpness=config.min_sharpness,
         )
+        # Ograniczenie idzie jako zbiór dozwolonych pozycji, a NIE przez podanie
+        # krótszej listy klatek: separacja peaków liczona jest w pozycjach, więc
+        # na skróconej liście jedna pozycja odpowiadałaby wielu klatkom nagrania
+        # i wycinała prawie wszystkie szczyty.
         return selector.select(
             frames=[frames_list[frame.frame_idx] for frame in track_frames],
             keypoints_list=[frame.keypoints for frame in track_frames],
@@ -1259,7 +1313,56 @@ class InferencePipeline:
             delta_aus_list=[frame.delta_aus for frame in track_frames],
             head_poses=[frame.head_pose for frame in track_frames],
             num_peaks=config.num_peaks,
+            allowed_positions=set(candidates),
         )
+
+    def _gated_positions(
+        self,
+        track_frames: list[TrackFrame],
+        neutral_position: int,
+        config: VideoDatasetConfig,
+    ) -> list[int]:
+        """
+        Zostawia pozycje kadrów, na których wolno mierzyć AU.
+
+        Bramka działa PRZED wyborem peaków, bo TFM rośnie od tego samego
+        skrócenia rozstawu oczu, co asymetria — wybierając najpierw, dostawaliśmy
+        systematycznie najbardziej obrócone kadry treku.
+
+        Gdy bramka zostawi za mało kandydatów, bierzemy najbardziej frontalne
+        kadry treku zamiast odrzucać trek w całości. Trek nagrany w gorszych
+        warunkach ma dawać GORSZE kadry, a nie zero kadrów — o tym, czy trafią
+        do zbioru, decyduje później kuracja, która zna próg „człowiek to
+        zweryfikuje". Bez tego ustępstwa próg rozmiaru mordy sam odrzucał 67
+        klatek na 100 i zbiór wychodził pusty.
+
+        Klatka neutralna zostaje w kandydatach bezwarunkowo: to ona jest bazą
+        pomiaru i selektor potrzebuje jej pozycji, a jej własną jakość ocenia
+        osobno próg godności treku.
+
+        Args:
+            track_frames: Klatki treku z policzonymi delta AU
+            neutral_position: Pozycja klatki neutralnej w `track_frames`
+            config: Progi przetwarzania
+
+        Returns:
+            Rosnące pozycje kadrów nadających się na peaki, z klatką neutralną
+        """
+        asymmetries = [
+            assess_frame(frame.keypoints, config.frame_quality) for frame in track_frames
+        ]
+        usable = {
+            position
+            for position, quality in enumerate(asymmetries)
+            if quality.is_usable
+        }
+        if len(usable) < MIN_PEAK_CANDIDATES:
+            ranked = sorted(
+                range(len(track_frames)), key=lambda position: asymmetries[position].asymmetry
+            )
+            usable.update(ranked[:MIN_PEAK_CANDIDATES])
+        usable.add(neutral_position)
+        return sorted(usable)
 
     def visualize(
         self,

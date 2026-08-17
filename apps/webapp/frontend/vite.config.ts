@@ -15,6 +15,11 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      // Klatki zbioru wsadowego — używa ich tryb szybkiej weryfikacji
+      '/dataset': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })

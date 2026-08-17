@@ -70,8 +70,19 @@ class BatchConfig:
     mean_shape_file: Path = field(default_factory=lambda: Path("models/dogflw_mean_shape.json"))
 
     # Parametry ekstrakcji
-    fps: float = 1.0  # klatki na sekundę do ekstrakcji
-    max_frames_per_video: int = 30  # maksymalna liczba klatek z wideo
+    #
+    # 1 kl./s dawało z 20-sekundowego nagrania 20 kandydatów, z których po
+    # trackingu i odsiewie zostawały median 3 peaki. Chwila, w której pies
+    # patrzy w obiektyw, trwa sekundę-dwie — przy takim próbkowaniu trafialiśmy
+    # w nią przypadkiem. Gęstsze próbkowanie zwiększa szansę złapania kadru
+    # nadającego się do pomiaru; bramka jakości i tak odsieje resztę.
+    fps: float = 5.0  # klatki na sekundę do ekstrakcji
+    # Budżet klatek na nagranie. Zmierzone na tym sprzęcie (CPU, bez CUDA):
+    # około 1.1 klatki na sekundę pracy, więc to ten budżet, a nie liczba
+    # nagrań, decyduje o czasie przebiegu. 50 klatek rozłożonych po 20-sekundowym
+    # klipie daje efektywne 2.5 kl./s — dwuipółkrotnie gęściej niż poprzedni
+    # przebieg — przy czasie rzędu doby na 1496 nagrań.
+    max_frames_per_video: int = 50  # maksymalna liczba klatek z wideo
 
     # Parametry generowania datasetu (peak frames + emocje/AU)
     num_peaks: int = 10  # liczba peak frames na wideo do anotacji emocji
@@ -88,6 +99,40 @@ class BatchConfig:
     # Filtrowanie jakości
     min_confidence: float = 0.3  # minimalna pewność detekcji
     flag_low_confidence: float = 0.5  # próg dla flagowania niskiej jakości
+
+    # Podział pracy na niezależne procesy.
+    #
+    # Poprzedni przebieg zajął 9 h 46 min na 1496 nagraniach przy 1 kl./s.
+    # Przy 5 kl./s sekwencyjnie byłoby to kilkadziesiąt godzin, czyli więcej,
+    # niż zostało do terminu. Zamiast przerabiać działający pipeline na pracę
+    # współbieżną (i ryzykować cichym rozjechaniem stanu), dzielimy LISTĘ WIDEO
+    # na rozłączne części: każdy proces ma własny plik COCO i własny postęp,
+    # a wyniki scala `merge_annotations.py`.
+    shard: int = 0  # numer części (0-indeksowany)
+    shards: int = 1  # na ile części dzielimy listę nagrań
+
+    def __post_init__(self) -> None:
+        """
+        Rozdziela pliki wyjściowe części, żeby procesy nie nadpisywały się nawzajem.
+
+        Katalog klatek zostaje wspólny — nazwy plików niosą identyfikator wideo,
+        więc kolizji tam nie ma, a kopiowanie klatek byłoby marnotrawstwem.
+
+        Raises:
+            ValueError: Gdy numer części nie mieści się w liczbie części
+        """
+        if self.shards < 1:
+            raise ValueError(f"shards musi być dodatnie, otrzymano {self.shards}")
+        if not 0 <= self.shard < self.shards:
+            raise ValueError(
+                f"shard musi być w [0, {self.shards}), otrzymano {self.shard}"
+            )
+        if self.shards == 1:
+            return
+
+        suffix = f"shard_{self.shard}"
+        self.output_dir = self.output_dir / suffix
+        self.progress_file = self.output_dir / self.progress_file.name
 
     # Rozszerzenia wideo
     video_extensions: list[str] = field(
@@ -280,10 +325,14 @@ class BatchAnnotator:
 
     def get_video_files(self) -> list[Path]:
         """
-        Znajduje wszystkie pliki wideo.
+        Znajduje pliki wideo należące do TEJ części pracy.
+
+        Podział bierze co n-te nagranie z posortowanej listy, a nie kolejne
+        bloki: nagrania z jednego katalogu bywają podobnej długości, więc
+        podział blokami dałby częściom bardzo różny czas pracy.
 
         Returns:
-            Lista ścieżek do plików wideo
+            Lista ścieżek do plików wideo tej części
         """
         video_files = []
 
@@ -293,6 +342,9 @@ class BatchAnnotator:
 
         # Sortuj dla spójności
         video_files = sorted(set(video_files))
+
+        if self.config.shards > 1:
+            video_files = video_files[self.config.shard :: self.config.shards]
 
         return video_files
 
@@ -315,15 +367,8 @@ class BatchAnnotator:
             logger.error(f"Nie można otworzyć wideo: {video_path}")
             return
 
-        video_fps = cap.get(cv2.CAP_PROP_FPS)
-
-        if video_fps <= 0:
-            video_fps = 30.0
-
-        # Oblicz interwał
-        frame_interval = int(video_fps / self.config.fps)
-        if frame_interval < 1:
-            frame_interval = 1
+        video_fps, total_frames = self._video_metadata(video_path)
+        frame_interval = self._sampling_interval(video_fps, total_frames)
 
         frame_count = 0
         extracted_count = 0
@@ -344,6 +389,76 @@ class BatchAnnotator:
 
         cap.release()
         logger.debug(f"Wyekstrahowano {extracted_count} klatek z {video_path.name}")
+
+    @staticmethod
+    def _video_metadata(video_path: Path) -> tuple[float, int]:
+        """
+        Odczytuje tempo i długość nagrania bez dekodowania klatek.
+
+        Args:
+            video_path: Ścieżka do pliku wideo
+
+        Returns:
+            Para (klatki na sekundę, liczba klatek); 30 kl./s gdy kontener
+            nie podaje tempa, 0 klatek gdy nie podaje długości
+        """
+        cap = cv2.VideoCapture(str(video_path))
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        return (video_fps if video_fps > 0 else 30.0), max(0, total_frames)
+
+    def effective_fps(self, video_path: Path) -> float:
+        """
+        Zwraca tempo, w jakim klatki NAPRAWDĘ trafiają do pipeline'u.
+
+        Zamówione `fps` bywa nieosiągalne: gdy próbkowanie w tym tempie nie
+        mieści się w budżecie klatek, odstęp rozciąga się na całe nagranie
+        i realne tempo spada. Pipeline przelicza po tym tempie SEKUNDY na
+        pozycje — minimalny odstęp między peakami i tolerancję przerwy
+        w treku — więc podanie mu tempa zamówionego zamiast osiągniętego
+        zawyża oba progi dokładnie tyle razy, ile wynosi rozciągnięcie.
+
+        Args:
+            video_path: Ścieżka do pliku wideo
+
+        Returns:
+            Osiągnięte tempo próbkowania w klatkach na sekundę
+        """
+        video_fps, total_frames = self._video_metadata(video_path)
+        return video_fps / self._sampling_interval(video_fps, total_frames)
+
+    def _sampling_interval(self, video_fps: float, total_frames: int) -> int:
+        """
+        Wylicza odstęp próbkowania mieszczący CAŁE nagranie w budżecie klatek.
+
+        Samo próbkowanie co `video_fps / fps` z twardym limitem `max_frames`
+        URYWA nagranie w połowie: limit wyczerpuje się na początku i druga
+        część klipu nigdy nie trafia do pipeline'u. Zbiór dostawał wtedy
+        systematycznie początki ujęć, a moment, w którym pies patrzy
+        w obiektyw, wypada gdzie indziej równie często.
+
+        Gdy próbkowanie w zamówionym tempie mieści się w budżecie — zostaje bez
+        zmian. Gdy nie mieści się, rozciągamy odstęp tak, żeby te same klatki
+        rozłożyły się po całym nagraniu.
+
+        Args:
+            video_fps: Liczba klatek na sekundę nagrania
+            total_frames: Długość nagrania w klatkach; 0 gdy nieznana
+
+        Returns:
+            Odstęp między pobieranymi klatkami, zawsze dodatni
+        """
+        by_fps = max(1, int(video_fps / self.config.fps))
+        budget = self.config.max_frames_per_video
+        if total_frames <= 0 or budget < 1:
+            return by_fps
+
+        # Ile klatek pobrałoby próbkowanie w zamówionym tempie
+        wanted = -(-total_frames // by_fps)  # dzielenie w górę
+        if wanted <= budget:
+            return by_fps
+        return max(by_fps, -(-total_frames // budget))
 
     def process_frame(
         self,
@@ -420,7 +535,9 @@ class BatchAnnotator:
 
         # Konfiguracja powstaje poza try: zły próg to pomyłka wywołującego,
         # a nie powód do cichego pominięcia wideo.
-        video_config = self._video_config(len(context.frames))
+        video_config = self._video_config(
+            len(context.frames), self.effective_fps(video_path)
+        )
         try:
             dataset_result = self.pipeline.process_video_for_dataset(
                 context.frames, config=video_config
@@ -448,19 +565,22 @@ class BatchAnnotator:
 
         return stats
 
-    def _video_config(self, num_frames: int) -> VideoDatasetConfig:
+    def _video_config(self, num_frames: int, sampling_fps: float) -> VideoDatasetConfig:
         """
         Buduje konfigurację przetwarzania wideo z ustawień batcha.
 
         Args:
             num_frames: Liczba wyekstrahowanych klatek
+            sampling_fps: Tempo, w jakim klatki NAPRAWDĘ trafiły do pipeline'u.
+                To po nim przeliczają się sekundy na pozycje, więc musi być
+                tempo osiągnięte, a nie zamówione (`BatchConfig.fps`).
 
         Returns:
             Progi dla process_video_for_dataset()
         """
         return VideoDatasetConfig(
             num_peaks=min(self.config.num_peaks, num_frames),
-            fps=self.config.fps,
+            fps=sampling_fps,
             min_peak_separation_s=self.config.peak_min_separation_s,
             min_keypoint_conf=self.config.min_keypoint_conf,
             max_yaw_asymmetry=self.config.max_yaw_asymmetry,
@@ -932,14 +1052,26 @@ def main():
     parser.add_argument(
         "--fps",
         type=float,
-        default=1.0,
-        help="Klatki na sekundę do ekstrakcji (domyślnie: 1.0)",
+        default=BatchConfig.fps,
+        help=f"Klatki na sekundę do ekstrakcji (domyślnie: {BatchConfig.fps})",
     )
     parser.add_argument(
         "--max-frames",
         type=int,
-        default=30,
-        help="Maksymalna liczba klatek z wideo (domyślnie: 30)",
+        default=BatchConfig.max_frames_per_video,
+        help=f"Maksymalna liczba klatek z wideo (domyślnie: {BatchConfig.max_frames_per_video})",
+    )
+    parser.add_argument(
+        "--shards",
+        type=int,
+        default=1,
+        help="Na ile niezależnych części podzielić listę nagrań (domyślnie: 1)",
+    )
+    parser.add_argument(
+        "--shard",
+        type=int,
+        default=0,
+        help="Numer części do przetworzenia, 0-indeksowany (domyślnie: 0)",
     )
     parser.add_argument(
         "--batch-size",
@@ -988,6 +1120,8 @@ def main():
         batch_size=args.batch_size,
         save_interval=args.save_interval,
         device=args.device,
+        shard=args.shard,
+        shards=args.shards,
     )
 
     # Utwórz annotator

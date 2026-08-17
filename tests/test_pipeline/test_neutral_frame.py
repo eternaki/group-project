@@ -333,3 +333,146 @@ class TestNeutralFrameDetector:
         """Test: detect_manual zwraca podany indeks bez zmian."""
         assert detector.detect_manual(5) == 5
         assert detector.detect_manual(0) == 0
+
+    def test_stability_score_is_scale_and_translation_invariant(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: stability score niezmienniczy względem skali i translacji twarzy."""
+        rng = np.random.default_rng(7)
+        base = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        seq = [
+            (base + np.column_stack([
+                rng.random((NUM_KEYPOINTS, 2)) * 0.8,
+                np.zeros((NUM_KEYPOINTS, 1)),
+            ]))
+            for _ in range(12)
+        ]
+        seq_raw = [f.flatten() for f in seq]
+        # Ta sama sekwencja przeskalowana x2.5 i przesunięta o +400px (x,y)
+        seq_scaled = []
+        for f in seq:
+            g = f.copy()
+            g[:, :2] = g[:, :2] * 2.5 + 400.0
+            seq_scaled.append(g.flatten())
+
+        score_raw = detector._compute_stability_score(seq_raw, center_idx=6)
+        score_scaled = detector._compute_stability_score(seq_scaled, center_idx=6)
+
+        assert abs(score_raw - score_scaled) < 0.02
+
+    def test_garbage_mouth_frame_is_not_valid_candidate(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: dobre oczy/nos, ale niewidoczne usta → NIE kandydat (baseline ust = śmieć)."""
+        kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        for idx in (KP.MOUTH_LEFT_CORNER, KP.MOUTH_RIGHT_CORNER,
+                    KP.UPPER_LIP_CENTER, KP.LOWER_LIP_CENTER):
+            kp[idx, 2] = 0.05
+        kp_flat = kp.flatten()
+        pose = estimate_head_pose(kp_flat)
+
+        assert detector._is_valid_candidate(kp_flat, pose) is False
+
+    def test_stability_window_uses_original_timeline(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: z frame_indices okno liczy sąsiadów po realnym czasie, nie po pozycji."""
+        base = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        # 3 stabilne klatki, ale w realnym czasie odległe o 100 klatek od siebie.
+        seq = [base.flatten() for _ in range(3)]
+        far_indices = [0, 100, 200]
+
+        # Z frame_indices: sąsiedzi poza oknem (window 10) → brak sąsiadów → 0.0
+        score_far = detector._compute_stability_score(
+            seq, center_idx=1, frame_indices=far_indices
+        )
+        # Bez frame_indices: sąsiedztwo pozycyjne → liczy wariancję (stabilne → wysoki)
+        score_positional = detector._compute_stability_score(seq, center_idx=1)
+
+        assert score_far == 0.0
+        assert score_positional > 0.8
+
+    def test_detect_auto_prefers_typical_expression_among_stable(
+        self, detector: NeutralFrameDetector
+    ) -> None:
+        """Test: gdy kilka klatek równie stabilnych, wybierana jest typowa (modalna) konfiguracja."""
+        base = make_frontal_kp()
+        frames = [np.zeros((480, 640, 3), dtype=np.uint8) for _ in range(9)]
+        # 8 klatek typowych (zamknięty pysk) + 1 nietypowa (szeroko otwarty pysk),
+        # wszystkie pojedynczo stabilne (powtórzone identycznie w oknie nie są — więc
+        # budujemy listę gdzie każda klatka ma stabilne sąsiedztwo identycznych kopii).
+        typical = base
+        atypical = base.reshape(NUM_KEYPOINTS, 3).copy()
+        atypical[KP.LOWER_LIP_CENTER, 1] += 50
+        atypical[KP.CHIN, 1] += 50
+        kps = [typical.copy() for _ in range(8)] + [atypical.flatten()]
+
+        idx = detector.detect_auto(frames, kps)
+
+        # Wybór NIE powinien paść na nietypową klatkę (indeks 8).
+        assert idx != 8
+
+
+
+def test_select_most_typical_prefers_shape_over_score() -> None:
+    """_select_most_typical musi preferować typowy kształt ponad najwyższy score."""
+    from packages.pipeline.neutral_frame import _select_most_typical
+
+    base = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)[:, :2]
+    atypical = base.copy()
+    atypical[KP.LOWER_LIP_CENTER, 1] += 50
+    atypical[KP.CHIN, 1] += 50
+
+    vis = np.ones((NUM_KEYPOINTS, 1), dtype=np.float32)
+    kp_list = [np.concatenate([base, vis], axis=1).flatten() for _ in range(8)]
+    kp_list.append(np.concatenate([atypical, vis], axis=1).flatten())
+
+    candidates = list(range(9))
+    scores = {i: 0.5 for i in range(8)}
+    scores[8] = 1.0  # atypowa klatka ma NAJWYŻSZY score → stary max() zwróciłby 8
+
+    result = _select_most_typical(candidates, scores, kp_list)
+    assert result != 8
+
+
+# =============================================================================
+# Testy funkcji compute_neutral_baseline
+# =============================================================================
+
+class TestComputeNeutralBaseline:
+    """Testy dla funkcji compute_neutral_baseline."""
+
+    def test_compute_neutral_baseline_is_robust_to_outlier_frame(self) -> None:
+        """Test: pojedyncza klatka-outlier w oknie nie psuje medianowej bazy."""
+        from packages.pipeline.neutral_frame import compute_neutral_baseline
+
+        base = make_frontal_kp()
+        n = 7
+        kps = [base.copy() for _ in range(n)]
+        # Klatka 3 = mocny outlier (przesunięcie ust o 60px)
+        outlier = base.reshape(NUM_KEYPOINTS, 3)
+        outlier[KP.LOWER_LIP_CENTER, 1] += 60
+        kps[3] = outlier.flatten()
+        poses = [estimate_head_pose(k) for k in kps]
+
+        baseline = compute_neutral_baseline(kps, neutral_idx=3, head_poses=poses)
+        bl = baseline.reshape(NUM_KEYPOINTS, 3)
+
+        # Mediana ignoruje outlier → dolna warga blisko wartości bazowej (228), nie 288.
+        assert abs(bl[KP.LOWER_LIP_CENTER, 1] - 228.0) < 5.0
+        assert baseline.shape == (NUM_KEYPOINTS * 3,)
+
+    def test_compute_neutral_baseline_falls_back_when_keypoint_invisible(self) -> None:
+        """Test: punkt niewidoczny we wszystkich klatkach okna → wartość z klatki neutral."""
+        from packages.pipeline.neutral_frame import compute_neutral_baseline
+
+        base = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
+        base[KP.TONGUE_TIP] = [151.0, 240.0, 0.02]  # niewidoczny wszędzie
+        kps = [base.flatten() for _ in range(5)]
+        poses = [estimate_head_pose(k) for k in kps]
+
+        baseline = compute_neutral_baseline(kps, neutral_idx=2, head_poses=poses)
+        bl = baseline.reshape(NUM_KEYPOINTS, 3)
+
+        assert abs(bl[KP.TONGUE_TIP, 0] - 151.0) < 1e-3
+        assert abs(bl[KP.TONGUE_TIP, 1] - 240.0) < 1e-3

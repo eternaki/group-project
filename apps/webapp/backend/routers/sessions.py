@@ -20,11 +20,29 @@ from dataclasses import asdict
 from typing import Optional
 
 import numpy as np
+from annotators import TEAM
+from coco_import import (
+    DATASET_URL_PREFIX,
+    WORK_DIRNAME,
+    CocoImportError,
+    build_session,
+    count_pairs,
+    dataset_name_for,
+    find_datasets,
+    frames_prefix_for,
+    import_root,
+    load_coco,
+    resolve_import_path,
+    session_id_for,
+)
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from label_store import append_label, build_record
 from pydantic import BaseModel
 from session_store import (
+    ANNOTATION_STATUS_REVIEWED,
     ANNOTATION_STATUS_VERIFIED,
+    AU_VERDICTS,
     AmbiguousFrameError,
     DogTrack,
     FrameAnnotation,
@@ -60,9 +78,16 @@ _store = SessionStore()
 
 
 class UpdateKeypointsRequest(BaseModel):
-    """Request dla PATCH keypoints."""
+    """
+    Request dla PATCH keypoints.
 
-    keypoints: list[float]  # 138 wartości (46 × [x, y, visibility])
+    Attributes:
+        keypoints: 138 wartości (46 × [x, y, visibility])
+        annotator: Kto poprawiał; identyfikuje plik etykiet
+    """
+
+    keypoints: list[float]
+    annotator: Optional[str] = None
 
 
 class AUData(BaseModel):
@@ -102,6 +127,54 @@ class AddFrameRequest(BaseModel):
     image_url: str
     source: str = "manual"
     track_id: Optional[int] = None
+
+
+class ImportCocoRequest(BaseModel):
+    """
+    Request dla POST import_coco.
+
+    Attributes:
+        path: Ścieżka do zbioru po kuracji (`curate_for_review.py`)
+        limit: Najwyżej tyle par; None znaczy wszystkie
+    """
+
+    path: str
+    limit: Optional[int] = None
+    fresh: bool = False
+    annotator: Optional[str] = None
+
+
+class ReviewRequest(BaseModel):
+    """
+    Request dla PATCH review — CAŁA weryfikacja pary w jednym zapisie.
+
+    Osobne zapisy dla AU, rasy i emocji znaczyłyby, że przerwanie w połowie
+    zostawia parę zweryfikowaną częściowo, a przede wszystkim — że zbiór trzeba
+    przejść tyle razy, ile jest pól. Jedno przejście po materiale jest tu
+    warunkiem wykonalności: 518 par razy cztery przebiegi to praca, na którą
+    nie ma czasu.
+
+    Attributes:
+        verdicts: Werdykty AU {nazwa: active | inactive | not_observable}
+        usable: Czy kadr nadaje się do kodowania AU
+        keypoints_ok: Czy punkty leżą na mordzie; None = nieoceniono
+        breed: Rasa poprawiona przez człowieka; None = zostaw jak jest
+        emotion: Emocja poprawiona przez człowieka; None = zostaw jak jest
+        mark_verified: Czy oznaczyć klatkę jako sprawdzoną
+        roles_swapped: Czy role klatek są odwrotne — „szczytowa" jest spoczynkowa
+        annotator: Kto ocenia. MUSI przyjść z interfejsu, a nie z konta systemowego:
+            gdy przy jednym komputerze pracuje kilka osób, nazwa konta wpisałaby
+            werdykty wszystkich do pliku właściciela maszyny.
+    """
+
+    verdicts: dict[str, str] = {}
+    usable: bool = True
+    keypoints_ok: Optional[bool] = None
+    breed: Optional[str] = None
+    emotion: Optional[str] = None
+    mark_verified: bool = True
+    roles_swapped: bool = False
+    annotator: Optional[str] = None
 
 
 # =============================================================================
@@ -151,6 +224,26 @@ def _get_frame_or_404(
         )
 
 
+def _pair_key_of(frame: FrameAnnotation) -> str:
+    """
+    Odtwarza stabilny identyfikator pary z URL klatki.
+
+    URL ma postać `/dataset/<zbior>/frames/<sciezka klatki>`, a etykiety
+    identyfikują parę SAMĄ ŚCIEŻKĄ KLATKI — bez przedrostka, żeby przeżyła
+    przeniesienie zbioru do innego katalogu.
+
+    Args:
+        frame: Anotacja klatki szczytowej
+
+    Returns:
+        Ścieżka klatki względem katalogu klatek zbioru
+    """
+    marker = "/frames/"
+    url = frame.image_url or ""
+    _, separator, tail = url.partition(marker)
+    return tail if separator else url.removeprefix(f"{DATASET_URL_PREFIX}/")
+
+
 def _dict_to_delta_aus(aus_dict: dict) -> dict[str, DeltaActionUnit]:
     """Rekonstruuje DeltaActionUnit ze słownika zapisanego w JSON."""
     return {
@@ -163,6 +256,140 @@ def _dict_to_delta_aus(aus_dict: dict) -> dict[str, DeltaActionUnit]:
         )
         for name, data in aus_dict.items()
     }
+
+
+# =============================================================================
+# POST import_coco — wprowadzenie zbioru wsadowego pod ręce anotatora
+# =============================================================================
+
+
+@router.post("/import_coco")
+async def import_coco(request: ImportCocoRequest):
+    """
+    Tworzy sesję weryfikacji ze zbioru COCO po kuracji.
+
+    Bez tego wejścia weryfikacja zbioru policzonego wsadowo wymagałaby
+    ponownego przepuszczenia tych samych nagrań przez pipeline.
+
+    Ścieżka przychodzi z przeglądarki, więc `resolve_import_path` przycina ją
+    do katalogu danych — inaczej endpoint czytałby dowolny plik z dysku serwera.
+
+    Args:
+        request: Ścieżka do zbioru (względem katalogu danych) i limit par
+
+    Returns:
+        `{session_id, pairs, frames, source}`
+
+    Raises:
+        HTTPException: 400, gdy ścieżka wychodzi poza katalog danych, zbiór nie
+            istnieje albo nie przeszedł kuracji
+    """
+    try:
+        path = resolve_import_path(request.path)
+        session_id = session_id_for(path, request.annotator)
+
+        # Sesję budujemy ZA KAŻDYM RAZEM od nowa, bo źródłem prawdy o pracy
+        # ludzi są pliki etykiet w repozytorium, a nie sesja na dysku. Dzięki
+        # temu `git pull` z werdyktami kolegi wystarczy, żeby zobaczyć jego
+        # postęp — bez tego sesja pamiętałaby wyłącznie własną maszynę.
+        resumed = _store.exists(session_id)
+        session = build_session(
+            coco=load_coco(path),
+            session_id=session_id,
+            source_name=f"{dataset_name_for(path)}/{path.name}",
+            limit=request.limit,
+            frames_prefix=frames_prefix_for(path),
+            dataset=dataset_name_for(path),
+            annotator=request.annotator,
+        )
+    except CocoImportError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    _store.save(session)
+    return _session_summary(session, resumed=resumed)
+
+
+def _session_summary(session: SessionData, resumed: bool) -> dict:
+    """
+    Buduje podsumowanie sesji zwracane po imporcie.
+
+    Args:
+        session: Dane sesji
+        resumed: Czy sesja została podjęta, czy założona od nowa
+
+    Returns:
+        Słownik z licznikami postępu
+    """
+    verified = sum(
+        1
+        for frame in session.frames
+        if frame.frame_role == FRAME_ROLE_PEAK
+        and frame.annotation_status == ANNOTATION_STATUS_VERIFIED
+    )
+    return {
+        "session_id": session.session_id,
+        "pairs": len(session.dogs),
+        "frames": len(session.frames),
+        "source": session.video_filename,
+        "verified": verified,
+        "resumed": resumed,
+    }
+
+
+@router.get("/team")
+async def list_team():
+    """
+    Zwraca skład zespołu anotatorów.
+
+    Returns:
+        `{"team": [{key, display}]}` — kolejność wyznacza przydział części kolejki
+    """
+    return {"team": [{"key": member.key, "display": member.display} for member in TEAM]}
+
+
+@router.get("/datasets/available")
+async def list_datasets(annotator: Optional[str] = None):
+    """
+    Wylicza zbiory gotowe do weryfikacji razem z postępem TEJ osoby.
+
+    Anotator nie ma wpisywać ścieżek — narzędzie samo pokazuje, co jest do
+    zrobienia i ile już zrobione. Liczby dotyczą jego części kolejki, bo każdy
+    z czwórki dostaje inne pary.
+
+    Args:
+        annotator: Klucz anotatora; None znaczy „cała kolejka"
+
+    Returns:
+        `{"root": str, "datasets": [{path, name, pairs, verified, session_id}]}`
+    """
+    root = import_root()
+    datasets = []
+    for path in find_datasets(root):
+        session_id = session_id_for(path, annotator)
+        verified = 0
+        if _store.exists(session_id):
+            session = _store.load(session_id)
+            verified = sum(
+                1
+                for frame in session.frames
+                if frame.frame_role == FRAME_ROLE_PEAK
+                and frame.annotation_status == ANNOTATION_STATUS_VERIFIED
+            )
+        datasets.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "name": dataset_name_for(path),
+                # Ten sam zbiór bywa dostępny dwa razy: jako materiał surowy
+                # (tylko u autora) i jako paczka z repozytorium. Nazwa jest
+                # WSPÓLNA, bo po niej scalają się etykiety — więc bez tego
+                # znacznika lista pokazywałaby dwie identyczne pozycje.
+                "variant": "work" if path.parent.name == WORK_DIRNAME else "raw",
+                "pairs": count_pairs(path, annotator),
+                "verified": verified,
+                "session_id": session_id,
+            }
+        )
+    return {"root": str(root), "datasets": datasets}
 
 
 # =============================================================================
@@ -218,11 +445,123 @@ async def update_keypoints(
             status_code=422,
             detail=f"Oczekiwano {expected} wartości keypoints, otrzymano {len(request.keypoints)}",
         )
+    session = _load_session_or_404(session_id)
     frame = _get_frame_or_404(session_id, frame_idx, track_id)
     frame.keypoints = request.keypoints
-    frame.annotation_status = "reviewed"
+    frame.annotation_status = ANNOTATION_STATUS_REVIEWED
     _store.update_frame(session_id, frame)
+
+    # Poprawka klatki NEUTRALNEJ musi trafić też do treku: przeliczanie AU
+    # bierze bazę stamtąd, więc bez tego liczyłoby deltę względem punktów
+    # sprzed poprawki i pokazywało aktywacje, których nie ma.
+    updated = _store.load(session_id)
+    for dog in updated.dogs:
+        if dog.track_id == frame.track_id and dog.neutral_frame_idx == frame.frame_idx:
+            dog.neutral_keypoints = list(request.keypoints)
+            _store.save(updated)
+            break
+
+    # Sesja jest kasowalnym cache'em przebudowywanym przy każdym otwarciu, więc
+    # poprawione punkty muszą trafić do pliku etykiet — inaczej najdroższa praca
+    # anotatora (przeciąganie 46 punktów) ginie po przełączeniu użytkownika.
+    dataset, _, _ = session.video_filename.partition("/")
+    append_label(
+        dataset or session.video_filename,
+        build_record(
+            annotator=request.annotator,
+            pair_key=_pair_key_of(frame),
+            au_verdicts=frame.au_verdicts,
+            usable=frame.usable,
+            keypoints_ok=frame.keypoints_ok,
+            breed=None,
+            emotion=None,
+            roles_swapped=frame.roles_swapped,
+            keypoints=list(request.keypoints),
+        ),
+    )
     return {"ok": True}
+
+
+@router.patch("/{session_id}/frames/{frame_idx}/review")
+async def update_review(
+    session_id: str,
+    frame_idx: int,
+    request: ReviewRequest,
+    track_id: Optional[int] = None,
+):
+    """
+    Zapisuje CAŁĄ weryfikację pary: AU, keypoints, rasę i emocję naraz.
+
+    Jedno przejście po materiale zamiast czterech. Zły pomiar keypoints
+    unieważnia etykiety AU tej klatki, więc ocena punktów musi powstać w tym
+    samym momencie co ocena AU — inaczej dowiadujemy się o niej dopiero przy
+    kolejnym przejściu przez cały zbiór.
+
+    Args:
+        session_id: ID sesji
+        frame_idx: Numer klatki
+        request: Komplet ocen człowieka
+        track_id: Który pies w klatce
+
+    Returns:
+        Zapisany stan anotacji
+
+    Raises:
+        HTTPException: 422 przy nieznanym werdykcie AU albo nieznanej emocji
+    """
+    unknown = sorted(set(request.verdicts.values()) - AU_VERDICTS)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Nieznany werdykt AU: {unknown}. Dozwolone: {sorted(AU_VERDICTS)}",
+        )
+    if request.emotion is not None and request.emotion not in EMOTION_CLASSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Nieznana emocja: {request.emotion!r}. Dozwolone: {list(EMOTION_CLASSES)}",
+        )
+
+    session = _load_session_or_404(session_id)
+    frame = _get_frame_or_404(session_id, frame_idx, track_id)
+    frame.au_verdicts = {**frame.au_verdicts, **request.verdicts}
+    frame.usable = request.usable
+    frame.keypoints_ok = request.keypoints_ok
+    frame.roles_swapped = request.roles_swapped
+    if request.breed is not None:
+        frame.breed = request.breed
+    if request.emotion is not None:
+        frame.emotion = request.emotion
+    frame.annotation_status = (
+        ANNOTATION_STATUS_VERIFIED if request.mark_verified else ANNOTATION_STATUS_REVIEWED
+    )
+    frame.source = "manual"
+    _store.update_frame(session_id, frame)
+
+    # Sesja jest lokalna, więc sama w sobie nie przenosi pracy do zespołu.
+    # Plik etykiet leży w repozytorium i to on jedzie w gicie.
+    dataset, _, _ = session.video_filename.partition("/")
+    append_label(
+        dataset or session.video_filename,
+        build_record(
+            annotator=request.annotator,
+            pair_key=_pair_key_of(frame),
+            au_verdicts=frame.au_verdicts,
+            usable=frame.usable,
+            keypoints_ok=frame.keypoints_ok,
+            breed=frame.breed,
+            emotion=frame.emotion,
+            roles_swapped=frame.roles_swapped,
+        ),
+    )
+    return {
+        "ok": True,
+        "au_verdicts": frame.au_verdicts,
+        "usable": frame.usable,
+        "keypoints_ok": frame.keypoints_ok,
+        "breed": frame.breed,
+        "emotion": frame.emotion,
+        "roles_swapped": frame.roles_swapped,
+    }
 
 
 @router.patch("/{session_id}/frames/{frame_idx}/aus")
@@ -419,7 +758,9 @@ def _track_fields_for_export(
     if dog is None:
         return fields
 
-    fields["frame_role"] = (
+    # Rola zapisana wprost (sesje z importu COCO) jest wiarygodniejsza niż
+    # wywnioskowana z numeru klatki — ten sam kadr neutralny bywa bazą kilku par.
+    fields["frame_role"] = frame.frame_role or (
         FRAME_ROLE_NEUTRAL if frame.frame_idx == dog.neutral_frame_idx else FRAME_ROLE_PEAK
     )
     fields["neutral_source"] = dog.neutral_source
@@ -461,7 +802,23 @@ def _build_coco_annotation(
             }
             for name, au in (frame.aus or {}).items()
         },
+        # Werdykty człowieka OSOBNO od pomiaru reguł. Scalenie ich w jedno pole
+        # zatarłoby różnicę między „człowiek orzekł, że nieaktywne" a „reguła
+        # nie wykryła aktywacji" — a tylko pierwsze jest etykietą uczącą.
+        "au_verdicts": dict(frame.au_verdicts or {}),
+        # Kadr odrzucony przez człowieka zostaje w zbiorze z tą flagą, a nie
+        # znika: „człowiek uznał to za nienadające się" jest etykietą uczącą
+        # dla przyszłego filtra jakości, a milczenie nią nie jest.
+        "usable": bool(frame.usable),
+        # Trójstanowo: None znaczy „nieoceniono", a nie „punkty dobre".
+        # Etykiety AU z klatki o złych keypoints trzeba umieć odsiać.
+        "keypoints_ok": frame.keypoints_ok,
+        # Człowiek orzekł, że pipeline pomylił role: baza pomiaru to druga
+        # klatka pary. Bez tej flagi delta AU liczyłaby się od mimiki.
+        "roles_swapped": bool(frame.roles_swapped),
     }
+    if frame.quality:
+        ann["quality"] = dict(frame.quality)
     if frame.bbox is not None:
         ann["bbox"] = frame.bbox
         ann["area"] = frame.bbox[2] * frame.bbox[3]

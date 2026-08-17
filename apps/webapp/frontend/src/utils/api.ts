@@ -5,6 +5,7 @@
 import axios from 'axios';
 import { saveAs } from 'file-saver';
 import type {
+  AUVerdict,
   DeltaActionUnit,
   ExportCOCORequest,
   ProcessVideoOptions,
@@ -64,15 +65,114 @@ export async function getSession(sessionId: string): Promise<SessionData> {
   return response.data;
 }
 
+/** Odpowiedź importu zbioru COCO do sesji weryfikacji. */
+export interface ImportCocoResponse {
+  session_id: string;
+  pairs: number;
+  frames: number;
+  source: string;
+  verified: number;
+  /** true = podjęto istniejącą sesję, false = założono nową */
+  resumed: boolean;
+}
+
+/** Człon zespołu anotatorów. */
+export interface TeamMember {
+  key: string;
+  display: string;
+}
+
+/** Pobiera skład zespołu — po nim dzieli się przydział nagrań. */
+export async function listTeam(): Promise<TeamMember[]> {
+  const response = await axios.get<{ team: TeamMember[] }>(`${API_BASE}/sessions/team`);
+  return response.data.team;
+}
+
+/** Zbiór gotowy do weryfikacji, znaleziony przez backend w katalogu danych. */
+export interface AvailableDataset {
+  path: string;
+  name: string;
+  pairs: number;
+  verified: number;
+  session_id: string;
+  /** `work` = паковка из репозитория, `raw` = сырой материал (только у автора набора) */
+  variant?: 'work' | 'raw';
+}
+
+/**
+ * Wylicza zbiory gotowe do weryfikacji.
+ *
+ * Anotator nie wpisuje ścieżek — narzędzie samo pokazuje, co jest do zrobienia.
+ */
+export async function listDatasets(
+  annotator?: string
+): Promise<{ root: string; datasets: AvailableDataset[] }> {
+  const params = annotator ? `?annotator=${encodeURIComponent(annotator)}` : '';
+  const response = await axios.get<{ root: string; datasets: AvailableDataset[] }>(
+    `${API_BASE}/sessions/datasets/available${params}`
+  );
+  return response.data;
+}
+
+/**
+ * Tworzy sesję weryfikacji ze zbioru COCO po kuracji.
+ *
+ * @param path Ścieżka do pliku po `curate_for_review.py` (widziana przez backend)
+ * @param limit Najwyżej tyle par; pominięty = wszystkie
+ */
+export async function importCoco(
+  path: string,
+  annotator?: string,
+  limit?: number
+): Promise<ImportCocoResponse> {
+  const response = await axios.post<ImportCocoResponse>(
+    `${API_BASE}/sessions/import_coco`,
+    { path, limit: limit ?? null, annotator: annotator ?? null }
+  );
+  return response.data;
+}
+
+/** Komplet ocen człowieka zapisywany jednym żądaniem. */
+export interface ReviewPayload {
+  verdicts: Record<string, AUVerdict>;
+  usable: boolean;
+  keypoints_ok: boolean | null;
+  breed: string | null;
+  emotion: string | null;
+  roles_swapped: boolean;
+  /** Кто размечает — из интерфейса, а не из учётки Windows */
+  annotator: string | null;
+}
+
+/**
+ * Zapisuje CAŁĄ weryfikację pary jednym żądaniem: AU, keypoints, rasę i emocję.
+ *
+ * Osobne zapisy znaczyłyby, że zbiór trzeba przejść tyle razy, ile jest pól —
+ * a przy 518 parach jedno przejście jest warunkiem wykonalności.
+ */
+export async function patchReview(
+  sessionId: string,
+  frameIdx: number,
+  trackId: number,
+  payload: ReviewPayload
+): Promise<void> {
+  await axios.patch(
+    `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/review?track_id=${trackId}`,
+    { ...payload, mark_verified: true }
+  );
+}
+
+
 /** Aktualizuje keypoints klatki. */
 export async function patchKeypoints(
   sessionId: string,
   frameIdx: number,
-  keypoints: number[]
+  keypoints: number[],
+  annotator?: string
 ): Promise<void> {
   await axios.patch(
     `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/keypoints`,
-    { keypoints }
+    { keypoints, annotator: annotator ?? localStorage.getItem('dogfacs.annotator') }
   );
 }
 
@@ -118,10 +218,12 @@ export async function patchBreed(
 /** Przelicza AU z keypoints klatki i klatki neutralnej. */
 export async function recomputeAUs(
   sessionId: string,
-  frameIdx: number
+  frameIdx: number,
+  trackId?: number
 ): Promise<Record<string, DeltaActionUnit>> {
+  const track = trackId === undefined ? '' : `?track_id=${trackId}`;
   const response = await axios.post<{ ok: boolean; aus: Record<string, DeltaActionUnit> }>(
-    `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/recompute_aus`
+    `${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/recompute_aus${track}`
   );
   return response.data.aus;
 }
@@ -129,14 +231,16 @@ export async function recomputeAUs(
 /** Przelicza emocję z AU klatki. */
 export async function recomputeEmotion(
   sessionId: string,
-  frameIdx: number
+  frameIdx: number,
+  trackId?: number
 ): Promise<{ emotion: string; emotion_confidence: number; emotion_rule_applied: string }> {
+  const track = trackId === undefined ? '' : `?track_id=${trackId}`;
   const response = await axios.post<{
     ok: boolean;
     emotion: string;
     emotion_confidence: number;
     emotion_rule_applied: string;
-  }>(`${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/recompute_emotion`);
+  }>(`${API_BASE}/sessions/${sessionId}/frames/${frameIdx}/recompute_emotion${track}`);
   return response.data;
 }
 
@@ -148,4 +252,60 @@ export async function exportSessionCOCO(sessionId: string, videoFilename: string
     { responseType: 'blob' }
   );
   saveAs(response.data, `dogfacs_${sessionId}_${videoFilename}.json`);
+}
+
+
+// =============================================================================
+// Досыпка видео: общая папка + фоновая обработка
+// =============================================================================
+
+/** Состояние досыпки видео. */
+export interface IngestStatus {
+  videos_total: number;
+  videos_processed: number;
+  running: boolean;
+  pairs_ready: number;
+  /** idle | starting | processing | curating | done | failed */
+  stage: string;
+  /** Тот же этап по-русски, для показа */
+  stage_label: string;
+}
+
+/** Результат загрузки файлов в общую папку. */
+export interface UploadResult {
+  saved: string[];
+  skipped: { name: string; reason: string }[];
+  videos_total: number;
+}
+
+/**
+ * Загружает видео в общую папку команды.
+ *
+ * @param files Файлы для загрузки
+ * @param onProgress Сколько байт уже ушло — папка с видео весит гигабайты,
+ *   и без индикатора загрузка выглядит как зависание
+ */
+export async function uploadVideos(
+  files: File[],
+  onProgress?: (bytes: number) => void
+): Promise<UploadResult> {
+  const form = new FormData();
+  for (const file of files) form.append('files', file);
+  const response = await axios.post<UploadResult>(`${API_BASE}/ingest/upload`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress: (event) => onProgress?.(event.loaded),
+  });
+  return response.data;
+}
+
+/** Запускает обработку в отдельном процессе, чтобы не блокировать разметку. */
+export async function startIngest(): Promise<{ ok: boolean; pid: number }> {
+  const response = await axios.post<{ ok: boolean; pid: number }>(`${API_BASE}/ingest/start`);
+  return response.data;
+}
+
+/** Возвращает состояние обработки. */
+export async function getIngestStatus(): Promise<IngestStatus> {
+  const response = await axios.get<IngestStatus>(`${API_BASE}/ingest/status`);
+  return response.data;
 }
