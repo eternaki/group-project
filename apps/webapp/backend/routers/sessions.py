@@ -17,6 +17,7 @@ Endpoints:
 import json
 import tempfile
 from dataclasses import asdict
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -347,6 +348,34 @@ async def list_team():
     return {"team": [{"key": member.key, "display": member.display} for member in TEAM]}
 
 
+def _preferred_datasets(paths: list[Path]) -> list[Path]:
+    """
+    Zostawia po JEDNEJ pozycji na zbiór — paczkę roboczą, gdy jest.
+
+    Ten sam zbiór leży u autora dwa razy: materiał surowy (`<zbior>/curated.json`,
+    tylko na jego dysku) i paczka z repozytorium (`<zbior>/work/curated.json`).
+    To jeden zbiór, więc lista ma pokazywać jedną pozycję — dwie identyczne nazwy
+    zmuszały do zgadywania, którą otworzyć.
+
+    Wybieramy paczkę, bo to ją widzi reszta zespołu. Praca na materiale surowym
+    dawałaby autorowi nieco inną kolejkę niż kolegom (paczka gubi kadry, których
+    nie da się odczytać z dysku), a etykiety i tak trafiają do wspólnego pliku.
+
+    Args:
+        paths: Ścieżki plików po kuracji
+
+    Returns:
+        Po jednej ścieżce na nazwę zbioru, kolejność wejściowa zachowana
+    """
+    best: dict[str, Path] = {}
+    for path in paths:
+        name = dataset_name_for(path)
+        current = best.get(name)
+        if current is None or path.parent.name == WORK_DIRNAME:
+            best[name] = path
+    return list(best.values())
+
+
 @router.get("/datasets/available")
 async def list_datasets(annotator: Optional[str] = None):
     """
@@ -364,7 +393,7 @@ async def list_datasets(annotator: Optional[str] = None):
     """
     root = import_root()
     datasets = []
-    for path in find_datasets(root):
+    for path in _preferred_datasets(find_datasets(root)):
         session_id = session_id_for(path, annotator)
         verified = 0
         if _store.exists(session_id):
@@ -379,10 +408,9 @@ async def list_datasets(annotator: Optional[str] = None):
             {
                 "path": path.relative_to(root).as_posix(),
                 "name": dataset_name_for(path),
-                # Ten sam zbiór bywa dostępny dwa razy: jako materiał surowy
-                # (tylko u autora) i jako paczka z repozytorium. Nazwa jest
-                # WSPÓLNA, bo po niej scalają się etykiety — więc bez tego
-                # znacznika lista pokazywałaby dwie identyczne pozycje.
+                # Skąd wzięty zbiór: paczka z repozytorium czy materiał surowy.
+                # Widoczne w interfejsie, bo to różnica między „to samo widzą
+                # koledzy" a „to jest tylko na moim dysku".
                 "variant": "work" if path.parent.name == WORK_DIRNAME else "raw",
                 "pairs": count_pairs(path, annotator),
                 "verified": verified,

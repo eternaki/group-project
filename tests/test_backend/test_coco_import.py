@@ -498,6 +498,25 @@ class TestDatasetListing:
         entry = [d for d in datasets if d["path"] == "curated.json"][0]
         assert entry["pairs"] == 2
 
+    async def test_jeden_zbior_to_jedna_pozycja(self, client, curated_path: Path) -> None:
+        """
+        Materiał surowy i paczka robocza to TEN SAM zbiór — lista pokazuje jedną pozycję.
+
+        U autora zbioru leżą oba: surowy `<zbior>/curated.json` na jego dysku
+        i paczka `<zbior>/work/curated.json` z repozytorium. Dwie pozycje o tej
+        samej nazwie zmuszały do zgadywania, którą otworzyć.
+        """
+        work = curated_path.parent / "work"
+        (work / "frames").mkdir(parents=True)
+        shutil.copy(curated_path, work / "curated.json")
+
+        datasets = (await client.get("/api/sessions/datasets/available")).json()["datasets"]
+
+        assert len(datasets) == 1
+        assert datasets[0]["variant"] == "work", (
+            "wybrana ma byc paczka — to ja widzi reszta zespolu"
+        )
+
     async def test_pokazuje_postep_pracy(self, client, curated_path: Path) -> None:
         session_id = (
             await client.post("/api/sessions/import_coco", json={"path": "curated.json"})
