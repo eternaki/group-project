@@ -39,6 +39,7 @@ from scripts.annotation.cropping import (
     CropBox,
     body_box,
     crop_and_scale,
+    face_box,
     remap_bbox,
     remap_keypoints,
 )
@@ -64,6 +65,10 @@ CURATED_NAME: str = "curated.json"
 
 # Zapas wokół boksu psa — tyle samo, ile pokazuje stanowisko przy podglądzie psa
 BODY_MARGIN: float = 0.12
+
+# Zapas wokół rozpiętości punktów. Mniejszy niż przy boksie psa, bo tu chodzi
+# wyłącznie o to, żeby żaden punkt nie wypadł poza zdjęcie — nie o kontekst.
+KEYPOINT_MARGIN: float = 0.05
 
 # Dłuższy bok kadru. Mediana boksu psa to 596 px, więc 512 prawie nic nie obcina,
 # a zbija paczkę z 264 MB do 53 MB.
@@ -92,10 +97,17 @@ class PackStats:
 
 def _annotations_by_image(coco: dict) -> dict[int, list[dict]]:
     """
-    Grupuje anotacje po obrazie, usuwając powtórzenia.
+    Grupuje anotacje po obrazie — WSZYSTKIE, łącznie z powtórzeniami.
 
-    Kuracja powiela anotację klatki neutralnej — jedna neutralna obsługuje kilka
-    peaków — więc bez odsiania duplikatów paczka niosłaby ten sam wpis kilka razy.
+    Kuracja powiela anotację klatki neutralnej: jedna neutralna obsługuje kilka
+    peaków tego samego psa i dostaje osobny wpis przy KAŻDYM z nich. Wygląda to
+    na nadmiarowość, ale nią nie jest — sesja anotacji składa pary z par (klatka
+    neutralna, klatka szczytowa) po `track_id`, więc para bez własnego wpisu
+    neutralnego nie ma z czego powstać i wypada z kolejki.
+
+    Odsianie tych powtórzeń kosztowało 599 z 1111 wpisów neutralnych i zabrało
+    z kolejki ponad połowę par (u jednej osoby 263 na karcie wobec 114 realnie).
+    Powtarzają się TYLKO wpisy w JSON — obraz na dysku i tak zapisujemy raz.
 
     Args:
         coco: Wczytana kuracja
@@ -104,12 +116,7 @@ def _annotations_by_image(coco: dict) -> dict[int, list[dict]]:
         Mapa `image_id` → anotacje tego obrazu
     """
     grouped: dict[int, list[dict]] = {}
-    seen: set[tuple[int, int, str]] = set()
     for annotation in coco["annotations"]:
-        key = (annotation["image_id"], annotation["track_id"], annotation.get("frame_role", ""))
-        if key in seen:
-            continue
-        seen.add(key)
         grouped.setdefault(annotation["image_id"], []).append(annotation)
     return grouped
 
@@ -130,11 +137,26 @@ def _pack_box(annotations: list[dict], width: int, height: int) -> Optional[Crop
     Returns:
         Kadr albo None, gdy żaden boks nie jest sensowny
     """
+    seen: set[tuple[float, ...]] = set()
+    unique = []
+    for annotation in annotations:
+        key = tuple(annotation["bbox"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(annotation)
+
+    # Suma boksu psa I rozpiętości punktów. Sam boks psa nie wystarcza: detektor
+    # ciał i model punktów to dwa niezależne pomiary i potrafią się rozjechać.
+    # Zmierzone na tym zbiorze — przy kadrze po samym boksie 91 anotacji (4.1%)
+    # miało punkty POZA zdjęciem, a jedna wszystkie 46. Anotator nie widziałby
+    # ich wcale, więc nie mógłby ich poprawić ani uznać kadru za zły.
     boxes = [
         box
+        for annotation in unique
         for box in (
-            body_box(annotation["bbox"], width, height, BODY_MARGIN)
-            for annotation in annotations
+            body_box(annotation["bbox"], width, height, BODY_MARGIN),
+            face_box(annotation["keypoints"], width, height, KEYPOINT_MARGIN),
         )
         if box is not None
     ]
