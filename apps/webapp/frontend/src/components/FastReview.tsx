@@ -3,16 +3,16 @@
  *
  * Четыре решения, на которых он держится:
  *
- * 1. **Ответы предзаполнены замером правил, но правило — не ответ.** Сводка
- *    сверху показывает, что насчитал автомат, и разметчик правит то, с чем не
- *    согласен. Держать в голове измеренное: правила ставят по 12 активных AU
- *    из 21 на спокойной собаке, включая EAD101 («уши вперёд») и EAD103 («уши
- *    прижаты») одновременно — то есть заведомо противоречивые. Предзаполнение
- *    экономит клики ровно до тех пор, пока его перепроверяют.
- * 2. **Нельзя сохранить пару с пробелами.** Каждая из 21 AU, положение точек
- *    и эмоция должны иметь ответ. Раньше неотвеченное молча уходило как
- *    `inactive`, и пропущенное по невнимательности выглядело в датасете так
- *    же, как осмотренное и признанное спокойным.
+ * 1. **Ничего не отмечено заранее.** Сводка сверху показывает, что насчитал
+ *    автомат, но ответы не заполняет. Измерено, почему: правила ставят по 12
+ *    активных AU из 21 на спокойной собаке, включая EAD101 («уши вперёд») и
+ *    EAD103 («уши прижаты») ОДНОВРЕМЕННО — физически несовместимые. С
+ *    предзаполнением разметка выродилась бы в подтверждение этих ошибок одним
+ *    нажатием, и датасет унаследовал бы ровно то, от чего проверка защищает.
+ * 2. **Отмечаются только активные.** Что разметчик не отметил — уходит как
+ *    `inactive` в момент сохранения. Требовать ответа на каждую из 21 AU
+ *    значило бы менять одно нажатие на двадцать одно без единого нового факта.
+ *    Правый клик ставит «не видно» там, где действительно не видно.
  * 3. **Пара рядом.** AU по определению есть разница относительно нейтрального
  *    кадра, поэтому оба кадра должны быть перед глазами одновременно.
  * 4. **Все 21 AU, а не подмножество.** Видимость решается на каждом кадре
@@ -99,36 +99,22 @@ function activeByRules(peak: FrameAnnotation): string[] {
 }
 
 /**
- * Przekłada pomiar reguł na komplet werdyktów — punkt wyjścia do poprawiania.
- *
- * Reguły znają tylko „ruszyło się / nie ruszyło", więc `not_observable` stąd nie
- * wyjdzie: to stan, który widzi wyłącznie człowiek (ucho poza kadrem, oko
- * zasłonięte łapą). Zostaje do wyklikania ręcznie.
- */
-function verdictsFromRules(peak: FrameAnnotation): Record<string, AUVerdict> {
-  const filled: Record<string, AUVerdict> = {};
-  for (const { code } of VERIFIABLE_AU) {
-    filled[code] = ruleSaysActive(peak, code) ? 'active' : 'inactive';
-  }
-  return filled;
-}
-
-/**
  * Wylicza, czego brakuje, żeby parę dało się zatwierdzić.
  *
- * Zwraca listę braków po polsku anotatora (rosyjsku), a nie samo `true/false`:
- * „nie da się zapisać" bez powodu zmusza do zgadywania, czego szukać na ekranie.
+ * NIE ma tu AU i to jest decyzja, nie przeoczenie. Anotator klika tylko te
+ * aktywne, a niezaznaczone stają się `inactive` w chwili zapisu — wymaganie
+ * odpowiedzi na każdą z 21 sztuk zamieniłoby jedno kliknięcie w dwadzieścia
+ * jeden bez żadnej nowej informacji. `not_observable` zostaje pod prawym
+ * klikiem dla tego, czego naprawdę nie widać.
+ *
+ * Zostają pytania, na które milczenie NIE jest odpowiedzią: położenie punktów
+ * i emocja. Tam brak wyboru znaczy „nie patrzyłem", a nie wartość domyślną.
+ *
+ * Zwraca listę braków, a nie samo `true/false`: „nie da się zapisać" bez powodu
+ * zmusza do zgadywania, czego szukać na ekranie.
  */
-function missingAnswers(
-  verdicts: Record<string, AUVerdict>,
-  keypointsOk: boolean | null,
-  emotion: string | null
-): string[] {
+function missingAnswers(keypointsOk: boolean | null, emotion: string | null): string[] {
   const gaps: string[] = [];
-  const unmarked = VERIFIABLE_AU.filter(({ code }) => verdicts[code] === undefined);
-  if (unmarked.length > 0) {
-    gaps.push(`AU без ответа: ${unmarked.map(({ code }) => code).join(', ')}`);
-  }
   if (keypointsOk === null) gaps.push('не отмечено, верно ли лежат точки');
   if (!emotion) gaps.push('не выбрана эмоция');
   return gaps;
@@ -512,7 +498,6 @@ interface RulesSummaryProps {
   peak: FrameAnnotation;
   recomputing: boolean;
   onRecompute: () => void;
-  onAcceptAll: () => void;
 }
 
 /**
@@ -523,7 +508,7 @@ interface RulesSummaryProps {
  * Здесь он собран, рядом стоит пересчёт (после правки точек замер устаревает)
  * и кнопка принять всё разом.
  */
-function RulesSummary({ peak, recomputing, onRecompute, onAcceptAll }: RulesSummaryProps) {
+function RulesSummary({ peak, recomputing, onRecompute }: RulesSummaryProps) {
   const active = activeByRules(peak);
 
   return (
@@ -558,13 +543,6 @@ function RulesSummary({ peak, recomputing, onRecompute, onAcceptAll }: RulesSumm
 
         <div className="flex gap-2 ml-auto shrink-0">
           <button
-            onClick={onAcceptAll}
-            className="px-3 py-1.5 rounded-md border border-gray-300 bg-white text-xs text-gray-700 hover:border-gray-500"
-            title="Проставит ответы так, как насчитал автомат. Дальше правишь то, с чем не согласен."
-          >
-            Принять всё
-          </button>
-          <button
             onClick={onRecompute}
             disabled={recomputing}
             className="px-3 py-1.5 rounded-md border border-amber-300 bg-amber-50 text-xs text-amber-800 hover:border-amber-500 disabled:opacity-50"
@@ -576,11 +554,12 @@ function RulesSummary({ peak, recomputing, onRecompute, onAcceptAll }: RulesSumm
       </div>
 
       {/* Мера, а не мнение: шум правил измерен и он выше порога активации на
-          большинстве пар трек–AU. Подпись держит это перед глазами, чтобы
-          «принять всё» не превращалось в единственный способ работы. */}
+          большинстве пар трек–AU. Подпись держит это перед глазами — список
+          сверху подсказка, а не готовый ответ. */}
       <p className="mt-2 text-[10px] leading-tight text-gray-400">
-        Это замер правил по геометрии точек, а не ответ. Измеренный шум правил выше порога
-        активации у 68.9% пар трек–AU, поэтому метку ставит человек.
+        Это замер правил по геометрии точек, а не ответ: измеренный шум правил выше порога
+        активации у 68.9% пар трек–AU. Отмечай активные сам — что не отметил, уйдёт как
+        неактивное.
       </p>
     </div>
   );
@@ -736,10 +715,7 @@ export default function FastReview() {
       // tu nie zadziała — czyta `pairs` ze stanu, którego React jeszcze nie
       // zaktualizował — więc wypełniamy z listy policzonej przed chwilą.
       const first = built[start]?.peak;
-      const saved = first?.au_verdicts;
-      setVerdicts(
-        saved && Object.keys(saved).length > 0 ? saved : first ? verdictsFromRules(first) : {}
-      );
+      setVerdicts(first?.au_verdicts ?? {});
       setKeypointsOk(first?.keypoints_ok ?? null);
       setBreed(first?.breed ?? null);
       setEmotion(first?.emotion ?? null);
@@ -779,17 +755,12 @@ export default function FastReview() {
       if (index < 0 || index >= pairs.length) return;
       const peak = pairs[index]?.peak;
       setPosition(index);
-      // Odpowiedzi startują od pomiaru reguł i anotator poprawia to, z czym się
-      // nie zgadza. Praca człowieka ma pierwszeństwo: raz zapisane werdykty
-      // wracają jak były, żeby powrót do pary nie kasował jego decyzji regułą.
-      const saved = peak?.au_verdicts;
-      setVerdicts(
-        saved && Object.keys(saved).length > 0
-          ? saved
-          : peak
-            ? verdictsFromRules(peak)
-            : {}
-      );
+      // Pusto, a nie „jak policzyły reguły". Zaznaczenie z góry zamieniało
+      // weryfikację w zatwierdzanie: reguły potrafią wskazać 12 z 21 AU naraz na
+      // spokojnym psie, w tym EAD101 („uszy do przodu") i EAD103 („uszy
+      // położone") JEDNOCZEŚNIE. Zbiór odziedziczyłby dokładnie te usterki,
+      // przed którymi weryfikacja ma chronić.
+      setVerdicts(peak?.au_verdicts ?? {});
       setKeypointsOk(peak?.keypoints_ok ?? null);
       // Rasa i emocja startują od tego, co policzył automat — tu poprawiamy
       // gotową wartość, a nie etykietujemy od zera jak przy AU.
@@ -813,10 +784,6 @@ export default function FastReview() {
     });
   }, []);
 
-  /** Przepisuje pomiar reguł na odpowiedzi — punkt wyjścia, nie zatwierdzenie. */
-  const acceptAll = useCallback(() => {
-    if (current) setVerdicts(verdictsFromRules(current.peak));
-  }, [current]);
 
   /**
    * Zatwierdza parę: wszystko niezaznaczone staje się `inactive`.
@@ -828,10 +795,7 @@ export default function FastReview() {
   const commit = useCallback(
     async (usable = true) => {
       if (!session || !current || busy) return;
-      // Zapis niepełnej pary zapisywał ciszą: nieodpowiedziane AU szły jako
-      // „nieaktywne", więc pominięte przez nieuwagę wyglądało tak samo jak
-      // obejrzane i uznane za spokojne. Teraz brak odpowiedzi zatrzymuje zapis.
-      const blocking = missingAnswers(verdicts, keypointsOk, emotion);
+      const blocking = missingAnswers(keypointsOk, emotion);
       if (usable && blocking.length > 0) {
         setError(`Не хватает: ${blocking.join(' · ')}`);
         return;
@@ -996,10 +960,7 @@ export default function FastReview() {
    * odpowiedzią samo w sobie: skoro kadr się nie nadaje, nie ma czego na nim
    * oceniać i wymaganie wypełnienia 21 AU byłoby żądaniem zmyślania.
    */
-  const gaps = useMemo(
-    () => missingAnswers(verdicts, keypointsOk, emotion),
-    [verdicts, keypointsOk, emotion]
-  );
+  const gaps = useMemo(() => missingAnswers(keypointsOk, emotion), [keypointsOk, emotion]);
 
   if (!session) {
     return (
@@ -1197,7 +1158,6 @@ export default function FastReview() {
         peak={current.peak}
         recomputing={recomputing}
         onRecompute={() => void recompute()}
-        onAcceptAll={acceptAll}
       />
 
       {/* Все 21 AU, сгруппированные по анатомии. Клавиши 1-8 у самых частых,
