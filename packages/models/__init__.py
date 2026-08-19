@@ -8,6 +8,7 @@ Zawiera:
 - DogFACSRuleEngine: Klasyfikacja emocji oparta na regułach DogFACS (bez ML)
 - HeadPoseEstimator: Estymacja pozycji głowy
 - DeltaActionUnitsExtractor: Ekstrakcja 21 Action Units z keypoints (delta vs. neutralna)
+- procrustes_align / mean_shape: Normalizacja kształtu twarzy (superpozycja Prokrustesa)
 """
 
 from .base import BaseModel, ModelConfig
@@ -36,6 +37,7 @@ from .head_pose import (
     validate_head_pose,
 )
 from .keypoints import KeypointsConfig, KeypointsModel, KeypointsPrediction
+from .shape_normalization import mean_shape, procrustes_align
 
 __all__ = [
     # Base
@@ -72,4 +74,7 @@ __all__ = [
     "ACTION_UNIT_NAMES",
     "NUM_ACTION_UNITS",
     "extract_delta_action_units",
+    # Normalizacja kształtu (superpozycja Prokrustesa)
+    "mean_shape",
+    "procrustes_align",
 ]

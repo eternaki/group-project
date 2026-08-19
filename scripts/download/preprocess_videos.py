@@ -14,9 +14,7 @@ Użycie:
 """
 
 import argparse
-import json
 import logging
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path

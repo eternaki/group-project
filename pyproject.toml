@@ -78,6 +78,13 @@ target-version = "py310"
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# Skrypty uruchamiane na Kaggle/w debugu ustawiają sys.path przed importami —
+# kolejność jest tam wymuszona przez środowisko, nie przez styl.
+"scripts/training/breed_train_kaggle.py" = ["E402"]
+"scripts/debug/diagnose_kp_order.py" = ["E402"]
+"scripts/debug/diagnose_kp_spread.py" = ["E402"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "apps/webapp/backend"]

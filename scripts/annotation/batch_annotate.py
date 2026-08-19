@@ -20,6 +20,7 @@ import gc
 import json
 import logging
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,26 @@ from typing import Iterator, Optional
 import cv2
 import numpy as np
 import torch
+
+from packages.data.coco import (
+    FRAME_ROLE_NEUTRAL,
+    FRAME_ROLE_PEAK,
+    LABEL_SOURCE_AUTO_RULES,
+    TrackAnnotation,
+    au_analysis_from_delta_aus,
+)
+from packages.data.schemas import NUM_KEYPOINTS
+from packages.models.breed import BreedPrediction
+from packages.models.emotion import EmotionPrediction, classify_emotion_from_delta_aus
+from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
+from packages.models.shape_normalization import NUM_SHAPE_DIMS, procrustes_align
+from packages.pipeline.inference import (
+    DATASET_MIN_KEYPOINT_CONF,
+    DATASET_PEAK_SEPARATION_S,
+    VideoDatasetConfig,
+)
+from packages.pipeline.peak_selector import compute_tfm
+from packages.pipeline.track_processing import TrackFrame, TrackResult
 
 # Konfiguracja logowania
 logging.basicConfig(
@@ -45,16 +66,30 @@ class BatchConfig:
     output_dir: Path = field(default_factory=lambda: Path("data/annotations"))
     frames_dir: Path = field(default_factory=lambda: Path("data/frames"))
     progress_file: Path = field(default_factory=lambda: Path("data/annotations/progress.json"))
+    # Kanoniczny kształt DogFLW (GPA z 3853 obrazów) — baza superpozycji Prokrustesa
+    mean_shape_file: Path = field(default_factory=lambda: Path("models/dogflw_mean_shape.json"))
 
     # Parametry ekstrakcji
-    fps: float = 1.0  # klatki na sekundę do ekstrakcji
-    max_frames_per_video: int = 30  # maksymalna liczba klatek z wideo
+    #
+    # 1 kl./s dawało z 20-sekundowego nagrania 20 kandydatów, z których po
+    # trackingu i odsiewie zostawały median 3 peaki. Chwila, w której pies
+    # patrzy w obiektyw, trwa sekundę-dwie — przy takim próbkowaniu trafialiśmy
+    # w nią przypadkiem. Gęstsze próbkowanie zwiększa szansę złapania kadru
+    # nadającego się do pomiaru; bramka jakości i tak odsieje resztę.
+    fps: float = 5.0  # klatki na sekundę do ekstrakcji
+    # Budżet klatek na nagranie. Zmierzone na tym sprzęcie (CPU, bez CUDA):
+    # około 1.1 klatki na sekundę pracy, więc to ten budżet, a nie liczba
+    # nagrań, decyduje o czasie przebiegu. 50 klatek rozłożonych po 20-sekundowym
+    # klipie daje efektywne 2.5 kl./s — dwuipółkrotnie gęściej niż poprzedni
+    # przebieg — przy czasie rzędu doby na 1496 nagrań.
+    max_frames_per_video: int = 50  # maksymalna liczba klatek z wideo
 
     # Parametry generowania datasetu (peak frames + emocje/AU)
     num_peaks: int = 10  # liczba peak frames na wideo do anotacji emocji
-    peak_min_separation: int = 3  # min. separacja peak frames (w klatkach ekstrakcji)
-    min_keypoint_conf: float = 0.3  # min. pewność keypoints dla peak frame
-    max_head_angle: float = 40.0  # maks. kąt głowy (yaw/pitch) dla peak frame
+    peak_min_separation_s: float = DATASET_PEAK_SEPARATION_S  # w SEKUNDACH nagrania
+    min_keypoint_conf: float = DATASET_MIN_KEYPOINT_CONF  # min. pewność keypoints
+    max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY  # dla peak frame
+    max_roll: float = DEFAULT_MAX_ROLL  # dla peak frame
 
     # Parametry przetwarzania
     batch_size: int = 4  # rozmiar batcha dla GPU
@@ -65,6 +100,40 @@ class BatchConfig:
     min_confidence: float = 0.3  # minimalna pewność detekcji
     flag_low_confidence: float = 0.5  # próg dla flagowania niskiej jakości
 
+    # Podział pracy na niezależne procesy.
+    #
+    # Poprzedni przebieg zajął 9 h 46 min na 1496 nagraniach przy 1 kl./s.
+    # Przy 5 kl./s sekwencyjnie byłoby to kilkadziesiąt godzin, czyli więcej,
+    # niż zostało do terminu. Zamiast przerabiać działający pipeline na pracę
+    # współbieżną (i ryzykować cichym rozjechaniem stanu), dzielimy LISTĘ WIDEO
+    # na rozłączne części: każdy proces ma własny plik COCO i własny postęp,
+    # a wyniki scala `merge_annotations.py`.
+    shard: int = 0  # numer części (0-indeksowany)
+    shards: int = 1  # na ile części dzielimy listę nagrań
+
+    def __post_init__(self) -> None:
+        """
+        Rozdziela pliki wyjściowe części, żeby procesy nie nadpisywały się nawzajem.
+
+        Katalog klatek zostaje wspólny — nazwy plików niosą identyfikator wideo,
+        więc kolizji tam nie ma, a kopiowanie klatek byłoby marnotrawstwem.
+
+        Raises:
+            ValueError: Gdy numer części nie mieści się w liczbie części
+        """
+        if self.shards < 1:
+            raise ValueError(f"shards musi być dodatnie, otrzymano {self.shards}")
+        if not 0 <= self.shard < self.shards:
+            raise ValueError(
+                f"shard musi być w [0, {self.shards}), otrzymano {self.shard}"
+            )
+        if self.shards == 1:
+            return
+
+        suffix = f"shard_{self.shard}"
+        self.output_dir = self.output_dir / suffix
+        self.progress_file = self.output_dir / self.progress_file.name
+
     # Rozszerzenia wideo
     video_extensions: list[str] = field(
         default_factory=lambda: [".mp4", ".webm", ".mkv", ".avi", ".mov"]
@@ -72,13 +141,41 @@ class BatchConfig:
 
 
 @dataclass
+class VideoContext:
+    """
+    Dane jednego wideo potrzebne przy zapisie anotacji treku.
+
+    Attributes:
+        video_id: Identyfikator wideo (nazwa pliku bez rozszerzenia)
+        emotion: Etykieta emocji z katalogu źródłowego
+        frames: Wyekstrahowane klatki (indeks = numer klatki w treku)
+        frame_numbers: Numery klatek w oryginalnym nagraniu
+        frames_dir: Katalog na zapisywane klatki tego wideo
+    """
+
+    video_id: str
+    emotion: str
+    frames: list[np.ndarray]
+    frame_numbers: list[int]
+    frames_dir: Path
+
+
+@dataclass
 class ProcessingProgress:
-    """Stan postępu przetwarzania."""
+    """
+    Stan postępu przetwarzania.
+
+    Attributes:
+        rejected_tracks: Treki odrzucone przed zapisem, z powodem. Do zbioru COCO
+            nie trafiają (anotacja w COCO jest z definicji próbką treningową),
+            ale bez ich spisu nie wiadomo, gdzie lejek danych traci materiał.
+    """
 
     processed_videos: list[str] = field(default_factory=list)
     total_frames: int = 0
     total_detections: int = 0
     low_confidence_frames: list[str] = field(default_factory=list)
+    rejected_tracks: list[dict] = field(default_factory=list)
     errors: list[dict] = field(default_factory=list)
     start_time: str = ""
     last_update: str = ""
@@ -90,6 +187,8 @@ class ProcessingProgress:
             "total_frames": self.total_frames,
             "total_detections": self.total_detections,
             "low_confidence_count": len(self.low_confidence_frames),
+            "rejected_tracks": self.rejected_tracks,
+            "rejected_track_count": len(self.rejected_tracks),
             "error_count": len(self.errors),
             "start_time": self.start_time,
             "last_update": self.last_update,
@@ -103,6 +202,7 @@ class ProcessingProgress:
             total_frames=data.get("total_frames", 0),
             total_detections=data.get("total_detections", 0),
             low_confidence_frames=data.get("low_confidence_frames", []),
+            rejected_tracks=data.get("rejected_tracks", []),
             errors=data.get("errors", []),
             start_time=data.get("start_time", ""),
             last_update=data.get("last_update", ""),
@@ -118,24 +218,49 @@ class BatchAnnotator:
         annotator.process_all()
     """
 
-    def __init__(self, config: BatchConfig) -> None:
+    def __init__(self, config: BatchConfig, resume: bool = False) -> None:
         """
         Inicjalizuje annotator.
 
         Args:
             config: Konfiguracja batch annotation
+            resume: Czy dokończyć poprzedni przebieg (wczytać zapisany postęp).
+                Domyślnie False — po zmianie pipeline'u chcemy zbioru od nowa,
+                a nie dopisania nowych anotacji do starych.
         """
         self.config = config
         self.progress = ProcessingProgress()
         self.pipeline = None
         self.coco_dataset = None
 
+        # Kanoniczny kształt wczytujemy leniwie i raz — plik jest wspólny dla wszystkich
+        # wideo, a jego brak nie może wywracać konstruktora (raport, dry-run).
+        self._mean_shape: Optional[np.ndarray] = None
+        self._mean_shape_loaded = False
+
         # Utwórz katalogi
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         self.config.frames_dir.mkdir(parents=True, exist_ok=True)
 
-        # Wczytaj postęp jeśli istnieje
-        self._load_progress()
+        # Postęp wczytujemy TYLKO na wyraźne żądanie. Dotąd wznowienie było
+        # bezwarunkowe, a flaga --resume parsowana i nigdy nieczytana: po zmianie
+        # pipeline'u ponowny przebieg widział 1499 wideo jako „już przetworzone"
+        # i kończył się pustym zbiorem, nie mówiąc, dlaczego nic nie zrobił.
+        if resume:
+            self._load_progress()
+        elif self.config.progress_file.exists():
+            logger.warning(
+                f"Istnieje {self.config.progress_file} z {self._processed_count()} wideo. "
+                "Zaczynam OD NOWA (użyj --resume, żeby dokończyć poprzedni przebieg)."
+            )
+
+    def _processed_count(self) -> int:
+        """Ile wideo odnotowuje zapisany postęp (0, gdy pliku nie da się wczytać)."""
+        try:
+            with open(self.config.progress_file, encoding="utf-8") as f:
+                return len(json.load(f).get("processed_videos", []))
+        except (OSError, ValueError):
+            return 0
 
     def _load_progress(self) -> None:
         """Wczytuje postęp z pliku."""
@@ -166,7 +291,10 @@ class BatchAnnotator:
         try:
             from packages.pipeline import InferencePipeline, PipelineConfig
 
-            pipeline_config = PipelineConfig(device=self.config.device)
+            pipeline_config = PipelineConfig(
+                device=self.config.device,
+                confidence_threshold=self.config.min_confidence,
+            )
             self.pipeline = InferencePipeline(pipeline_config)
             self.pipeline.load()  # Załaduj wagi wszystkich modeli
             logger.info(f"Pipeline zainicjalizowany na urządzeniu: {self.config.device}")
@@ -197,10 +325,14 @@ class BatchAnnotator:
 
     def get_video_files(self) -> list[Path]:
         """
-        Znajduje wszystkie pliki wideo.
+        Znajduje pliki wideo należące do TEJ części pracy.
+
+        Podział bierze co n-te nagranie z posortowanej listy, a nie kolejne
+        bloki: nagrania z jednego katalogu bywają podobnej długości, więc
+        podział blokami dałby częściom bardzo różny czas pracy.
 
         Returns:
-            Lista ścieżek do plików wideo
+            Lista ścieżek do plików wideo tej części
         """
         video_files = []
 
@@ -210,6 +342,9 @@ class BatchAnnotator:
 
         # Sortuj dla spójności
         video_files = sorted(set(video_files))
+
+        if self.config.shards > 1:
+            video_files = video_files[self.config.shard :: self.config.shards]
 
         return video_files
 
@@ -232,15 +367,8 @@ class BatchAnnotator:
             logger.error(f"Nie można otworzyć wideo: {video_path}")
             return
 
-        video_fps = cap.get(cv2.CAP_PROP_FPS)
-
-        if video_fps <= 0:
-            video_fps = 30.0
-
-        # Oblicz interwał
-        frame_interval = int(video_fps / self.config.fps)
-        if frame_interval < 1:
-            frame_interval = 1
+        video_fps, total_frames = self._video_metadata(video_path)
+        frame_interval = self._sampling_interval(video_fps, total_frames)
 
         frame_count = 0
         extracted_count = 0
@@ -261,6 +389,76 @@ class BatchAnnotator:
 
         cap.release()
         logger.debug(f"Wyekstrahowano {extracted_count} klatek z {video_path.name}")
+
+    @staticmethod
+    def _video_metadata(video_path: Path) -> tuple[float, int]:
+        """
+        Odczytuje tempo i długość nagrania bez dekodowania klatek.
+
+        Args:
+            video_path: Ścieżka do pliku wideo
+
+        Returns:
+            Para (klatki na sekundę, liczba klatek); 30 kl./s gdy kontener
+            nie podaje tempa, 0 klatek gdy nie podaje długości
+        """
+        cap = cv2.VideoCapture(str(video_path))
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        return (video_fps if video_fps > 0 else 30.0), max(0, total_frames)
+
+    def effective_fps(self, video_path: Path) -> float:
+        """
+        Zwraca tempo, w jakim klatki NAPRAWDĘ trafiają do pipeline'u.
+
+        Zamówione `fps` bywa nieosiągalne: gdy próbkowanie w tym tempie nie
+        mieści się w budżecie klatek, odstęp rozciąga się na całe nagranie
+        i realne tempo spada. Pipeline przelicza po tym tempie SEKUNDY na
+        pozycje — minimalny odstęp między peakami i tolerancję przerwy
+        w treku — więc podanie mu tempa zamówionego zamiast osiągniętego
+        zawyża oba progi dokładnie tyle razy, ile wynosi rozciągnięcie.
+
+        Args:
+            video_path: Ścieżka do pliku wideo
+
+        Returns:
+            Osiągnięte tempo próbkowania w klatkach na sekundę
+        """
+        video_fps, total_frames = self._video_metadata(video_path)
+        return video_fps / self._sampling_interval(video_fps, total_frames)
+
+    def _sampling_interval(self, video_fps: float, total_frames: int) -> int:
+        """
+        Wylicza odstęp próbkowania mieszczący CAŁE nagranie w budżecie klatek.
+
+        Samo próbkowanie co `video_fps / fps` z twardym limitem `max_frames`
+        URYWA nagranie w połowie: limit wyczerpuje się na początku i druga
+        część klipu nigdy nie trafia do pipeline'u. Zbiór dostawał wtedy
+        systematycznie początki ujęć, a moment, w którym pies patrzy
+        w obiektyw, wypada gdzie indziej równie często.
+
+        Gdy próbkowanie w zamówionym tempie mieści się w budżecie — zostaje bez
+        zmian. Gdy nie mieści się, rozciągamy odstęp tak, żeby te same klatki
+        rozłożyły się po całym nagraniu.
+
+        Args:
+            video_fps: Liczba klatek na sekundę nagrania
+            total_frames: Długość nagrania w klatkach; 0 gdy nieznana
+
+        Returns:
+            Odstęp między pobieranymi klatkami, zawsze dodatni
+        """
+        by_fps = max(1, int(video_fps / self.config.fps))
+        budget = self.config.max_frames_per_video
+        if total_frames <= 0 or budget < 1:
+            return by_fps
+
+        # Ile klatek pobrałoby próbkowanie w zamówionym tempie
+        wanted = -(-total_frames // by_fps)  # dzielenie w górę
+        if wanted <= budget:
+            return by_fps
+        return max(by_fps, -(-total_frames // budget))
 
     def process_frame(
         self,
@@ -292,10 +490,12 @@ class BatchAnnotator:
         """
         Przetwarza pojedyncze wideo przez pełny pipeline datasetu.
 
-        Wykorzystuje process_video_for_dataset(): auto-detekcja neutral frame,
-        obliczenie delta Action Units względem niej, wybór peak frames i
-        klasyfikacja emocji + rasy. Do COCO trafiają tylko peak frames z pełną
-        anotacją (bbox, keypoints, rasa, emocja, AU).
+        Wykorzystuje process_video_for_dataset(): trekowanie psów, własna klatka
+        neutralna każdego psa, delta Action Units względem niej i wybór peak frames.
+        Do COCO trafiają klatka neutralna i peak frames każdego przyjętego treku
+        (boks mordy, keypoints, rasa, emocja, AU). Treki odrzucone lądują w logu
+        i w pliku postępu z powodem — bez tego nie wiadomo, gdzie lejek danych
+        traci materiał — ale nie w zbiorze, żeby nie udawały próbek treningowych.
 
         Args:
             video_path: Ścieżka do pliku wideo
@@ -325,88 +525,114 @@ class BatchAnnotator:
             logger.warning(f"Za mało klatek ({len(frame_items)}) w {video_path.name}, pomijam")
             return stats
 
-        frame_numbers = [fn for fn, _ in frame_items]
-        frames = [f for _, f in frame_items]
+        context = VideoContext(
+            video_id=video_id,
+            emotion=emotion,
+            frames=[frame for _, frame in frame_items],
+            frame_numbers=[number for number, _ in frame_items],
+            frames_dir=frames_video_dir,
+        )
 
-        # Pełny pipeline datasetu (neutral frame -> delta AU -> emocje na peak frames)
+        # Konfiguracja powstaje poza try: zły próg to pomyłka wywołującego,
+        # a nie powód do cichego pominięcia wideo.
+        video_config = self._video_config(
+            len(context.frames), self.effective_fps(video_path)
+        )
         try:
-            num_peaks = min(self.config.num_peaks, len(frames))
             dataset_result = self.pipeline.process_video_for_dataset(
-                frames,
-                num_peaks=num_peaks,
-                min_separation_frames=self.config.peak_min_separation,
-                min_keypoint_conf=self.config.min_keypoint_conf,
-                max_head_angle=self.config.max_head_angle,
+                context.frames, config=video_config
             )
         except ValueError as e:
-            # Za mało klatek z keypoints / brak neutral frame
             logger.warning(f"Pominięto {video_path.name}: {e}")
             return stats
 
-        # Zapisz peak frames do COCO z pełną anotacją
-        for peak in dataset_result["peak_frames"]:
-            if peak["bbox"] is None:
-                continue
+        for track in dataset_result["rejected_tracks"]:
+            logger.info(f"  Trek {track.track_id} odrzucony: {track.rejected_reason}")
+            self.progress.rejected_tracks.append({
+                "video": video_id,
+                "track_id": track.track_id,
+                "reason": track.rejected_reason,
+                "frames": len(track.frames),
+                # Bez tego "trek ma 2 klatki" nie mówi, czy pies wyszedł z kadru,
+                # czy pomiary odrzucił filtr pewności keypoints.
+                "frames_dropped_low_conf": track.frames_dropped_low_conf,
+            })
 
-            frame_idx = peak["frame_idx"]
-            frame_num = frame_numbers[frame_idx]
-            frame_id = f"{video_id}_{frame_num:06d}"
-            frame_img = peak["frame"]
-            h, w = frame_img.shape[:2]
+        for track in dataset_result["tracks"]:
+            self._save_track_frames(track, context, stats)
 
-            # Zapisz klatkę
-            frame_path = frames_video_dir / f"{frame_id}.jpg"
-            cv2.imwrite(str(frame_path), frame_img)
+        self.progress.total_detections += stats["detections"]
 
+        return stats
+
+    def _video_config(self, num_frames: int, sampling_fps: float) -> VideoDatasetConfig:
+        """
+        Buduje konfigurację przetwarzania wideo z ustawień batcha.
+
+        Args:
+            num_frames: Liczba wyekstrahowanych klatek
+            sampling_fps: Tempo, w jakim klatki NAPRAWDĘ trafiły do pipeline'u.
+                To po nim przeliczają się sekundy na pozycje, więc musi być
+                tempo osiągnięte, a nie zamówione (`BatchConfig.fps`).
+
+        Returns:
+            Progi dla process_video_for_dataset()
+        """
+        return VideoDatasetConfig(
+            num_peaks=min(self.config.num_peaks, num_frames),
+            fps=sampling_fps,
+            min_peak_separation_s=self.config.peak_min_separation_s,
+            min_keypoint_conf=self.config.min_keypoint_conf,
+            max_yaw_asymmetry=self.config.max_yaw_asymmetry,
+            max_roll=self.config.max_roll,
+        )
+
+    def _save_track_frames(
+        self,
+        track: TrackResult,
+        context: VideoContext,
+        stats: dict,
+    ) -> None:
+        """
+        Zapisuje klatkę neutralną i klatki szczytowe jednego treku (jednego psa).
+
+        Klatka neutralna jest bazą AU całego treku — bez niej sieć nie ma odniesienia
+        dla żadnego ratio — więc trafia do zbioru razem z peakami i idzie pierwsza:
+        jej image_id wskazują pozostałe anotacje treku.
+
+        Nazwa pliku niesie track_id, bo na wideo z kilkoma psami ta sama klatka
+        trafia do zbioru raz na psa — bez tego pliki nadpisywałyby się nawzajem.
+
+        Args:
+            track: Przyjęty trek
+            context: Dane wideo
+            stats: Statystyki przetwarzania (modyfikowane w miejscu)
+        """
+        if track.rejected_reason is not None:
+            # Pusty au_noise NIE znaczy „trek odrzucony" — jedynym poprawnym
+            # dyskryminatorem jest rejected_reason (patrz TrackResult).
+            logger.warning(
+                f"  Trek {track.track_id} odrzucony ({track.rejected_reason}) — nie zapisuję"
+            )
+            return
+
+        neutral_image_id: Optional[int] = None
+
+        for track_frame in self._frames_to_save(track):
+            frame_number = context.frame_numbers[track_frame.frame_idx]
+            frame_id = f"{context.video_id}_t{track.track_id}_{frame_number:06d}"
+            frame_path = context.frames_dir / f"{frame_id}.jpg"
+            cv2.imwrite(str(frame_path), context.frames[track_frame.frame_idx])
             stats["frames_processed"] += 1
 
             if self.coco_dataset is None:
                 continue
 
-            image_id = self.coco_dataset.add_image(
-                file_name=str(frame_path.relative_to(self.config.frames_dir)),
-                width=w,
-                height=h,
-                source_video=video_id,
-                frame_number=frame_num,
-                emotion_label=emotion,
+            emotion_pred, image_id = self._add_track_annotation(
+                track_frame, track, context, frame_path, neutral_image_id
             )
-
-            # Keypoints (już w układzie pełnego obrazu, format [x, y, v, ...])
-            kp = peak["keypoints"]
-            keypoints = [float(v) for v in kp] if kp is not None else None
-            num_kp = int(sum(1 for v in (kp[2::3] if kp is not None else []) if v > 0))
-
-            bbox = [int(v) for v in peak["bbox"]]
-            emotion_pred = peak["emotion"]
-            breed_pred = peak["breed"]
-
-            # Confidence (bbox conf nie jest zwracany przez peak selector)
-            confidence = {"emotion": float(emotion_pred.confidence)}
-            breed_id = breed_name = None
-            if breed_pred is not None:
-                breed_id = int(breed_pred.class_id)
-                breed_name = breed_pred.class_name
-                confidence["breed"] = float(breed_pred.confidence)
-
-            au_analysis = {
-                k: float(v) for k, v in emotion_pred.action_units.items()
-            } or None
-
-            self.coco_dataset.add_annotation(
-                image_id=image_id,
-                bbox=bbox,
-                keypoints=keypoints,
-                num_keypoints=num_kp,
-                breed_id=breed_id,
-                breed_name=breed_name,
-                emotion_id=int(emotion_pred.emotion_id),
-                emotion_name=emotion_pred.emotion,
-                confidence=confidence,
-                au_analysis=au_analysis,
-                emotion_rule_applied=emotion_pred.rule_applied,
-                tfm_score=float(peak["tfm_score"]),
-            )
+            if track_frame.frame_idx == track.neutral_frame_idx:
+                neutral_image_id = image_id
             stats["detections"] += 1
 
             # Flaguj niską pewność emocji
@@ -419,9 +645,214 @@ class BatchAnnotator:
             if self.progress.total_frames % self.config.save_interval == 0:
                 self._save_intermediate()
 
-        self.progress.total_detections += stats["detections"]
+    @staticmethod
+    def _frames_to_save(track: TrackResult) -> list[TrackFrame]:
+        """
+        Wybiera klatki treku idące do zbioru: neutralną (pierwsza), potem szczytowe.
 
-        return stats
+        Klatka będąca jednocześnie neutralną i szczytową (trek o znikomej mimice)
+        trafia do zbioru raz — dwa wpisy podwoiłyby jej wagę w treningu i wskazywały
+        ten sam plik.
+
+        Args:
+            track: Przyjęty trek
+
+        Returns:
+            Klatki do zapisu w kolejności: neutralna, potem peaki chronologicznie
+        """
+        peak_indices = set(track.peak_indices)
+        neutral = [
+            frame for frame in track.frames if frame.frame_idx == track.neutral_frame_idx
+        ]
+        peaks = [
+            frame
+            for frame in track.frames
+            if frame.frame_idx in peak_indices
+            and frame.frame_idx != track.neutral_frame_idx
+        ]
+        return neutral + peaks
+
+    def _add_track_annotation(
+        self,
+        track_frame: TrackFrame,
+        track: TrackResult,
+        context: VideoContext,
+        frame_path: Path,
+        neutral_image_id: Optional[int],
+    ) -> tuple[EmotionPrediction, int]:
+        """
+        Dopisuje anotację jednej klatki treku do zbioru COCO.
+
+        Args:
+            track_frame: Klatka treku z policzonymi delta AU
+            track: Trek, do którego należy klatka
+            context: Dane wideo
+            frame_path: Ścieżka zapisanej klatki
+            neutral_image_id: image_id klatki neutralnej treku (None dla niej samej —
+                anotacja klatki neutralnej wskazuje wtedy siebie, bo to jej własna baza)
+
+        Returns:
+            Predykcja emocji tej klatki oraz image_id dodanego obrazu
+        """
+        frame_img = context.frames[track_frame.frame_idx]
+        height, width = frame_img.shape[:2]
+
+        image_id = self.coco_dataset.add_image(
+            # as_posix(), nie str(): na Windows str() daje 'happy\vid\kadr.jpg',
+            # a Linux (Kaggle, gdzie idzie trening) potraktuje to jako JEDNĄ nazwę
+            # pliku z backslashami w środku i nie znajdzie obrazu.
+            file_name=frame_path.relative_to(self.config.frames_dir).as_posix(),
+            width=width,
+            height=height,
+            source_video=context.video_id,
+            frame_number=context.frame_numbers[track_frame.frame_idx],
+            emotion_label=context.emotion,
+        )
+
+        emotion_pred = classify_emotion_from_delta_aus(track_frame.delta_aus)
+        breed_pred = self._classify_breed(frame_img, track_frame.body_box)
+
+        confidence = {"emotion": float(emotion_pred.confidence)}
+        breed_id = breed_name = None
+        if breed_pred is not None:
+            breed_id = int(breed_pred.class_id)
+            breed_name = breed_pred.class_name
+            confidence["breed"] = float(breed_pred.confidence)
+
+        # Keypoints są już w układzie pełnego obrazu, format [x, y, v, ...]
+        keypoints = [float(v) for v in track_frame.keypoints]
+        is_neutral = track_frame.frame_idx == track.neutral_frame_idx
+
+        # Zapisujemy komplet (ratio + is_active + confidence + szum treku), bo ani
+        # samo ratio nie odróżnia realnej aktywacji od klamrowanego pomiaru, ani samo
+        # is_active od drgania keypoints (mediana szumu 0.166 wobec progu 0.15).
+        # bbox anotacji to boks PSA (jak w poprzednich wersjach zbioru), nie mordy —
+        # konsumenci (webapp, statystyki, trening detektora) czytają go jako psa.
+        self.coco_dataset.add_annotation(
+            image_id=image_id,
+            bbox=[int(v) for v in track_frame.body_box],
+            keypoints=keypoints,
+            num_keypoints=int(sum(1 for v in keypoints[2::3] if v > 0)),
+            breed_id=breed_id,
+            breed_name=breed_name,
+            emotion_id=int(emotion_pred.emotion_id),
+            emotion_name=emotion_pred.emotion,
+            confidence=confidence,
+            au_analysis=au_analysis_from_delta_aus(track_frame.delta_aus, track.au_noise),
+            neutral_frame_id=image_id if is_neutral else neutral_image_id,
+            emotion_rule_applied=emotion_pred.rule_applied,
+            track=self._track_fields(track, track_frame),
+            tfm_score=float(compute_tfm(track_frame.delta_aus)),
+        )
+        return emotion_pred, image_id
+
+    def _track_fields(self, track: TrackResult, track_frame: TrackFrame) -> TrackAnnotation:
+        """
+        Buduje pola treku dla anotacji jednej klatki.
+
+        Args:
+            track: Przyjęty trek
+            track_frame: Klatka tego treku
+
+        Returns:
+            Pola treku gotowe do zapisu w COCO
+        """
+        is_neutral = track_frame.frame_idx == track.neutral_frame_idx
+        return TrackAnnotation(
+            track_id=track.track_id,
+            frame_role=FRAME_ROLE_NEUTRAL if is_neutral else FRAME_ROLE_PEAK,
+            au_noise=dict(track.au_noise),
+            au_sample_count=dict(track.au_sample_count),
+            label_source=LABEL_SOURCE_AUTO_RULES,
+            neutral_source=track.neutral_source,
+            procrustes_keypoints=self._procrustes_keypoints(track_frame.keypoints),
+        )
+
+    def _procrustes_keypoints(self, keypoints: np.ndarray) -> Optional[list[float]]:
+        """
+        Sprowadza keypoints do kanonicznego kształtu (superpozycja Prokrustesa).
+
+        Args:
+            keypoints: Keypoints klatki [x0, y0, v0, ...] w układzie obrazu
+
+        Returns:
+            138 wartości w przestrzeni kształtu albo None, gdy kształtu
+            referencyjnego nie ma lub punkty są niepoliczalne
+        """
+        reference = self._reference_shape()
+        if reference is None:
+            return None
+
+        try:
+            aligned = procrustes_align(keypoints, reference)
+        except ValueError as e:
+            logger.warning(f"Pominięto kanoniczny kształt klatki: {e}")
+            return None
+
+        return [float(value) for value in aligned]
+
+    def _reference_shape(self) -> Optional[np.ndarray]:
+        """
+        Wczytuje (jednorazowo) kanoniczny kształt DogFLW z pliku.
+
+        Brak pliku nie może przerwać anotacji — pozostałe pola są nadal wartościowe,
+        a `procrustes_keypoints` da się dopisać później z samych keypoints.
+
+        Returns:
+            Kształt referencyjny (46, 2) albo None, gdy pliku nie ma lub jest zepsuty
+        """
+        if self._mean_shape_loaded:
+            return self._mean_shape
+
+        self._mean_shape_loaded = True
+        path = self.config.mean_shape_file
+        try:
+            reference = np.array(json.loads(path.read_text(encoding="utf-8")), dtype=float)
+        except (OSError, ValueError) as e:
+            logger.warning(f"Brak kanonicznego kształtu ({path}): {e}")
+            return None
+
+        if reference.shape != (NUM_KEYPOINTS, NUM_SHAPE_DIMS):
+            logger.warning(
+                f"Kanoniczny kształt w {path} ma wymiary {reference.shape}, "
+                f"oczekiwano ({NUM_KEYPOINTS}, {NUM_SHAPE_DIMS})"
+            )
+            return None
+
+        self._mean_shape = reference
+        return self._mean_shape
+
+    def _classify_breed(
+        self,
+        frame: np.ndarray,
+        body_box: tuple[int, int, int, int],
+    ) -> Optional[BreedPrediction]:
+        """
+        Klasyfikuje rasę psa z kadru CAŁEGO psa.
+
+        Kadr musi obejmować sylwetkę, nie mordę: EfficientNet-B4 uczono na całych
+        psach (91.5% top-1) i na samej mordzie ta liczba przestaje obowiązywać.
+
+        Args:
+            frame: Pełna klatka wideo
+            body_box: Boks psa (x, y, w, h)
+
+        Returns:
+            Predykcja rasy albo None, gdy model niedostępny lub kadr pusty
+        """
+        if self.pipeline is None or self.pipeline.breed_model is None:
+            return None
+
+        x, y, w, h = (int(v) for v in body_box)
+        cropped = frame[max(0, y) : y + h, max(0, x) : x + w]
+        if cropped.size == 0:
+            return None
+
+        try:
+            return self.pipeline.breed_model.predict(cropped)
+        except Exception as e:
+            logger.warning(f"Błąd klasyfikacji rasy: {e}")
+            return None
 
     def _save_intermediate(self) -> None:
         """Zapisuje pośrednie wyniki."""
@@ -547,6 +978,7 @@ class BatchAnnotator:
             f"Łączne detekcje:       {self.progress.total_detections}",
             f"Niska pewność:         {len(self.progress.low_confidence_frames)}",
             f"Błędy:                 {len(self.progress.errors)}",
+            f"Treki odrzucone:       {len(self.progress.rejected_tracks)}",
             "",
         ]
 
@@ -566,6 +998,26 @@ class BatchAnnotator:
             ])
             for error in self.progress.errors[-5:]:
                 lines.append(f"  - {Path(error['video']).name}: {error['error'][:50]}")
+            lines.append("")
+
+        if self.progress.rejected_tracks:
+            # Powody odrzuceń to mapa strat lejka: bez nich nie wiadomo, czy zbiór
+            # jest mały przez brak psów w kadrze, czy przez zbyt surowe progi.
+            reasons = Counter(
+                str(track["reason"]).split(":")[0]
+                for track in self.progress.rejected_tracks
+            )
+            dropped = sum(
+                int(track.get("frames_dropped_low_conf", 0))
+                for track in self.progress.rejected_tracks
+            )
+            lines.extend([
+                "POWODY ODRZUCENIA TREKÓW",
+                "-" * 40,
+            ])
+            for reason, count in reasons.most_common():
+                lines.append(f"  {count:4d} x {reason}")
+            lines.append(f"  klatki odsiane progiem pewności: {dropped}")
             lines.append("")
 
         lines.append("=" * 60)
@@ -600,14 +1052,26 @@ def main():
     parser.add_argument(
         "--fps",
         type=float,
-        default=1.0,
-        help="Klatki na sekundę do ekstrakcji (domyślnie: 1.0)",
+        default=BatchConfig.fps,
+        help=f"Klatki na sekundę do ekstrakcji (domyślnie: {BatchConfig.fps})",
     )
     parser.add_argument(
         "--max-frames",
         type=int,
-        default=30,
-        help="Maksymalna liczba klatek z wideo (domyślnie: 30)",
+        default=BatchConfig.max_frames_per_video,
+        help=f"Maksymalna liczba klatek z wideo (domyślnie: {BatchConfig.max_frames_per_video})",
+    )
+    parser.add_argument(
+        "--shards",
+        type=int,
+        default=1,
+        help="Na ile niezależnych części podzielić listę nagrań (domyślnie: 1)",
+    )
+    parser.add_argument(
+        "--shard",
+        type=int,
+        default=0,
+        help="Numer części do przetworzenia, 0-indeksowany (domyślnie: 0)",
     )
     parser.add_argument(
         "--batch-size",
@@ -656,10 +1120,16 @@ def main():
         batch_size=args.batch_size,
         save_interval=args.save_interval,
         device=args.device,
+        shard=args.shard,
+        shards=args.shards,
     )
 
     # Utwórz annotator
-    annotator = BatchAnnotator(config)
+    # --report i --dry-run tylko RAPORTUJĄ, więc zawsze czytają zapisany postęp;
+    # bez tego pokazywałyby zera zamiast stanu poprzedniego przebiegu.
+    annotator = BatchAnnotator(
+        config, resume=args.resume or args.report or args.dry_run
+    )
 
     # Tylko raport
     if args.report:

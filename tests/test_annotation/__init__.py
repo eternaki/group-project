@@ -1,0 +1,1 @@
+"""Testy skryptów anotacji wsadowej."""

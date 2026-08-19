@@ -10,89 +10,86 @@ import pytest
 
 from packages.data.schemas import KP, NUM_KEYPOINTS
 from packages.models.head_pose import HeadPose, estimate_head_pose
-from packages.pipeline.neutral_frame import NeutralFrameDetector
-
-# =============================================================================
-# Fixture: realistyczna twarz psa (46 keypoints)
-# =============================================================================
-
-def make_frontal_kp() -> np.ndarray:
-    """
-    Tworzy realistyczną tablicę 46 keypoints — frontalna twarz psa.
-
-    Centrum (150, 150), odległość między centrami oczu ~100px.
-    Symetria lewo/prawa → minimalne yaw/pitch/roll.
-
-    Returns:
-        Tablica (138,) z wartościami [x0, y0, v0, ...]
-    """
-    kp = np.zeros((NUM_KEYPOINTS, 3), dtype=np.float32)
-    kp[:, 2] = 0.95
-
-    # Oczy
-    kp[KP.LEFT_EYE_INNER]  = [105, 150, 0.95]
-    kp[KP.LEFT_EYE_TOP]    = [100, 144, 0.95]
-    kp[KP.LEFT_EYE_OUTER]  = [95, 150, 0.95]
-    kp[KP.LEFT_EYE_BOTTOM] = [100, 156, 0.95]
-    kp[KP.RIGHT_EYE_INNER] = [195, 150, 0.95]
-    kp[KP.RIGHT_EYE_TOP]   = [200, 144, 0.95]
-    kp[KP.RIGHT_EYE_OUTER] = [205, 150, 0.95]
-    kp[KP.RIGHT_EYE_BOTTOM]= [200, 156, 0.95]
-
-    # Brwi
-    kp[KP.LEFT_BROW_INNER]  = [108, 137, 0.9]
-    kp[KP.LEFT_BROW_CENTER] = [100, 134, 0.9]
-    kp[KP.LEFT_BROW_OUTER]  = [92, 137, 0.9]
-    kp[KP.RIGHT_BROW_INNER] = [192, 137, 0.9]
-    kp[KP.RIGHT_BROW_CENTER]= [200, 134, 0.9]
-    kp[KP.RIGHT_BROW_OUTER] = [208, 137, 0.9]
-
-    # Uszy (symetryczne)
-    kp[KP.LEFT_EAR_BASE_FRONT]  = [80, 120, 0.9]
-    kp[KP.LEFT_EAR_BASE_BACK]   = [75, 115, 0.85]
-    kp[KP.LEFT_EAR_MID]         = [72, 95, 0.85]
-    kp[KP.LEFT_EAR_TIP]         = [68, 70, 0.8]
-    kp[KP.RIGHT_EAR_BASE_FRONT] = [220, 120, 0.9]
-    kp[KP.RIGHT_EAR_BASE_BACK]  = [225, 115, 0.85]
-    kp[KP.RIGHT_EAR_MID]        = [228, 95, 0.85]
-    kp[KP.RIGHT_EAR_TIP]        = [232, 70, 0.8]
-
-    # Nos — pośrodku
-    kp[KP.NOSE_TIP]       = [150, 200, 0.95]
-    kp[KP.NOSE_LEFT_WING] = [143, 196, 0.9]
-    kp[KP.NOSE_RIGHT_WING]= [157, 196, 0.9]
-    kp[KP.NOSE_BRIDGE]    = [150, 175, 0.9]
-
-    # Usta
-    kp[KP.MOUTH_LEFT_CORNER]  = [120, 218, 0.9]
-    kp[KP.UPPER_LIP_LEFT]     = [132, 214, 0.9]
-    kp[KP.UPPER_LIP_CENTER]   = [150, 212, 0.9]
-    kp[KP.UPPER_LIP_RIGHT]    = [168, 214, 0.9]
-    kp[KP.MOUTH_RIGHT_CORNER] = [180, 218, 0.9]
-    kp[KP.LOWER_LIP_RIGHT]    = [168, 226, 0.9]
-    kp[KP.LOWER_LIP_CENTER]   = [150, 228, 0.9]
-    kp[KP.LOWER_LIP_LEFT]     = [132, 226, 0.9]
-
-    # Pysk i kontur
-    kp[KP.MUZZLE_TOP]        = [150, 207, 0.9]
-    kp[KP.MUZZLE_LEFT]       = [122, 222, 0.85]
-    kp[KP.MUZZLE_RIGHT]      = [178, 222, 0.85]
-    kp[KP.CHIN]              = [150, 250, 0.85]
-    kp[KP.FOREHEAD_CENTER]   = [150, 115, 0.8]
-    kp[KP.FOREHEAD_LEFT]     = [120, 118, 0.8]
-    kp[KP.FOREHEAD_RIGHT]    = [180, 118, 0.8]
-    kp[KP.LEFT_CHEEK_UPPER]  = [88, 162, 0.8]
-    kp[KP.LEFT_CHEEK_LOWER]  = [88, 202, 0.8]
-    kp[KP.RIGHT_CHEEK_UPPER] = [212, 162, 0.8]
-    kp[KP.RIGHT_CHEEK_LOWER] = [212, 202, 0.8]
-    kp[KP.JAW_CENTER]        = [150, 245, 0.85]
-
-    return kp.flatten()
-
+from packages.pipeline.neutral_frame import (
+    NeutralFrameDetector,
+    collect_neutral_baseline,
+)
+from tests.test_pipeline.kp_fixtures import make_frontal_kp
 
 # =============================================================================
 # Testy klasy HeadPose
 # =============================================================================
+
+class TestCollectNeutralBaseline:
+    """Testy funkcji collect_neutral_baseline — okno klatek wokół neutralnej.
+
+    Zamiast jednej (zaszumionej) klatki neutralnej, zbiera okno sąsiednich
+    poprawnych klatek → median jako stabilna baza dla ekstraktora AU.
+    """
+
+    def test_collects_window_around_neutral(self) -> None:
+        """Okno ±2 wokół klatki 3 zwraca 5 poprawnych klatek (indeksy 1..5)."""
+        frames = [make_frontal_kp() for _ in range(7)]
+        baseline = collect_neutral_baseline(frames, neutral_idx=3, window=2)
+        assert len(baseline) == 5
+
+    def test_skips_none_frames(self) -> None:
+        """Klatki None w oknie są pomijane."""
+        frames: list = [make_frontal_kp() for _ in range(7)]
+        frames[2] = None
+        frames[4] = None
+        baseline = collect_neutral_baseline(frames, neutral_idx=3, window=2)
+        # Okno 1..5 → wykluczone 2 i 4 → zostają 1, 3, 5
+        assert len(baseline) == 3
+
+    def test_clamps_at_left_boundary(self) -> None:
+        """Okno przy lewej krawędzi nie wychodzi poza zakres."""
+        frames = [make_frontal_kp() for _ in range(7)]
+        baseline = collect_neutral_baseline(frames, neutral_idx=0, window=2)
+        # Indeksy 0..2 → 3 klatki
+        assert len(baseline) == 3
+
+    def test_window_zero_returns_single_frame(self) -> None:
+        """Okno 0 zwraca tylko klatkę neutralną."""
+        frames = [make_frontal_kp() for _ in range(7)]
+        baseline = collect_neutral_baseline(frames, neutral_idx=3, window=0)
+        assert len(baseline) == 1
+
+    def test_no_valid_frames_raises(self) -> None:
+        """Brak poprawnych klatek w oknie rzuca ValueError."""
+        frames: list = [None, None, None]
+        with pytest.raises(ValueError, match="poprawn|valid|neutral"):
+            collect_neutral_baseline(frames, neutral_idx=1, window=1)
+
+
+class TestNeutralPrefersFrontal:
+    """Detektor neutralny powinien przy równej stabilności preferować frontalną pozę.
+
+    Zła baza (głowa odwrócona/pochylona) psuje wszystkie delta AU — zwłaszcza uszy.
+    """
+
+    def test_prefers_frontal_among_equally_stable(self) -> None:
+        """Przy identycznych (stabilnych) keypoints wybierana jest najbardziej frontalna klatka."""
+        kp = make_frontal_kp()
+        keypoints_list = [kp.copy() for _ in range(7)]
+        # Wszystkie klatki jednakowo stabilne; różni je tylko poza głowy.
+        # Klatki bardziej odwrócone (wysoka asymetria yaw, ale wciąż w granicach kandydata)
+        # i jedna wyraźnie frontalna (idx 3).
+        def hp(yaw_asymmetry: float) -> HeadPose:
+            return HeadPose(
+                yaw_asymmetry=yaw_asymmetry, roll=0.0, is_frontal=True, confidence=0.9
+            )
+        head_poses = [
+            hp(0.30), hp(0.28), hp(0.30),
+            hp(0.02),                      # idx 3 — najbardziej frontalna
+            hp(0.30), hp(0.28), hp(0.30),
+        ]
+        detector = NeutralFrameDetector()
+        idx = detector.detect_auto(
+            frames=[None] * 7, keypoints_list=keypoints_list, head_poses=head_poses
+        )
+        assert idx == 3, f"oczekiwano najbardziej frontalnej klatki (3), wybrano {idx}"
+
 
 class TestHeadPose:
     """Testy dla klasy HeadPose."""
@@ -100,27 +97,24 @@ class TestHeadPose:
     def test_creation_frontal(self) -> None:
         """Test tworzenia frontalnej pozy głowy."""
         pose = HeadPose(
-            yaw=5.0,
-            pitch=-3.0,
+            yaw_asymmetry=0.05,
             roll=2.0,
             is_frontal=True,
             confidence=0.95,
         )
 
-        assert pose.yaw == 5.0
-        assert pose.pitch == -3.0
+        assert pose.yaw_asymmetry == 0.05
         assert pose.roll == 2.0
         assert pose.is_frontal is True
         assert pose.confidence == 0.95
 
     def test_to_dict(self) -> None:
         """Test konwersji HeadPose do słownika."""
-        pose = HeadPose(yaw=10.0, pitch=-5.0, roll=3.0, is_frontal=True, confidence=0.9)
+        pose = HeadPose(yaw_asymmetry=0.1, roll=3.0, is_frontal=True, confidence=0.9)
 
         result = pose.to_dict()
 
-        assert result["yaw"] == 10.0
-        assert result["pitch"] == -5.0
+        assert result["yaw_asymmetry"] == 0.1
         assert result["roll"] == 3.0
         assert result["is_frontal"] is True
         assert result["confidence"] == 0.9
@@ -139,12 +133,11 @@ class TestEstimateHeadPose:
         pose = estimate_head_pose(kp)
 
         assert pose.is_frontal is True
-        assert abs(pose.yaw) < 25
-        assert abs(pose.pitch) < 30  # nos naturalnie poniżej oczu ~26°
+        assert abs(pose.yaw_asymmetry) < 0.05
         assert abs(pose.roll) < 25
 
-    def test_left_turned_face_has_positive_yaw(self) -> None:
-        """Test: twarz obrócona w lewo ma yaw > 0."""
+    def test_left_turned_face_has_negative_yaw_asymmetry(self) -> None:
+        """Test: twarz obrócona w lewo (nos bliżej lewego oka) ma yaw_asymmetry < 0."""
         kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
         # Przesuń nos w lewo
         kp[KP.NOSE_TIP, 0] -= 35
@@ -153,10 +146,10 @@ class TestEstimateHeadPose:
 
         pose = estimate_head_pose(kp.flatten())
 
-        assert pose.yaw > 5
+        assert pose.yaw_asymmetry < -0.05
 
-    def test_right_turned_face_has_negative_yaw(self) -> None:
-        """Test: twarz obrócona w prawo ma yaw < 0."""
+    def test_right_turned_face_has_positive_yaw_asymmetry(self) -> None:
+        """Test: twarz obrócona w prawo (nos bliżej prawego oka) ma yaw_asymmetry > 0."""
         kp = make_frontal_kp().reshape(NUM_KEYPOINTS, 3)
         kp[KP.NOSE_TIP, 0] += 35
         kp[KP.LEFT_EYE_INNER, 0] += 20
@@ -164,7 +157,7 @@ class TestEstimateHeadPose:
 
         pose = estimate_head_pose(kp.flatten())
 
-        assert pose.yaw < -5
+        assert pose.yaw_asymmetry > 0.05
 
     def test_tilted_eyes_produce_nonzero_roll(self) -> None:
         """Test: przekrzywione oczy dają roll ≠ 0."""
@@ -210,21 +203,19 @@ class TestNeutralFrameDetector:
     def test_default_initialization(self, detector: NeutralFrameDetector) -> None:
         """Test inicjalizacji detektora z domyślnymi parametrami."""
         assert detector.min_keypoint_conf == 0.5
-        assert detector.max_yaw == 35.0
-        assert detector.max_pitch == 40.0
-        assert detector.max_roll == 20.0
+        assert detector.max_yaw_asymmetry == 0.35
+        assert detector.max_roll == 30.0
 
     def test_custom_initialization(self) -> None:
         """Test inicjalizacji z niestandardowymi parametrami."""
         detector = NeutralFrameDetector(
             min_keypoint_conf=0.8,
-            max_yaw=15.0,
-            max_pitch=15.0,
+            max_yaw_asymmetry=0.15,
             max_roll=10.0,
         )
 
         assert detector.min_keypoint_conf == 0.8
-        assert detector.max_yaw == 15.0
+        assert detector.max_yaw_asymmetry == 0.15
 
     def test_empty_sequence_raises_value_error(
         self, detector: NeutralFrameDetector

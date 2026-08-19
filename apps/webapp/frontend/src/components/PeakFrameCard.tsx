@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FrameAnnotation } from '../types';
 import {
+  KEYPOINT_VISIBLE_THRESHOLD,
   EMOTION_EMOJI,
   EMOTION_NAMES,
   NUM_KEYPOINTS,
@@ -68,7 +69,7 @@ function KeypointPreview({ imageUrl, keypoints }: { imageUrl: string; keypoints:
         const bx = keypoints[b * 3] * scale;
         const by = keypoints[b * 3 + 1] * scale;
         const bv = keypoints[b * 3 + 2];
-        if (av < 0.3 || bv < 0.3) continue;
+        if (av < KEYPOINT_VISIBLE_THRESHOLD || bv < KEYPOINT_VISIBLE_THRESHOLD) continue;
         ctx.beginPath();
         ctx.moveTo(ax, ay);
         ctx.lineTo(bx, by);
@@ -80,7 +81,7 @@ function KeypointPreview({ imageUrl, keypoints }: { imageUrl: string; keypoints:
         const x = keypoints[i * 3] * scale;
         const y = keypoints[i * 3 + 1] * scale;
         const v = keypoints[i * 3 + 2];
-        if (v < 0.3) continue;
+        if (v < KEYPOINT_VISIBLE_THRESHOLD) continue;
 
         ctx.beginPath();
         ctx.arc(x, y, 3, 0, Math.PI * 2);
@@ -103,7 +104,7 @@ export default function PeakFrameCard({ frame }: PeakFrameCardProps) {
 
   const activeAUCount = Object.values(frame.aus).filter((au) => au.is_active).length;
   const visibleKPs = frame.keypoints
-    ? frame.keypoints.reduce((acc, v, i) => (i % 3 === 2 && v > 0.3 ? acc + 1 : acc), 0)
+    ? frame.keypoints.reduce((acc, v, i) => (i % 3 === 2 && v > KEYPOINT_VISIBLE_THRESHOLD ? acc + 1 : acc), 0)
     : 0;
 
   return (

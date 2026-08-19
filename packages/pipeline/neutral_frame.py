@@ -19,7 +19,12 @@ from typing import Optional
 import numpy as np
 
 from packages.data.schemas import KP, NUM_KEYPOINTS
-from packages.models.head_pose import HeadPose, estimate_head_pose
+from packages.models.head_pose import (
+    DEFAULT_MAX_ROLL,
+    DEFAULT_MAX_YAW_ASYMMETRY,
+    HeadPose,
+    estimate_head_pose,
+)
 
 # Skala wariancji w jednostkach znormalizowanych (po podziale przez eye-distance).
 # Dobrana tak, by ~0.05 (5% odległości oczu) jitteru dawało wyraźnie niższy score.
@@ -54,9 +59,8 @@ class NeutralFrameDetector:
         self,
         window_size: int = 10,
         min_keypoint_conf: float = 0.5,
-        max_yaw: float = 35.0,
-        max_pitch: float = 40.0,
-        max_roll: float = 20.0,
+        max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+        max_roll: float = DEFAULT_MAX_ROLL,
     ) -> None:
         """
         Inicjalizuje detektor.
@@ -64,14 +68,12 @@ class NeutralFrameDetector:
         Args:
             window_size: Rozmiar okna do obliczania stabilności
             min_keypoint_conf: Minimalna pewność keypoints (domyślnie 0.5)
-            max_yaw: Maks. kąt yaw dla frontalnej pozy (stopnie)
-            max_pitch: Maks. kąt pitch dla frontalnej pozy (stopnie)
+            max_yaw_asymmetry: Maks. asymetria kącik oka <-> nos dla frontalnej pozy
             max_roll: Maks. kąt roll dla frontalnej pozy (stopnie)
         """
         self.window_size = window_size
         self.min_keypoint_conf = min_keypoint_conf
-        self.max_yaw = max_yaw
-        self.max_pitch = max_pitch
+        self.max_yaw_asymmetry = max_yaw_asymmetry
         self.max_roll = max_roll
 
     def detect_auto(
@@ -126,8 +128,19 @@ class NeutralFrameDetector:
                 "Wideo może mieć za mało wykrytych keypoints."
             )
 
+        # Wynik = stabilność × frontalność, a wybór spośród najlepszych idzie po
+        # typowości konfiguracji. Trzy niezależne poprawki, z których każda łata
+        # inną wadę bazy AU, więc żadna nie zastępuje pozostałych:
+        #   * stabilność liczona po REALNYM czasie (`frame_indices`) — próbkowanie
+        #     bywa nierówne, a okno w indeksach listy obejmowałoby raz sekundę,
+        #     raz dziesięć;
+        #   * frontalność — odwrócona lub pochylona głowa daje złą bazę,
+        #     zwłaszcza dla geometrii uszu, psując wszystkie delta AU naraz;
+        #   * typowość — spośród stabilnych bierzemy konfigurację najbliższą
+        #     medianie, a nie pierwszą z brzegu.
         score_map = {
             idx: self._compute_stability_score(keypoints_list, idx, frame_indices)
+            * _frontal_factor(head_poses[idx], self.max_yaw_asymmetry, self.max_roll)
             for idx in candidates
         }
         return _select_most_typical(candidates, score_map, keypoints_list)
@@ -182,10 +195,11 @@ class NeutralFrameDetector:
         kp = keypoints.reshape(NUM_KEYPOINTS, 3)
 
         # Sprawdź frontalność
-        if not _is_frontal_pose(head_pose, self.max_yaw, self.max_pitch, self.max_roll):
+        if not _is_frontal_pose(head_pose, self.max_yaw_asymmetry, self.max_roll):
             if debug:
                 print(f"  Klatka {frame_idx}: odrzucona — nie frontalna "
-                      f"(yaw={head_pose.yaw:.1f}, pitch={head_pose.pitch:.1f})")
+                      f"(yaw_asymmetry={head_pose.yaw_asymmetry:.3f}, "
+                      f"roll={head_pose.roll:.1f})")
             return False
 
         # Sprawdź ogólną widoczność
@@ -213,7 +227,8 @@ class NeutralFrameDetector:
         Szuka kandydatów z poluzowanymi kryteriami (fallback).
 
         Poluzowane kryteria:
-        - Kąt do 60° (zamiast max_yaw/max_pitch)
+        - Asymetria yaw do _RELAXED_YAW_ASYMMETRY i roll do _RELAXED_ROLL
+          (zamiast max_yaw_asymmetry/max_roll)
         - Pewność 0.4 (zamiast min_keypoint_conf)
         - Co najmniej 3 krytyczne keypoints widoczne
 
@@ -224,8 +239,11 @@ class NeutralFrameDetector:
         Returns:
             Lista indeksów kandydatów
         """
-        relaxed_angle = 60.0
-        relaxed_conf = 0.4
+        # Ścieżka awaryjna nie ma prawa być surowsza od ścisłej: przy
+        # min_keypoint_conf = 0.3 (batch) sztywne 0.4 odrzucało kandydatów, których
+        # ścieżka ścisła by przyjęła, i wybór spadał na ostatnią deskę ratunku —
+        # pierwszą z brzegu klatkę, bez oceny stabilności i frontalności.
+        relaxed_conf = min(_RELAXED_MIN_CONF, self.min_keypoint_conf)
 
         candidates = []
         for i in range(len(keypoints_list)):
@@ -235,7 +253,10 @@ class NeutralFrameDetector:
             kp = keypoints_list[i].reshape(NUM_KEYPOINTS, 3)
             pose = head_poses[i]
 
-            if abs(pose.yaw) > relaxed_angle or abs(pose.pitch) > relaxed_angle:
+            if (
+                abs(pose.yaw_asymmetry) > _RELAXED_YAW_ASYMMETRY
+                or abs(pose.roll) > _RELAXED_ROLL
+            ):
                 continue
 
             if float(np.mean(kp[:, 2])) < relaxed_conf:
@@ -298,6 +319,13 @@ class NeutralFrameDetector:
 # Funkcje pomocnicze (prywatne)
 # =============================================================================
 
+# Poluzowane progi frontalności dla fallbacku (_find_relaxed_candidates)
+# Górna granica progu pewności na ścieżce awaryjnej — realny próg to minimum z tej
+# wartości i skonfigurowanego min_keypoint_conf (patrz _find_relaxed_candidates)
+_RELAXED_MIN_CONF: float = 0.4
+_RELAXED_YAW_ASYMMETRY: float = 0.7
+_RELAXED_ROLL: float = 60.0
+
 
 def _dist(p1: np.ndarray, p2: np.ndarray) -> float:
     """Odległość euklidesowa między dwoma punktami."""
@@ -339,18 +367,85 @@ _CRITICAL_KP_INDICES: list[int] = [
 ]
 
 
+def collect_neutral_baseline(
+    keypoints_list: list[Optional[np.ndarray]],
+    neutral_idx: int,
+    window: int = 2,
+) -> list[np.ndarray]:
+    """
+    Zbiera okno poprawnych klatek wokół klatki neutralnej dla bazy median.
+
+    Zamiast pojedynczej (zaszumionej) klatki neutralnej, zwraca listę
+    sąsiednich poprawnych klatek z przedziału [neutral_idx-window, neutral_idx+window].
+    Lista trafia do DeltaActionUnitsExtractor, który liczy median jako stabilną bazę.
+
+    Args:
+        keypoints_list: Lista keypoints dla każdej klatki (None = brak detekcji)
+        neutral_idx: Indeks wykrytej klatki neutralnej
+        window: Promień okna w klatkach (domyślnie 2 → do 5 klatek)
+
+    Returns:
+        Lista poprawnych tablic keypoints (co najmniej jedna)
+
+    Raises:
+        ValueError: Gdy w oknie nie ma żadnej poprawnej klatki
+    """
+    start = max(0, neutral_idx - window)
+    end = min(len(keypoints_list), neutral_idx + window + 1)
+
+    baseline = [
+        keypoints_list[i] for i in range(start, end) if keypoints_list[i] is not None
+    ]
+
+    if not baseline:
+        raise ValueError(
+            f"Brak poprawnych klatek neutralnych w oknie ±{window} "
+            f"wokół indeksu {neutral_idx}"
+        )
+
+    return baseline
+
+
+def _frontal_factor(
+    pose: Optional[HeadPose],
+    max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+    max_roll: float = DEFAULT_MAX_ROLL,
+) -> float:
+    """
+    Współczynnik frontalności kandydata na klatkę neutralną.
+
+    Liczony z obrotu i przechylenia; miara „nos poniżej oczu" nie jest używana,
+    bo odzwierciedla długość pyska, nie pozę.
+
+    Odchylenia normalizowane są progami, KTÓRE OBOWIĄZUJĄ W TYM WYWOŁANIU. Dotąd
+    szły tu stałe modułowe, więc wywołujący z surowszym progiem (np. max_roll=10)
+    dostawał ranking ważony po staremu: kandydat z przechyleniem 9 stopni miał
+    niemal ten sam bonus co kandydat z przechyleniem 1 stopnia. Progi decydowały
+    o kandydowaniu, ale nie o wyborze — a to ranking wybiera klatkę neutralną.
+
+    Args:
+        pose: Poza głowy (None → neutralny współczynnik 0.5)
+        max_yaw_asymmetry: Próg obrotu, którym normalizujemy odchylenie
+        max_roll: Próg przechylenia, którym normalizujemy odchylenie
+
+    Returns:
+        Współczynnik w (0, 1]
+    """
+    if pose is None:
+        return 0.5
+    deviation = (
+        abs(pose.yaw_asymmetry) / max_yaw_asymmetry + abs(pose.roll) / max_roll
+    )
+    return 1.0 / (1.0 + deviation)
+
+
 def _is_frontal_pose(
     pose: HeadPose,
-    max_yaw: float,
-    max_pitch: float,
+    max_yaw_asymmetry: float,
     max_roll: float,
 ) -> bool:
     """Sprawdza czy poza głowy jest frontalna."""
-    return (
-        abs(pose.yaw) <= max_yaw
-        and abs(pose.pitch) <= max_pitch
-        and abs(pose.roll) <= max_roll
-    )
+    return abs(pose.yaw_asymmetry) <= max_yaw_asymmetry and abs(pose.roll) <= max_roll
 
 
 def _critical_keypoints_visible(kp: np.ndarray, threshold: float) -> bool:
@@ -390,15 +485,25 @@ def _select_most_typical(
         idx: _normalize_shape(keypoints_list[idx].reshape(NUM_KEYPOINTS, 3)[:, :2])
         for idx in candidates
     }
-    median_shape = np.median(np.array(list(shapes.values())), axis=0)
 
     ranked = sorted(candidates, key=lambda i: scores[i], reverse=True)
     top_n = max(1, math.ceil(len(ranked) * TOP_STABLE_FRACTION))
     shortlist = ranked[:top_n]
 
+    # Wzorzec „typowego" liczymy po LIŚCIE KRÓTKIEJ, a nie po wszystkich kandydatach.
+    # Wynik kandydata to stabilność × frontalność, więc na krótkiej liście są klatki
+    # już uznane za dobre. Mediana po wszystkich kandydatach bierze też te odrzucone:
+    # gdy pies przez pół treku ma odwróconą głowę, „typowa" konfiguracja jest
+    # odwrócona i baza AU wychodzi z obróconej głowy — a obrót o 30° sam podbija
+    # każde AU o 1.155 przy progu aktywacji 1.15, czyli fałszuje wszystkie 21 naraz.
+    median_shape = np.median(np.array([shapes[idx] for idx in shortlist]), axis=0)
+
+    # Remis rozstrzyga wynik kandydata. Przy dwóch klatkach mediana leży dokładnie
+    # w połowie, więc obie są równo odległe i wybór zależałby od błędu
+    # zaokrąglenia — a przez to od kolejności klatek w treku.
     return min(
         shortlist,
-        key=lambda i: float(np.sum((shapes[i] - median_shape) ** 2)),
+        key=lambda i: (float(np.sum((shapes[i] - median_shape) ** 2)), -scores[i]),
     )
 
 
@@ -412,8 +517,8 @@ def compute_neutral_baseline(
     neutral_idx: int,
     head_poses: list[Optional[HeadPose]],
     window_size: int = 10,
-    max_yaw: float = 35.0,
-    max_pitch: float = 40.0,
+    max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+    max_roll: float = DEFAULT_MAX_ROLL,
 ) -> np.ndarray:
     """
     Buduje odporny baseline neutralny jako per-keypoint medianę po oknie klatek.
@@ -427,8 +532,12 @@ def compute_neutral_baseline(
         neutral_idx: Indeks wybranej klatki neutralnej (w tej samej liście)
         head_poses: Lista HeadPose lub None (równoległa do keypoints_list)
         window_size: Rozmiar okna czasowego
-        max_yaw: Maks. yaw klatki wchodzącej do mediany (frontalność)
-        max_pitch: Maks. pitch klatki wchodzącej do mediany
+        max_yaw_asymmetry: Maks. asymetria nos↔oczy klatki wchodzącej do mediany.
+            Funkcja powstała na `HeadPose` z polami `yaw`/`pitch` w stopniach;
+            oba zniknęły — `pitch` świadomie (filtr po nim odrzucał dobre kadry),
+            a `yaw` ustąpił bezwymiarowej asymetrii, niezależnej od długości pyska
+            i skali obrazu. Bez tej zmiany funkcja wywalała się na `AttributeError`.
+        max_roll: Maks. przechylenie w stopniach
 
     Returns:
         Wektor (138,) medianowej bazy neutralnej
@@ -442,8 +551,8 @@ def compute_neutral_baseline(
         for j in range(max(0, lo), min(len(keypoints_list), hi + 1))
         if keypoints_list[j] is not None
         and head_poses[j] is not None
-        and abs(head_poses[j].yaw) <= max_yaw
-        and abs(head_poses[j].pitch) <= max_pitch
+        and abs(head_poses[j].yaw_asymmetry) <= max_yaw_asymmetry
+        and abs(head_poses[j].roll) <= max_roll
     ]
     if not members:
         return neutral.flatten()

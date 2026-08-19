@@ -370,9 +370,18 @@ class TestExportCoco:
         ann = resp.json()["annotations"][0]
 
         assert "emotion" in ann
-        assert "aus" in ann
+        assert "au_analysis" in ann
         assert "annotation_status" in ann
         assert "neutral_frame_id" in ann
+
+    async def test_export_coco_au_zawiera_wiarygodnosc(self, client) -> None:
+        """Test: AU w eksporcie mają ratio + is_active + confidence (jak w batch)."""
+        resp = await client.post(f"/api/sessions/{SESSION_ID}/export_coco")
+        au_analysis = resp.json()["annotations"][0]["au_analysis"]
+
+        assert au_analysis, "au_analysis nie może być puste"
+        first_au = next(iter(au_analysis.values()))
+        assert set(first_au) == {"ratio", "is_active", "confidence"}
 
     async def test_export_nonexistent_session_returns_404(self, client) -> None:
         """Test: nieistniejąca sesja → 404."""

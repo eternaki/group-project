@@ -2,14 +2,16 @@
 FastAPI backend dla DogFACS Dataset Generator.
 
 Endpoints:
-- POST /api/process_video - Przetwarza wideo i zwraca peak frames
+- POST /api/process_video - Przetwarza wideo na treki psów i zwraca klatki szczytowe
 - POST /api/export_coco - Eksportuje dataset do formatu COCO
 - GET /api/health - Health check
 """
 
+import os
 import sys
 import tempfile
 import uuid
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -22,15 +24,35 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from packages.pipeline import InferencePipeline, PipelineConfig
+from packages.models.breed import BreedPrediction
+from packages.models.emotion import classify_emotion_from_delta_aus
+from packages.pipeline import InferencePipeline, PipelineConfig, VideoDatasetConfig
+from packages.pipeline.inference import (
+    DATASET_MIN_KEYPOINT_CONF,
+    DATASET_PEAK_SEPARATION_S,
+)
+from packages.pipeline.peak_selector import compute_tfm
+from packages.pipeline.track_processing import (
+    NO_NEUTRAL_FRAME,
+    TrackFrame,
+    TrackResult,
+)
 
 # Dodaj katalog backend do PYTHONPATH (session_store i routers nie są pakietem)
 _BACKEND_DIR = Path(__file__).resolve().parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
+from routers.ingest import router as ingest_router  # noqa: E402  # isort: skip
 from routers.sessions import router as sessions_router  # noqa: E402  # isort: skip
-from session_store import FrameAnnotation, SessionData, SessionStore  # noqa: E402  # isort: skip
+from session_store import (  # noqa: E402  # isort: skip
+    DogTrack,
+    FrameAnnotation,
+    RejectedTrack,
+    SessionData,
+    SessionStore,
+    delta_aus_to_dict,
+)
 
 # =============================================================================
 # FastAPI App Configuration
@@ -56,12 +78,40 @@ STATIC_DIR = _BACKEND_DIR / "static" / "frames"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Klatki zbiorów wsadowych — sesje z importu COCO wskazują na nie przez /dataset.
+# Wystawiamy CAŁY katalog danych, a nie katalog jednego zbioru: inaczej dałoby
+# się pracować tylko na jednym zbiorze naraz, a mamy ich kilka i anotator ma
+# móc przełączać się między nimi bez restartu serwera.
+DATASET_FRAMES_ENV: str = "DOGFACS_DATASET_FRAMES"
+DEFAULT_DATASET_FRAMES: str = "data"
+DATASET_FRAMES_DIR = Path(
+    os.environ.get(DATASET_FRAMES_ENV, DEFAULT_DATASET_FRAMES)
+).resolve()
+if DATASET_FRAMES_DIR.is_dir():
+    app.mount(
+        "/dataset",
+        StaticFiles(directory=str(DATASET_FRAMES_DIR)),
+        name="dataset",
+    )
+
 # Podłącz router sesji (Sprint 9)
 app.include_router(sessions_router)
+# Dosypywanie nagrań: przyjęcie plików i praca w tle obok anotacji
+app.include_router(ingest_router)
 
 # Global pipeline instance
 pipeline: Optional[InferencePipeline] = None
 _session_store = SessionStore()
+
+# Domyślny odstęp między klatkami szczytowymi [klatki próbkowane].
+# Wyprowadzony ze wspólnego progu zbierania zbioru, żeby anotator weryfikował
+# DOKŁADNIE ten materiał, który wyprodukował batch — przy 30 klatkach i próbkowaniu
+# 1 kl./s wychodziło 30 s odstępu wobec 3 s w batchu, czyli inne peaki.
+DEFAULT_MIN_SEPARATION_FRAMES: int = int(DATASET_PEAK_SEPARATION_S * 1.0)
+# Domyślna liczba klatek szczytowych na psa
+DEFAULT_NUM_PEAKS: int = 10
+# Domyślne próbkowanie klatek wideo [kl./s]
+DEFAULT_FPS_SAMPLE: float = 1.0
 
 
 # =============================================================================
@@ -72,7 +122,7 @@ class ProcessVideoRequest(BaseModel):
     """Request dla przetwarzania wideo."""
     num_peaks: int = 10
     neutral_idx: Optional[int] = None
-    min_separation_frames: int = 30
+    min_separation_frames: int = DEFAULT_MIN_SEPARATION_FRAMES
 
 
 class ExportCOCORequest(BaseModel):
@@ -287,27 +337,256 @@ def save_frame_to_disk(
     return filepath
 
 
+def frame_url(session_id: str, frame_idx: int) -> str:
+    """Adres podglądu klatki w sesji."""
+    return f"/static/{session_id}/frame_{frame_idx:04d}.jpg"
+
+
+def classify_breed_of_dog(
+    frame: np.ndarray,
+    body_box: tuple[int, int, int, int],
+) -> Optional[BreedPrediction]:
+    """
+    Klasyfikuje rasę z kadru CAŁEGO psa.
+
+    Kadr musi obejmować sylwetkę, nie mordę: EfficientNet-B4 uczono na całych
+    psach i na samym pysku deklarowana skuteczność przestaje obowiązywać.
+
+    Args:
+        frame: Pełna klatka wideo
+        body_box: Boks psa (x, y, w, h) — NIE boks mordy
+
+    Returns:
+        Predykcja rasy albo None, gdy model niedostępny lub kadr pusty
+    """
+    if pipeline is None or pipeline.breed_model is None:
+        return None
+
+    x, y, w, h = (int(v) for v in body_box)
+    cropped = frame[max(0, y): y + h, max(0, x): x + w]
+    if cropped.size == 0:
+        return None
+
+    try:
+        return pipeline.breed_model.predict(cropped)
+    except (ValueError, RuntimeError) as error:
+        print(f"  ! Błąd klasyfikacji rasy: {error}")
+        return None
+
+
+def build_peak_annotation(
+    session_id: str,
+    frame: np.ndarray,
+    track_frame: TrackFrame,
+    track_id: int,
+) -> FrameAnnotation:
+    """
+    Buduje anotację jednej klatki szczytowej wraz z zapisem jej podglądu.
+
+    Do anotacji trafia `body_box` (boks psa) — to on jest bboxem w COCO i z niego
+    liczy się rasa. `face_box` opisuje tylko kadr, w którym mierzono keypoints.
+
+    Args:
+        session_id: ID sesji
+        frame: Pełna klatka wideo
+        track_frame: Klatka treku z keypoints i delta AU
+        track_id: Identyfikator psa
+
+    Returns:
+        Anotacja klatki gotowa do zapisu w sesji
+    """
+    save_frame_to_disk(frame, track_frame.frame_idx, session_id)
+    emotion = classify_emotion_from_delta_aus(track_frame.delta_aus)
+    breed = classify_breed_of_dog(frame, track_frame.body_box)
+
+    return FrameAnnotation(
+        frame_idx=track_frame.frame_idx,
+        track_id=track_id,
+        image_url=frame_url(session_id, track_frame.frame_idx),
+        bbox=[int(v) for v in track_frame.body_box],
+        keypoints=[float(v) for v in track_frame.keypoints],
+        aus=delta_aus_to_dict(track_frame.delta_aus),
+        emotion=emotion.emotion,
+        emotion_confidence=float(emotion.confidence),
+        emotion_rule_applied=emotion.rule_applied,
+        breed=breed.class_name if breed is not None else None,
+        breed_confidence=float(breed.confidence) if breed is not None else 0.0,
+        tfm_score=float(compute_tfm(track_frame.delta_aus)),
+    )
+
+
+def annotate_track(
+    session_id: str,
+    frames_list: list[np.ndarray],
+    track: TrackResult,
+) -> tuple[DogTrack, list[FrameAnnotation]]:
+    """
+    Buduje dane jednego psa: jego klatkę neutralną i jego klatki szczytowe.
+
+    Klatka neutralna jest per pies, bo delta AU liczy się względem niej —
+    wspólna klatka neutralna mierzyłaby AU drugiego psa względem mimiki pierwszego.
+
+    Args:
+        session_id: ID sesji
+        frames_list: Kolejne klatki wideo
+        track: Przyjęty trek psa
+
+    Returns:
+        (opis psa dla sesji, anotacje jego klatek szczytowych)
+    """
+    peaks = set(track.peak_indices)
+    annotations = [
+        build_peak_annotation(session_id, frames_list[tf.frame_idx], tf, track.track_id)
+        for tf in track.frames
+        if tf.frame_idx in peaks
+    ]
+
+    neutral = next(
+        (tf for tf in track.frames if tf.frame_idx == track.neutral_frame_idx), None
+    )
+    if neutral is not None:
+        save_frame_to_disk(frames_list[neutral.frame_idx], neutral.frame_idx, session_id)
+
+    dog = DogTrack(
+        track_id=track.track_id,
+        neutral_frame_idx=track.neutral_frame_idx,
+        neutral_keypoints=(
+            [float(v) for v in neutral.keypoints] if neutral is not None else None
+        ),
+        neutral_source=track.neutral_source,
+        peak_frame_indices=list(track.peak_indices),
+        au_noise={name: float(value) for name, value in track.au_noise.items()},
+        au_sample_count={
+            name: int(value) for name, value in track.au_sample_count.items()
+        },
+    )
+    return dog, annotations
+
+
+def build_session(
+    session_id: str,
+    video_filename: str,
+    frames_list: list[np.ndarray],
+    result: dict,
+) -> SessionData:
+    """
+    Składa sesję anotacji z wyniku pipeline'u (wszystkie psy z wideo).
+
+    Args:
+        session_id: ID sesji
+        video_filename: Nazwa wgranego pliku
+        frames_list: Kolejne klatki wideo
+        result: Wynik `process_video_for_dataset`
+
+    Returns:
+        Dane sesji z anotacjami, listą psów i psami odrzuconymi
+    """
+    dogs: list[DogTrack] = []
+    frames: list[FrameAnnotation] = []
+    for track in result["tracks"]:
+        dog, annotations = annotate_track(session_id, frames_list, track)
+        dogs.append(dog)
+        frames.extend(annotations)
+    frames.sort(key=lambda f: (f.frame_idx, f.track_id or 0))
+
+    return SessionData(
+        session_id=session_id,
+        video_filename=video_filename,
+        created_at=datetime.now().isoformat(),
+        total_frames=result["total_frames"],
+        # Pola sesyjne to dane PIERWSZEGO psa — zgodność ze starymi sesjami
+        neutral_frame_idx=dogs[0].neutral_frame_idx if dogs else NO_NEUTRAL_FRAME,
+        neutral_keypoints=dogs[0].neutral_keypoints if dogs else None,
+        frames=frames,
+        dogs=dogs,
+        rejected_tracks=[
+            RejectedTrack(
+                track_id=track.track_id,
+                reason=track.rejected_reason,
+                frames=len(track.frames),
+                frames_dropped_low_conf=track.frames_dropped_low_conf,
+            )
+            for track in result["rejected_tracks"]
+        ],
+    )
+
+
+def process_video_response(session: SessionData) -> dict:
+    """
+    Buduje odpowiedź endpointu: lista psów plus pola zgodności ze starym frontem.
+
+    Args:
+        session: Zapisana sesja
+
+    Returns:
+        Słownik JSON-owalny z psami przyjętymi i odrzuconymi
+    """
+    dogs = [
+        {
+            "track_id": dog.track_id,
+            "neutral_frame_idx": dog.neutral_frame_idx,
+            "neutral_frame_url": frame_url(session.session_id, dog.neutral_frame_idx),
+            "neutral_source": dog.neutral_source,
+            "au_noise": dog.au_noise,
+            "peak_frames": [
+                asdict(f) for f in session.frames if f.track_id == dog.track_id
+            ],
+        }
+        for dog in session.dogs
+    ]
+
+    return {
+        "session_id": session.session_id,
+        "video_filename": session.video_filename,
+        "dogs": dogs,
+        # Odrzucone treki jadą w odpowiedzi, bo to informacja dla anotatora
+        # („pies zniknął, bo morda była za mała"), a nie śmieć do wyrzucenia
+        "rejected_dogs": [asdict(track) for track in session.rejected_tracks],
+        "total_frames": session.total_frames,
+        # Pola zgodności: stary front czyta płaską listę peaków i jedną klatkę
+        # neutralną. Przy jednym psie znaczą dokładnie to, co znaczyły wcześniej.
+        "neutral_frame_idx": session.neutral_frame_idx,
+        "neutral_frame_url": frame_url(session.session_id, session.neutral_frame_idx),
+        "peak_frames": [asdict(f) for f in session.frames],
+    }
+
+
+async def save_upload_to_temp(file: UploadFile) -> Path:
+    """Zapisuje wgrany plik do katalogu tymczasowego i zwraca jego ścieżkę."""
+    suffix = Path(file.filename).suffix
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        return Path(tmp.name)
+
+
 @app.post("/api/process_video")
 async def process_video(
     file: UploadFile = File(...),
-    num_peaks: int = 10,
+    num_peaks: int = DEFAULT_NUM_PEAKS,
     neutral_idx: Optional[int] = None,
-    min_separation_frames: int = 30,
-    fps_sample: float = 1.0,
+    min_separation_frames: int = DEFAULT_MIN_SEPARATION_FRAMES,
+    fps_sample: float = DEFAULT_FPS_SAMPLE,
 ):
     """
-    Przetwarza uploaded wideo i zwraca peak frames.
+    Przetwarza wgrane wideo na treki psów i zwraca klatki szczytowe każdego psa.
 
-    Pipeline:
-    1. Ekstrahuj klatki z wideo
-    2. Wykryj keypoints dla wszystkich klatek
-    3. Auto-detekcja neutral frame (lub użyj podanego)
-    4. Oblicz delta AU dla wszystkich klatek
-    5. Wybierz peak frames (TFM-based)
-    6. Klasyfikuj emocje dla peak frames
+    Pipeline (`process_video_for_dataset`): trekowanie psów → keypoints i ich
+    wygładzanie w obrębie treku → własna klatka neutralna psa → delta AU → peaki.
+    Psy, które nie przeszły progu godności treku, wracają w `rejected_dogs`
+    z powodem — cichy brak psa w wyniku to dla anotatora brak informacji.
+
+    Args:
+        file: Plik wideo
+        num_peaks: Ile klatek szczytowych wybrać NA PSA
+        neutral_idx: Ręcznie wskazana klatka neutralna (dotyczy psów, które ją mają)
+        min_separation_frames: Minimalny odstęp peaków w klatkach próbkowanych
+        fps_sample: Próbkowanie klatek wideo [kl./s]
 
     Returns:
-        JSON z neutral_frame_idx, peak_frames, total_frames
+        JSON z `dogs`, `rejected_dogs`, `total_frames` oraz polami zgodności
+
+    Raises:
+        HTTPException: 503 gdy pipeline nie załadowany, 500 przy błędzie przetwarzania
     """
     if pipeline is None or not pipeline.is_loaded:
         raise HTTPException(
@@ -315,131 +594,42 @@ async def process_video(
             detail="Pipeline nie załadowany. Uruchom: python scripts/download/download_models.py"
         )
 
-    # Zapisz uploaded file do temp
-    suffix = Path(file.filename).suffix
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        content = await file.read()
-        tmp.write(content)
-        video_path = Path(tmp.name)
-
+    video_path = await save_upload_to_temp(file)
     try:
-        # Ekstrahuj klatki
-        print(f"\n📹 Przetwarzanie wideo: {file.filename}")
-        print(f"  → FPS sampling: {fps_sample} fps")
-        frames_list = extract_frames_from_video(video_path, fps_sample=fps_sample, max_duration=60)
+        print(f"\n📹 Przetwarzanie wideo: {file.filename} ({fps_sample} fps)")
+        frames_list = extract_frames_from_video(video_path, fps_sample=fps_sample)
         print(f"  → Wyekstrahowano {len(frames_list)} klatek")
 
-        # Przetwórz wideo przez pipeline
-        result = pipeline.process_video_for_dataset(
-            frames_list=frames_list,
+        # Odstęp peaków w API pipeline'u liczy się w sekundach; front podaje go
+        # w klatkach próbkowanych, więc przeliczamy przez próbkowanie.
+        config = VideoDatasetConfig(
             num_peaks=num_peaks,
-            neutral_idx=neutral_idx,
-            min_separation_frames=min_separation_frames,
-        )
-
-        # Generuj session ID
-        session_id = str(uuid.uuid4())[:8]
-
-        # Zapisz peak frames do dysku
-        peak_frames_data = []
-        for peak_data in result["peak_frames"]:
-            frame_idx = peak_data["frame_idx"]
-            frame = peak_data["frame"]
-            delta_aus = peak_data["delta_aus"]
-            emotion = peak_data["emotion"]
-            tfm_score = peak_data["tfm_score"]
-
-            # Zapisz klatkę bez rysowania keypoints (edytor frontend sam je rysuje)
-            save_frame_to_disk(frame, frame_idx, session_id)
-
-            # URL dla frontend
-            image_url = f"/static/{session_id}/frame_{frame_idx:04d}.jpg"
-
-            # Przekonwertuj delta AUs do dict (konwertuj numpy types na Python)
-            aus_dict = {
-                au.name: {
-                    "ratio": float(au.ratio),
-                    "delta": float(au.delta),
-                    "is_active": bool(au.is_active),  # numpy.bool_ -> Python bool
-                    "confidence": float(au.confidence),
-                }
-                for au in delta_aus.values()
-            }
-
-            peak_frames_data.append({
-                "frame_idx": frame_idx,
-                "image_url": image_url,
-                "aus": aus_dict,
-                "emotion": emotion.emotion,
-                "emotion_confidence": float(emotion.confidence),
-                "emotion_rule_applied": emotion.rule_applied,
-                "tfm_score": float(tfm_score),
-            })
-
-        # Zapisz neutral frame z keypoints
-        neutral_idx = result["neutral_frame_idx"]
-        neutral_frame = frames_list[neutral_idx]
-        neutral_keypoints = result["neutral_keypoints"]
-        save_frame_to_disk(neutral_frame, neutral_idx, session_id)
-        neutral_url = f"/static/{session_id}/frame_{neutral_idx:04d}.jpg"
-
-        # Zapisz sesję do SessionStore (Sprint 9)
-        frame_annotations = [
-            FrameAnnotation(
-                frame_idx=pf["frame_idx"],
-                image_url=pf["image_url"],
-                aus=pf["aus"],
-                emotion=pf["emotion"],
-                emotion_confidence=pf["emotion_confidence"],
-                emotion_rule_applied=pf["emotion_rule_applied"],
-                tfm_score=pf["tfm_score"],
-                keypoints=result["peak_frames"][i]["keypoints"].tolist()
-                if result["peak_frames"][i].get("keypoints") is not None
-                else None,
-                bbox=result["peak_frames"][i].get("bbox"),
-                breed=result["peak_frames"][i]["breed"].class_name
-                if result["peak_frames"][i].get("breed") is not None
-                else None,
-                breed_confidence=float(result["peak_frames"][i]["breed"].confidence)
-                if result["peak_frames"][i].get("breed") is not None
-                else 0.0,
-            )
-            for i, pf in enumerate(peak_frames_data)
-        ]
-        session_data = SessionData(
-            session_id=session_id,
-            video_filename=file.filename,
-            created_at=datetime.now().isoformat(),
-            total_frames=len(frames_list),
+            fps=fps_sample,
             neutral_frame_idx=neutral_idx,
-            neutral_keypoints=neutral_keypoints.tolist()
-            if neutral_keypoints is not None
-            else None,
-            frames=frame_annotations,
+            min_peak_separation_s=min_separation_frames / fps_sample,
+            min_keypoint_conf=DATASET_MIN_KEYPOINT_CONF,
         )
-        _session_store.save(session_data)
-        print(f"  → Sesja {session_id} zapisana ({len(frame_annotations)} klatek)")
+        result = pipeline.process_video_for_dataset(frames_list, config=config)
 
-        return JSONResponse({
-            "session_id": session_id,
-            "video_filename": file.filename,
-            "neutral_frame_idx": neutral_idx,
-            "neutral_frame_url": neutral_url,
-            "peak_frames": peak_frames_data,
-            "total_frames": len(frames_list),
-        })
+        session = build_session(
+            str(uuid.uuid4())[:8], file.filename, frames_list, result
+        )
+        _session_store.save(session)
+        print(
+            f"  → Sesja {session.session_id}: {len(session.dogs)} psów, "
+            f"{len(session.frames)} klatek, "
+            f"{len(session.rejected_tracks)} treków odrzuconych"
+        )
 
-    except Exception as e:
+        return JSONResponse(process_video_response(session))
+
+    except (ValueError, RuntimeError, cv2.error) as e:
         import traceback
 
-        tb = traceback.format_exc()
-        print(f"❌ Błąd przetwarzania: {e}\n{tb}")
-        raise HTTPException(
-            status_code=500, detail=f"{type(e).__name__}: {e}"
-        )
+        print(f"❌ Błąd przetwarzania: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
     finally:
-        # Usuń temp file
         video_path.unlink(missing_ok=True)
 
 
@@ -501,8 +691,16 @@ async def export_coco(request: ExportCOCORequest):
             "emotion_confidence": peak_frame["emotion_confidence"],
             "emotion_rule_applied": peak_frame["emotion_rule_applied"],
             "neutral_frame_id": request.neutral_frame_idx,
+            # Format zgodny z batchem: {ratio, is_active, confidence}. Wcześniej szła
+            # tu goła `delta` (ratio - 1), a `packages.data.coco.au_ratio` czyta gołego
+            # floata jako RATIO — aktywacja +45% (ratio 1.45) zapisywała się jako 0.45
+            # i była odczytywana jako 55% SPADEK, czyli z odwróconym kierunkiem.
             "au_analysis": {
-                au_name: au_data["delta"]
+                au_name: {
+                    "ratio": au_data["ratio"],
+                    "is_active": au_data["is_active"],
+                    "confidence": au_data["confidence"],
+                }
                 for au_name, au_data in peak_frame["aus"].items()
             },
             "tfm_score": peak_frame["tfm_score"],

@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  KEYPOINT_NAMES,
+  KEYPOINT_VISIBLE_THRESHOLD,
+  KEYPOINT_NAMES_RU,
   NUM_KEYPOINTS,
   SKELETON_CONNECTIONS,
   getKeypointColor,
@@ -93,7 +94,7 @@ export default function KeypointEditorModal({
     for (const [a, b] of SKELETON_CONNECTIONS) {
       const kpA = localKPs[a];
       const kpB = localKPs[b];
-      if (kpA.v > 0.3 && kpB.v > 0.3) {
+      if (kpA.v > KEYPOINT_VISIBLE_THRESHOLD && kpB.v > KEYPOINT_VISIBLE_THRESHOLD) {
         ctx.beginPath();
         ctx.moveTo(kpA.x * sx + offsetX, kpA.y * sy + offsetY);
         ctx.lineTo(kpB.x * sx + offsetX, kpB.y * sy + offsetY);
@@ -107,7 +108,7 @@ export default function KeypointEditorModal({
       const cx = kp.x * sx + offsetX;
       const cy = kp.y * sy + offsetY;
       const color = getKeypointColor(i);
-      const alpha = kp.v < 0.3 ? 0.25 : 1;
+      const alpha = kp.v < KEYPOINT_VISIBLE_THRESHOLD ? 0.25 : 1;
       const radius = i === hoveredIdx ? POINT_RADIUS + 3 : POINT_RADIUS;
 
       ctx.globalAlpha = alpha;
@@ -126,7 +127,7 @@ export default function KeypointEditorModal({
       const kp = localKPs[hoveredIdx];
       const cx = kp.x * sx + offsetX;
       const cy = kp.y * sy + offsetY;
-      const label = KEYPOINT_NAMES[hoveredIdx] ?? `kp${hoveredIdx}`;
+      const label = KEYPOINT_NAMES_RU[hoveredIdx] ?? `kp${hoveredIdx}`;
       ctx.font = '11px sans-serif';
       ctx.fillStyle = 'rgba(0,0,0,0.75)';
       const w = ctx.measureText(label).width + 8;
@@ -213,7 +214,7 @@ export default function KeypointEditorModal({
     if (idx === -1) return;
     setLocalKPs((prev) => {
       const next = [...prev];
-      next[idx] = { ...next[idx], v: next[idx].v > 0.3 ? 0 : 1.0 };
+      next[idx] = { ...next[idx], v: next[idx].v > KEYPOINT_VISIBLE_THRESHOLD ? 0 : 1.0 };
       return next;
     });
     setIsDirty(true);

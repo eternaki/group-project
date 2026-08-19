@@ -34,6 +34,7 @@ km = KeypointsModel(KeypointsConfig(
 km.load()
 
 import os
+
 os.makedirs("data/tmpl", exist_ok=True)
 breeds = ["pug", "boxer", "bulldog/french", "rottweiler", "beagle",
           "doberman", "bullterrier", "pointer/german"]

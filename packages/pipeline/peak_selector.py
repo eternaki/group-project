@@ -11,6 +11,7 @@ import numpy as np
 
 from packages.data.schemas import NUM_KEYPOINTS
 from packages.models.delta_action_units import DeltaActionUnit
+from packages.models.head_pose import DEFAULT_MAX_ROLL, DEFAULT_MAX_YAW_ASYMMETRY
 from packages.pipeline.neutral_frame import HeadPose
 
 # Weights for TFM computation (expressive AUs weighted higher)
@@ -28,6 +29,11 @@ TFM_WEIGHTS = {
     "AD19": 1.0,      # Tongue show
     "AD37": 1.0,      # Nose lick
 }
+
+# Minimalny TFM, przy którym kadr uznajemy za mający mimikę wartą anotacji.
+# Stała, a nie liczba w domyślnym argumencie: audyt musi mierzyć peaki względem
+# TEGO SAMEGO progu, którego używa selektor.
+DEFAULT_MIN_TFM: float = 0.15
 
 
 def compute_tfm(delta_aus: dict[str, DeltaActionUnit]) -> float:
@@ -80,10 +86,11 @@ class PeakFrameSelector:
     def __init__(
         self,
         min_separation_frames: int = 30,  # 1 second @ 30fps
-        min_tfm_threshold: float = 0.15,   # Minimum movement
+        min_tfm_threshold: float = DEFAULT_MIN_TFM,   # Minimum movement
         frontal_only: bool = False,  # Zmieniono na False - zbyt restrykcyjne
         min_keypoint_conf: float = 0.5,  # Zmniejszono z 0.7 na 0.5
-        max_head_angle: float = 40.0,  # Maksymalny kąt yaw/pitch (nowy parametr)
+        max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY,
+        max_roll: float = DEFAULT_MAX_ROLL,
         min_sharpness: float = 60.0,  # Min. ostrość mordy (var Laplacian) — filtr rozmycia
     ):
         """
@@ -92,15 +99,17 @@ class PeakFrameSelector:
         Args:
             min_separation_frames: Minimum frames between selected peaks
             min_tfm_threshold: Minimum TFM score to consider
-            frontal_only: Only select strictly frontal poses (<20°)
+            frontal_only: Only select poses within max_yaw_asymmetry and max_roll
             min_keypoint_conf: Minimum keypoint confidence
-            max_head_angle: Maximum yaw/pitch angle in degrees (used when frontal_only=False)
+            max_yaw_asymmetry: Maximum yaw asymmetry (eye corner <-> nose)
+            max_roll: Maximum roll angle in degrees
         """
         self.min_separation = min_separation_frames
         self.min_tfm = min_tfm_threshold
         self.frontal_only = frontal_only
         self.min_kp_conf = min_keypoint_conf
-        self.max_head_angle = max_head_angle
+        self.max_yaw_asymmetry = max_yaw_asymmetry
+        self.max_roll = max_roll
         self.min_sharpness = min_sharpness
 
     def select(
@@ -111,6 +120,7 @@ class PeakFrameSelector:
         delta_aus_list: list[dict[str, DeltaActionUnit]],
         head_poses: Optional[list[HeadPose]] = None,
         num_peaks: int = 10,
+        allowed_positions: Optional[set[int]] = None,
     ) -> list[int]:
         """
         Select peak expression frames.
@@ -122,59 +132,67 @@ class PeakFrameSelector:
             delta_aus_list: List of delta AU dictionaries for each frame
             head_poses: Optional list of HeadPose objects
             num_peaks: Number of peak frames to select
+            allowed_positions: Pozycje, spośród których wolno wybierać. None
+                znaczy „wszystkie". Ograniczenie podaje się TU, a nie przez
+                skrócenie list wejściowych: separacja liczona jest w pozycjach,
+                więc na skróconej liście odpowiadałaby wielokrotnie dłuższemu
+                odstępowi w nagraniu i wycinała prawie wszystkie szczyty.
 
         Returns:
-            List of selected frame indices (sorted by TFM, descending)
+            Wybrane pozycje, od najwyższego TFM. Może być ich MNIEJ niż `num_peaks`
+            — separacja `min_separation_frames` jest twarda i ma pierwszeństwo
+            przed zamówioną liczbą.
         """
         # Estimate head poses if not provided
         if head_poses is None:
             from packages.pipeline.neutral_frame import estimate_head_pose
-            head_poses = [estimate_head_pose(kp) for kp in keypoints_list]
+            # Progi z konstruktora muszą trafić do estymatora — inaczej
+            # `is_frontal` (używane przy frontal_only) liczy się na domyślnych.
+            head_poses = [
+                estimate_head_pose(
+                    kp,
+                    max_yaw_asymmetry=self.max_yaw_asymmetry,
+                    max_roll=self.max_roll,
+                )
+                for kp in keypoints_list
+            ]
 
         # Step 1: Compute TFM for valid candidates.
-        # Zbieramy WSZYSTKIE poprawne kadry (z TFM). Kadry powyżej progu min_tfm
-        # są preferowane, ale jeśli jest ich za mało (np. spokojny pies), dobieramy
-        # z pozostałych poprawnych — żeby uszanować żądaną liczbę peaków.
-        strong: list[tuple[int, float]] = []
-        valid_all: list[tuple[int, float]] = []
+        # Kandydatem jest wyłącznie kadr powyżej progu TFM. Wcześniej, gdy takich
+        # kadrów było mniej niż `num_peaks`, dobierane były kadry SPOD progu —
+        # czyli klatki, o których z definicji wiadomo, że nie mają mimiki wartej
+        # anotacji. Audyt na 40 wideo zmierzył koszt usunięcia tego dobierania:
+        # 39 peaków spada do 38, bo tylko 1 (2.6%) pochodził spod progu.
+        # Wpuszczanie takiej klatki do zbioru treningowego to etykieta bez zjawiska.
+        tfm_scores: list[tuple[int, float]] = []
         for i, delta_aus in enumerate(delta_aus_list):
             if i == neutral_idx or delta_aus is None:
+                continue
+            if allowed_positions is not None and i not in allowed_positions:
                 continue
             frame_i = frames[i] if i < len(frames) else None
             if not self._is_valid_peak(keypoints_list[i], head_poses[i], frame_i):
                 continue
             tfm = compute_tfm(delta_aus)
-            valid_all.append((i, tfm))
             if tfm >= self.min_tfm:
-                strong.append((i, tfm))
-
-        tfm_scores = strong if len(strong) >= num_peaks else valid_all
+                tfm_scores.append((i, tfm))
 
         # Step 2: Sort by TFM (descending)
         tfm_scores.sort(key=lambda x: x[1], reverse=True)
 
-        # Step 3: Non-maximum suppression z ADAPTACYJNĄ separacją.
-        # Najpierw próbujemy z pełną separacją; jeśli zebraliśmy mniej niż num_peaks,
-        # a są jeszcze kandydaci, stopniowo zmniejszamy separację — żeby uszanować
-        # żądaną liczbę peaków na krótkich filmach (zamiast zwracać 1 kadr).
-        def _nms(separation: int) -> list[int]:
-            sel: list[int] = []
-            for idx, _ in tfm_scores:
-                if all(abs(idx - s) >= separation for s in sel):
-                    sel.append(idx)
-                if len(sel) >= num_peaks:
-                    break
-            return sel
-
-        selected_indices = _nms(self.min_separation)
-        separation = self.min_separation
-        while (
-            len(selected_indices) < num_peaks
-            and len(tfm_scores) > len(selected_indices)
-            and separation > 1
-        ):
-            separation = max(1, separation // 2)
-            selected_indices = _nms(separation)
+        # Step 3: Non-maximum suppression z TWARDĄ separacją.
+        # Wcześniej separacja była adaptacyjna — połowiona aż do 1, gdy nie
+        # uzbierało się `num_peaks`. Przy zamówionych 5 klatkach i 12 peakach
+        # wychodziły kadry sąsiadujące (odstępy same jedynki), czyli dokładnie
+        # duplikaty, przed którymi separacja miała bronić. Przy naszym rozmiarze
+        # zbioru duplikat jest gorszy niż brak próbki: zawyża pozorną liczebność
+        # i wagę jednej chwili. Wideo bez dość odległych szczytów daje ich mniej.
+        selected_indices: list[int] = []
+        for idx, _ in tfm_scores:
+            if all(abs(idx - selected) >= self.min_separation for selected in selected_indices):
+                selected_indices.append(idx)
+            if len(selected_indices) >= num_peaks:
+                break
 
         return selected_indices
 
@@ -208,7 +226,16 @@ class PeakFrameSelector:
         # Estimate head poses if needed
         if head_poses is None:
             from packages.pipeline.neutral_frame import estimate_head_pose
-            head_poses = [estimate_head_pose(kp) for kp in keypoints_list]
+            # Progi z konstruktora muszą trafić do estymatora — inaczej
+            # `is_frontal` (używane przy frontal_only) liczy się na domyślnych.
+            head_poses = [
+                estimate_head_pose(
+                    kp,
+                    max_yaw_asymmetry=self.max_yaw_asymmetry,
+                    max_roll=self.max_roll,
+                )
+                for kp in keypoints_list
+            ]
 
         # Group candidates by emotion
         emotion_groups = {}
@@ -302,10 +329,10 @@ class PeakFrameSelector:
             if not head_pose.is_frontal:
                 return False
         else:
-            # Relaxed: just check max angle threshold
-            if abs(head_pose.yaw) > self.max_head_angle:
+            # Relaxed: just check max threshold
+            if abs(head_pose.yaw_asymmetry) > self.max_yaw_asymmetry:
                 return False
-            if abs(head_pose.pitch) > self.max_head_angle:
+            if abs(head_pose.roll) > self.max_roll:
                 return False
 
         # 3. Morda przycięta krawędzią kadru — keypoints "przyklejone" do brzegu

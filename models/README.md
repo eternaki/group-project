@@ -1,98 +1,58 @@
 # Model Weights
 
-Wagi modeli AI dla Dog FACS Demo.
+Wagi modeli AI dla pipeline Dog FACS. Stan na 2026-08-03.
 
-## Modele
+## Aktywne modele
 
-| Plik | Rozmiar | Opis |
-|------|---------|------|
-| `yolov8m.pt` | 52 MB | Model detekcji psów (YOLOv8m) |
-| `breed.pt` | 71 MB | Model klasyfikacji ras (EfficientNet-B4, 120 ras) |
-| `keypoints_best.pt` | 136 MB | Model punktów kluczowych (SimpleBaseline/ResNet50, 46 keypoints) |
-| `emotion_keypoints.pt` | ~1 MB | Model klasyfikacji emocji (MLP, 6 klas) - **wymaga treningu** |
+| Plik | Rozmiar | Architektura | Wynik |
+|------|---------|--------------|-------|
+| `yolov8m.pt` | 52 MB | YOLOv8m | Detekcja psów (bbox) |
+| `breed.pt` | 71 MB | EfficientNet-B4 @380 | Klasyfikacja rasy, 120 klas, Top-1 **91.5%** |
+| `dogface_yolo.pt` | 18 MB | YOLOv8n | Detektor **mordy** (kadrowanie przed keypoints), mAP50 **0.99** |
+| `keypoints_dogflw.pt` | 271 MB | HRNet-W48 (wejście 320 → heatmapa 80) | 46 keypoints DogFLW, NME_iod **0.091**, PCK **0.748** |
 
-## Architektura Pipeline
+Emocje **nie mają** modelu wagowego — są liczone regułami DogFACS z 21 AU
+(`packages/models/emotion.py`), a AU geometrycznie z keypoints
+(`packages/models/delta_action_units.py`).
+
+## Wagi zapasowe (historia treningu keypoints)
+
+`keypoints_hrnet256_nme139.pt`, `keypoints_hrnet320_nme126.pt`,
+`keypoints_hrnet320_s15_nme118.pt`, `keypoints_hrnet48_ear_nme091.pt`
+(= aktualny `keypoints_dogflw.pt`), `keypoints_dogflw_resnet_OLD.pt` (ResNet34, przed
+naprawą błędu flip), `keypoints_best.pt` (SimpleBaseline, archiwum).
+
+Sufiks `nmeXXX` = NME_iod ×1000. Postęp: 0.139 → 0.126 → 0.118 → **0.091**
+(odniesienie z pracy ELD: 0.0652).
+
+## Architektura pipeline
 
 ```
-Obraz → BBox (YOLOv8) → Crop
-                          ↓
-                    Breed (EfficientNet-B4) → rasa
-                          ↓
-                    Keypoints (SimpleBaseline) → 46 punktów
-                          ↓
-                    Emotion (MLP) → 6 emocji
+Obraz → BBox (YOLOv8m) → Crop psa
+                          → Rasa (EfficientNet-B4)
+                          → Detektor mordy (YOLOv8n) → Keypoints (HRNet-W48, 46 pkt)
+                              → Delta AU vs klatka neutralna (21 AU DogFACS)
+                              → Emocja (reguły DogFACS, 9 klas)
 ```
 
-## Emocje (6 klas)
+## Emocje (9 klas, reguły)
 
-| ID | Emocja | Opis |
-|----|--------|------|
-| 0 | happy | Szczęśliwy, radosny |
-| 1 | sad | Smutny, przygnębiony |
-| 2 | angry | Zły, agresywny |
-| 3 | fearful | Przestraszony, lękliwy |
-| 4 | relaxed | Zrelaksowany, spokojny |
-| 5 | neutral | Neutralny, bez emocji |
-
-## Keypoints (46 punktów DogFLW)
-
-| Grupa | Zakres | Punkty |
-|-------|--------|--------|
-| Oczy | 0-1 | Kąciki oczu |
-| Kontur | 2-13 | Obrys pyska |
-| Nos | 14-19 | Nos i nozdrza |
-| Pysk | 20-31 | Usta i wargi |
-| Pozostałe | 32-45 | Brwi, uszy, czoło |
-
-## Trening modelu emocji
-
-Model emocji wymaga treningu na danych z keypointami:
-
-```bash
-# Trening na własnych danych
-python scripts/training/train_emotion_keypoints.py --data_path data/emotions_keypoints.csv
-
-# Test pipeline (syntetyczne dane)
-python scripts/training/train_emotion_keypoints.py --synthetic_samples 5000 --epochs 10
-```
-
-Format danych CSV:
-- 138 kolumn z keypoints: `kp_0_x, kp_0_y, kp_0_v, kp_1_x, ..., kp_45_v`
-- 1 kolumna z etykietą: `emotion` (0-5)
+happy, sad, angry, fearful, relaxed, neutral, surprise, pain, submission
+(Mota-Rojas et al. 2021). Definicje: `packages/data/schemas.py`.
 
 ## Git LFS
 
-Pliki `.pt` są przechowywane za pomocą Git Large File Storage (LFS).
-
-### Instalacja Git LFS
-
-```bash
-# macOS
-brew install git-lfs
-
-# Ubuntu/Debian
-sudo apt install git-lfs
-
-# Windows - pobierz z https://git-lfs.github.com
-```
-
-### Po klonowaniu repozytorium
+Pliki `.pt` są przechowywane przez Git Large File Storage.
 
 ```bash
 git lfs install
 git lfs pull
+ls -la models/*.pt   # weryfikacja
 ```
 
-### Weryfikacja
+## Historia
 
-```bash
-ls -la models/*.pt
-```
-
-## Stara architektura (deprecated)
-
-Plik `emotion_old_cnn.pt` zawiera starą wersję modelu emocji opartą na CNN (EfficientNet-B0).
-Ta wersja **nie używała keypoints** i jest zachowana tylko dla kompatybilności wstecznej.
-
-Nowa architektura (MLP na keypoints) jest zgodna z podejściem DogFACS, gdzie emocje
-są pochodną ruchów mięśni twarzy, a nie bezpośrednio pikseli obrazu.
+Wcześniejsza architektura emocji (CNN EfficientNet-B0 na pikselach, 4–6 klas oraz
+MLP `KeypointsEmotionMLP` trenowany na keypoints) została **usunięta** — emocje są
+pochodną AU, nie pikseli. Planowana sieć (Sprint 16) to MLP **138 keypoints → 21 AU**,
+trenowany na zweryfikowanych ręcznie danych (Sprint 15).

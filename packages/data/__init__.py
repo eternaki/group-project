@@ -1,6 +1,6 @@
 """Модуль данных для проекта Dog FACS Dataset."""
 
-from .coco import COCOCategory, COCODataset, COCOInfo
+from .coco import COCOCategory, COCODataset, COCOInfo, TrackAnnotation
 from .schemas import (
     KEYPOINT_NAMES,
     NUM_KEYPOINTS,
@@ -20,4 +20,5 @@ __all__ = [
     "COCODataset",
     "COCOInfo",
     "COCOCategory",
+    "TrackAnnotation",
 ]

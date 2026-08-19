@@ -151,3 +151,34 @@ data/dogface_train.log
 # Backupy/pośrednie wagi keypoints (tylko keypoints_dogflw.pt jest aktywny)
 models/keypoints_hrnet*.pt
 models/keypoints_dogflw_resnet_OLD.pt
+
+# Kandydujący zestaw danych (lokalny: klatki, wideo, COCO)
+data/dataset_candidate/
+
+# Klucz Google Drive API (lokalny, nie commitować!)
+drive_key.txt
+
+# Pobrane wideo z Google Drive (lokalne)
+data/drive_dogs/
+
+# Dane: klatki i wideo NIGDY do repozytorium (setki MB do gigabajtów).
+# Etykiety człowieka i gotowy zbiór w formacie finalnym — TAK, bo to one są
+# produktem projektu i muszą jeździć między maszynami zespołu.
+#
+# Uwaga na `data/dataset_final/`: cały katalog był kiedyś ignorowany hurtem, co
+# przeczyło zdaniu wyżej — wraz z materiałem roboczym wypadał z repozytorium
+# gotowy zbiór, czyli jedyna rzecz, którą oddajemy. Teraz ignorujemy WNĘTRZE
+# robocze (klatki, surowe COCO), a `data/dataset_final/release/` jedzie w gicie.
+data/*/frames/
+data/drive_dogs/
+data/dogflw_raw/
+data/dogface_yolo/
+data/raw/
+data/collection/
+data/*/annotations.json
+data/*/curated.json
+data/*.log
+data/*.log.err
+*.stackdump
+data/review_samples/
+data/review_by_video/

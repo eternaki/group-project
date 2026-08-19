@@ -137,6 +137,52 @@ dog-facs/
 
 ## Usage
 
+### Annotate AU (what the team actually does)
+
+Everything needed is in the repository — nothing has to be sent to you
+separately. After the installation steps above, add the frontend packages once:
+
+```bash
+cd apps/webapp/frontend && npm install && cd -
+```
+
+Then start the annotation station:
+
+```bash
+python scripts/run_annotation.py
+```
+
+It finds the dataset by itself, brings up the API and the UI, and opens
+http://localhost:5173. Pick your name, and the queue starts where you left off.
+
+**Your work is saved as you go** to `data/labels/dataset_final/<you>.jsonl`.
+That file is the product — commit and push it, and `git pull` brings in what the
+others did. The file is append-only, so git merges everyone's work without
+conflicts.
+
+What you get from the clone and what you don't:
+
+| in the repository | not in the repository |
+|---|---|
+| `data/dataset_final/work/` — the frames you annotate (66 MB) | full 1920x900 frames (1.3 GB) |
+| `data/labels/` — everyone's verdicts | source videos |
+| `data/dataset_final/release/` — the finished dataset | raw batch output |
+| model weights (via Git LFS) | |
+
+The four annotators get **disjoint** parts of the queue, so no two people
+verify the same pair.
+
+> **Git LFS is not optional.** Without `git lfs install` before cloning, the
+> model weights arrive as ~130-byte pointer files and the pipeline fails at
+> startup with an unhelpful error. If you already cloned, run `git lfs pull`.
+
+### Rebuild the shared material (dataset owner only)
+
+```bash
+python -m scripts.annotation.build_work_pack     # what teammates clone
+python -m scripts.annotation.build_final_dataset # the dataset we hand in
+```
+
 ### Run Demo Application
 ```bash
 streamlit run apps/demo/app.py

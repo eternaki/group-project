@@ -22,7 +22,7 @@ from typing import Optional
 import numpy as np
 
 from packages.data.schemas import EMOTION_CLASSES
-from packages.models.delta_action_units import DeltaActionUnit
+from packages.models.delta_action_units import MIN_AU_CONFIDENCE, DeltaActionUnit
 
 NUM_EMOTIONS: int = len(EMOTION_CLASSES)
 
@@ -135,7 +135,12 @@ class EmotionRule:
         for au_name, threshold in self.required_aus.items():
             if au_name not in delta_aus:
                 return False
-            ratio = delta_aus[au_name].ratio
+            au = delta_aus[au_name]
+            # Niewiarygodny pomiar (np. klamrowane ucho, confidence 0) nie może
+            # potwierdzić wymaganego AU — nie budujemy na nim emocji.
+            if au.confidence < MIN_AU_CONFIDENCE:
+                return False
+            ratio = au.ratio
             if threshold < 1.0:
                 if ratio > threshold:
                     return False
@@ -145,9 +150,15 @@ class EmotionRule:
         return True
 
     def _inhibitory_aus_clear(self, delta_aus: dict[str, DeltaActionUnit]) -> bool:
-        """Sprawdza czy żaden hamujący AU nie jest aktywowany."""
+        """Sprawdza czy żaden hamujący AU nie jest aktywowany.
+
+        Niewiarygodny pomiar (confidence < próg, np. klamrowane ucho) nie blokuje
+        reguły — nie można na jego podstawie twierdzić, że AU jest aktywny.
+        """
         return all(
-            au_name not in delta_aus or delta_aus[au_name].ratio <= max_ratio
+            au_name not in delta_aus
+            or delta_aus[au_name].confidence < MIN_AU_CONFIDENCE
+            or delta_aus[au_name].ratio <= max_ratio
             for au_name, max_ratio in self.inhibitory_aus.items()
         )
 

@@ -17,6 +17,7 @@ Oficjalne kody DogFACS (21 AU łącznie):
 """
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -120,27 +121,27 @@ class DeltaActionUnitsExtractor:
 
     def __init__(
         self,
-        neutral_keypoints: np.ndarray,
+        neutral_keypoints: np.ndarray | Sequence[np.ndarray],
         activation_threshold: float = DEFAULT_ACTIVATION_THRESHOLD,
     ) -> None:
         """
-        Inicjalizuje ekstraktor z klatką neutralną jako bazą.
+        Inicjalizuje ekstraktor z klatką (lub klatkami) neutralną jako bazą.
 
         Args:
-            neutral_keypoints: Keypoints klatki neutralnej [x0,y0,v0,...] (138 wartości)
+            neutral_keypoints: Baza neutralna w jednej z postaci:
+                - pojedyncza klatka [x0,y0,v0,...] (138 wartości), LUB
+                - lista/sekwencja klatek (każda 138 wartości), LUB
+                - tablica 2D (N, 138).
+                Dla wielu klatek baza = **median** po klatkach (poszczególne
+                współrzędne) — odporna na pojedynczy odstający kadr.
             activation_threshold: Próg stosunku dla aktywacji AU (domyślnie 1.15 = +15%)
 
         Raises:
-            ValueError: Gdy liczba wartości keypoints jest nieprawidłowa
+            ValueError: Gdy liczba wartości keypoints jest nieprawidłowa lub baza pusta
         """
-        expected = NUM_KEYPOINTS * 3
-        if len(neutral_keypoints) != expected:
-            raise ValueError(
-                f"Oczekiwano {expected} wartości keypoints (46×3), "
-                f"otrzymano {len(neutral_keypoints)}"
-            )
+        baseline = _resolve_neutral_baseline(neutral_keypoints)
 
-        self.neutral_kp = neutral_keypoints.reshape(NUM_KEYPOINTS, 3)
+        self.neutral_kp = baseline.reshape(NUM_KEYPOINTS, 3)
         self.activation_threshold = activation_threshold
         self.neutral_distances = self._compute_measurements(self.neutral_kp)
 
@@ -198,14 +199,21 @@ class DeltaActionUnitsExtractor:
         else:
             ratio = 1.0
         # Przytnij stosunek, by szum/mały mianownik nie "wysadzał" AU do maksimum
-        ratio = float(np.clip(ratio, RATIO_CLAMP_MIN, RATIO_CLAMP_MAX))
+        clamped_ratio = float(np.clip(ratio, RATIO_CLAMP_MIN, RATIO_CLAMP_MAX))
+        # Dobicie do granicy clampu dla deskryptorów uszu (EAD) = pomiar wyrodny.
+        # Punkty uszu są ruchome i słabo lokalizowane w 2D (znane ograniczenie),
+        # więc skrajne stosunki to artefakt, nie realny ruch. Taki pomiar uznajemy
+        # za niewiarygodny (is_active=False, confidence=0). Dla AU twarzy (np. AD35
+        # — przygryzienie wargi) dobicie do granicy bywa realnym sygnałem — zostawiamy.
+        unreliable = clamped_ratio != ratio and au_name in _EAR_DESCRIPTORS
+        ratio = clamped_ratio
         delta = ratio - 1.0
 
-        confidence = _compute_au_confidence(au_name, target_kp)
+        confidence = 0.0 if unreliable else _compute_au_confidence(au_name, target_kp)
         is_active = _is_au_activated(au_name, ratio, self.activation_threshold)
         # AU uznajemy za aktywny tylko gdy keypointy są wystarczająco pewne —
         # inaczej "pokazywalibyśmy" ruchy, których nie ma (np. szum uszu).
-        if confidence < MIN_AU_CONFIDENCE:
+        if unreliable or confidence < MIN_AU_CONFIDENCE:
             is_active = False
 
         return DeltaActionUnit(
@@ -389,6 +397,12 @@ _BIDIRECTIONAL_AUS: frozenset[str] = frozenset({
     "EAD104",  # Ears Rotator: asymetria może iść w obu kierunkach
 })
 
+# Deskryptory uszu (EAD) — pomiary z ruchomych, słabo lokalizowanych punktów uszu.
+# Gdy stosunek dobija do granicy clampu, traktujemy pomiar jako niewiarygodny.
+_EAR_DESCRIPTORS: frozenset[str] = frozenset({
+    "EAD101", "EAD102", "EAD103", "EAD104", "EAD105",
+})
+
 # Grupy keypoints dla obliczania pewności każdego AU
 _AU_KEYPOINT_GROUPS: dict[str, list[int]] = {
     "AU101":  [KP.LEFT_BROW_INNER, KP.RIGHT_BROW_INNER,
@@ -423,6 +437,63 @@ _AU_KEYPOINT_GROUPS: dict[str, list[int]] = {
 # =============================================================================
 # Funkcje pomocnicze (prywatne)
 # =============================================================================
+
+def _resolve_neutral_baseline(
+    neutral: np.ndarray | Sequence[np.ndarray],
+) -> np.ndarray:
+    """
+    Sprowadza wejście neutralne do pojedynczej bazy (138,).
+
+    Akceptuje pojedynczą klatkę (138,), listę klatek lub tablicę 2D (N, 138).
+    Dla wielu klatek zwraca **median** po klatkach — odporną na outliery.
+
+    Args:
+        neutral: Klatka neutralna lub kolekcja klatek (każda 138 wartości)
+
+    Returns:
+        Tablica bazowa (138,)
+
+    Raises:
+        ValueError: Gdy baza jest pusta lub któraś klatka ma złą długość
+    """
+    expected = NUM_KEYPOINTS * 3
+
+    if isinstance(neutral, np.ndarray):
+        if neutral.ndim == 1:
+            frames = neutral.reshape(1, -1).astype(np.float32)
+        elif neutral.ndim == 2:
+            frames = neutral.astype(np.float32)
+        else:
+            raise ValueError(
+                f"Baza neutralna ma nieobsługiwany kształt {neutral.shape} "
+                f"(oczekiwano (138,) lub (N, 138))"
+            )
+    else:
+        # Sekwencja klatek — waliduj każdą z osobna (czytelny komunikat o długości)
+        frame_list = [np.asarray(f, dtype=np.float32) for f in neutral]
+        if len(frame_list) == 0:
+            raise ValueError(
+                "Baza neutralna jest pusta — podaj co najmniej jedną klatkę"
+            )
+        for frame in frame_list:
+            if frame.shape != (expected,):
+                raise ValueError(
+                    f"Oczekiwano {expected} wartości keypoints (46×3), "
+                    f"otrzymano {frame.shape}"
+                )
+        frames = np.stack(frame_list)
+
+    if frames.shape[0] == 0:
+        raise ValueError("Baza neutralna jest pusta — podaj co najmniej jedną klatkę")
+    if frames.shape[1] != expected:
+        raise ValueError(
+            f"Oczekiwano {expected} wartości keypoints (46×3), "
+            f"otrzymano {frames.shape[1]}"
+        )
+
+    # Median po klatkach (oś 0) — stabilna baza odporna na pojedynczy zły kadr
+    return np.median(frames, axis=0).astype(np.float32)
+
 
 def _dist(p1: np.ndarray, p2: np.ndarray) -> float:
     """Odległość euklidesowa między dwoma punktami."""

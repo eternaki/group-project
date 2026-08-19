@@ -16,7 +16,6 @@ Użycie:
 
 import argparse
 import json
-import os
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -24,7 +23,6 @@ from typing import Optional
 
 import numpy as np
 from tqdm import tqdm
-
 
 # Ścieżki domyślne
 DATA_DIR = Path("data")
@@ -250,7 +248,6 @@ def process_open_images(
         Lista słowników z informacjami o przetworzonych obrazach
     """
     oi_dir = raw_dir / "open_images"
-    images_dir = oi_dir / "images"
     annotations_file = oi_dir / "dog_annotations.csv"
 
     if not annotations_file.exists():
@@ -484,7 +481,7 @@ def main() -> None:
     print(f"Test: {counts.get('test', 0)} obrazów")
     print(f"Total: {sum(counts.values())} obrazów")
     print(f"\nDataset gotowy w: {args.output_dir}")
-    print(f"Użyj dataset.yaml do treningu YOLOv8")
+    print("Użyj dataset.yaml do treningu YOLOv8")
 
 
 if __name__ == "__main__":
