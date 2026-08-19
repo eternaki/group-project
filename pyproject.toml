@@ -47,6 +47,13 @@ dev = [
 download = [
     "yt-dlp>=2023.10.0",       # YouTube downloading
 ]
+tiktok = [
+    "TikTokApi>=6.2.0",              # Wyszukiwanie po hashtagach
+    "playwright>=1.40.0",            # Backend przeglądarki dla TikTokApi
+    "google-api-python-client>=2.100.0",  # Google Drive API
+    "google-auth-httplib2>=0.2.0",
+    "google-auth-oauthlib>=1.1.0",
+]
 notebooks = [
     "jupyter>=1.0.0",
     "matplotlib>=3.7.0",
