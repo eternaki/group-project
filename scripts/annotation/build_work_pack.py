@@ -35,6 +35,7 @@ from typing import Optional
 
 import cv2
 
+from packages.pipeline.quality_gate import assess_frame
 from scripts.annotation.cropping import (
     CropBox,
     body_box,
@@ -73,6 +74,26 @@ KEYPOINT_MARGIN: float = 0.05
 # Dłuższy bok kadru. Mediana boksu psa to 596 px, więc 512 prawie nic nie obcina,
 # a zbija paczkę z 264 MB do 53 MB.
 MAX_CROP_SIDE: int = 512
+
+# Ile pikseli MORDY paczka ma zachować.
+#
+# Sam limit `MAX_CROP_SIDE` liczy się od boksu CAŁEGO psa, a mierzy się nim
+# rzecz, której anotator w ogóle nie ocenia. Zmierzone na kuracji: zmniejszenie
+# wychodzi medianowo 0.59 raza, więc morda mająca w klatce 112 px (mediana)
+# dociera do stanowiska jako 61 px, a 73.6% mord jest w paczce węższych niż
+# 80 px. Informacja o pozycji uszu i pyska JEST w nagraniu i ginie dopiero tutaj.
+#
+# Stąd drugi warunek na skalę: kadr wolno zmniejszyć najwyżej tak, żeby morda
+# zachowała `TARGET_FACE_PX`. Wartość odpowiada progowi kuracji
+# (`REVIEW_MIN_FACE_WIDTH`), więc para dopuszczona do kolejki trafia do paczki
+# bez utraty szczegółu mordy.
+TARGET_FACE_PX: float = 100.0
+
+# Twarda granica rozrostu kadru. Pies zajmujący pół klatki przy małej mordzie
+# (profil, pysk odwrócony) kazałby zachować kadr w pełnej rozdzielczości i
+# paczka urosłaby o rząd wielkości. Powyżej tej wartości rezygnujemy z pikseli
+# mordy — takie pary i tak odrzuca bramka jakości na obrocie głowy.
+HARD_MAX_CROP_SIDE: int = 1024
 
 # Jakość JPEG. O dwa stopnie niżej niż w zbiorze do oddania: paczka jest
 # materiałem do PATRZENIA, nie do publikacji, a różnicy na oko nie widać.
@@ -189,13 +210,44 @@ def _repacked(annotation: dict, box: CropBox, scale: float) -> dict:
     return packed
 
 
-def build_pack(dataset_dir: Path, output: Path) -> PackStats:
+def _within_limit(annotations: list[dict], limit: Optional[int]) -> bool:
+    """
+    Rozstrzyga, czy obraz należy do pierwszych `limit` par kolejki.
+
+    Kuracja numeruje pary polem `review_order`, a klatka neutralna nosi numer
+    KAŻDEJ pary, którą obsługuje. Bierzemy więc numer najmniejszy: neutralna
+    wchodzi do paczki razem z pierwszym peakiem, który jej potrzebuje, i nie
+    wypada przez to, że któraś z dalszych par nie zmieściła się w limicie.
+
+    Args:
+        annotations: Anotacje tego obrazu
+        limit: Ile par zostawić; None znaczy „wszystkie"
+
+    Returns:
+        Czy obraz wchodzi do paczki
+    """
+    if limit is None:
+        return True
+    orders = [
+        annotation["review_order"]
+        for annotation in annotations
+        if annotation.get("review_order") is not None
+    ]
+    # Brak numeru znaczy kurację starszą niż to pole — wtedy nie ma po czym
+    # ciąć i zostawiamy obraz, zamiast po cichu opróżnić paczkę.
+    return min(orders) < limit if orders else True
+
+
+def build_pack(
+    dataset_dir: Path, output: Path, limit: Optional[int] = None
+) -> PackStats:
     """
     Składa paczkę roboczą ze zbioru po kuracji.
 
     Args:
         dataset_dir: Katalog zbioru roboczego
         output: Katalog paczki
+        limit: Ile pierwszych par kolejki spakować; None znaczy „całą kurację"
 
     Returns:
         Statystyki przebiegu
@@ -220,6 +272,8 @@ def build_pack(dataset_dir: Path, output: Path) -> PackStats:
     packed_annotations: list[dict] = []
 
     for image_id, annotations in grouped.items():
+        if not _within_limit(annotations, limit):
+            continue
         entry = images[image_id]
         result = _write_frame(dataset_dir, output, entry, annotations)
         if result is None:
@@ -231,9 +285,46 @@ def build_pack(dataset_dir: Path, output: Path) -> PackStats:
         stats.annotations_written += len(annotations)
         stats.bytes_written += size
 
-    stats.skipped_missing = len(grouped) - stats.images_written
+    # Liczymy względem obrazów WZIĘTYCH POD UWAGĘ, nie całej kuracji — inaczej
+    # obrazy odcięte limitem raportowałyby się jako brakujące klatki.
+    considered = sum(
+        1 for annotations in grouped.values() if _within_limit(annotations, limit)
+    )
+    stats.skipped_missing = considered - stats.images_written
     _write_json(output / PACK_NAME, coco, packed_images, packed_annotations)
     return stats
+
+
+def _max_side_for(annotations: list[dict], box: CropBox) -> int:
+    """
+    Wylicza dopuszczalny dłuższy bok kadru, tak by morda zachowała szczegół.
+
+    Skala kadru wynosi `max_side / dłuższy_bok`, a szerokość mordy zmniejsza się
+    razem z nim. Żeby morda została przy `TARGET_FACE_PX`, dłuższy bok musi
+    zostać przy `dłuższy_bok * TARGET_FACE_PX / szerokość_mordy`.
+
+    Args:
+        annotations: Anotacje tego obrazu
+        box: Kadr wycinany z pełnej klatki
+
+    Returns:
+        Dłuższy bok kadru w pikselach, nie mniej niż `MAX_CROP_SIDE`
+        i nie więcej niż `HARD_MAX_CROP_SIDE`
+    """
+    widths = [
+        assess_frame(annotation["keypoints"]).face_width
+        for annotation in annotations
+        if annotation.get("keypoints")
+    ]
+    face = max(widths, default=0.0)
+    # Brak punktów albo zdegenerowana morda: nie ma czego chronić, zostaje limit
+    # liczony od boksu psa.
+    if face <= 0:
+        return MAX_CROP_SIDE
+
+    longest = max(box.width, box.height)
+    needed = longest * (TARGET_FACE_PX / face)
+    return int(min(HARD_MAX_CROP_SIDE, max(MAX_CROP_SIDE, needed)))
 
 
 def _write_frame(
@@ -260,7 +351,7 @@ def _write_frame(
     if box is None:
         return None
 
-    crop, scale = crop_and_scale(image, box, MAX_CROP_SIDE)
+    crop, scale = crop_and_scale(image, box, _max_side_for(annotations, box))
     target = output / FRAMES_DIRNAME / entry["file_name"]
     target.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(target), crop, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
@@ -304,6 +395,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Paczka robocza do repozytorium")
     parser.add_argument("--dataset", default=DEFAULT_DATASET, help="Nazwa zbioru w data/")
     parser.add_argument("--data-root", default=None, help="Katalog danych (domyslnie data/)")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Ile pierwszych par kolejki spakowac (domyslnie: cala kuracja)",
+    )
     return parser.parse_args()
 
 
@@ -314,7 +411,7 @@ def main() -> None:
     dataset_dir = data_root / args.dataset
     output = dataset_dir / WORK_DIRNAME
 
-    stats = build_pack(dataset_dir, output)
+    stats = build_pack(dataset_dir, output, args.limit)
     logger.info("Obrazow w paczce   : %d", stats.images_written)
     logger.info("Anotacji w paczce  : %d", stats.annotations_written)
     if stats.skipped_missing:
