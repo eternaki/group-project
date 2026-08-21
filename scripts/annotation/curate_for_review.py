@@ -88,26 +88,35 @@ REVIEW_MAX_ASYMMETRY: float = 0.60
 # a nie jego medianie, właśnie dlatego, że próbka jest mała — ten wybór nie
 # odrzuca żadnej pary, którą człowiek uznał za dobrą.
 #
-# CENA tego progu, zmierzona na 131 parach-kandydatach z nowego przebiegu
-# (mediana szerokości mordy u kandydata: 81 px, więc próg tnie POWYŻEJ mediany):
+# CENA tego progu, zmierzona na 1477 parach-kandydatach z 389 nagrań nowego
+# przebiegu (mediana szerokości mordy u kandydata: 94 px, więc próg tnie tuż
+# POWYŻEJ mediany):
 #
 #     próg   pary   w przeliczeniu na 1601 nagrań
-#      70     60          ~1455
-#      80     52          ~1261
-#      90     30           ~728
-#     100     25           ~606
+#      30   1080          ~4445
+#      50    920          ~3786
+#      70    804          ~3309
+#      80    738          ~3037
+#      90    679          ~2795
+#     100    569          ~2342
+#     120    474          ~1951
 #
-# Urwisko leży między 80 a 90. Zejście do 80 podwaja kolejkę.
+# Krzywa jest GŁADKA — nie ma progu, poniżej którego kolejka nagle rośnie.
+# Pierwszy pomiar (na 131 parach z 66 nagrań) pokazywał urwisko między 80 a 90
+# i dawał prognozy rzędu 600 par; jedno i drugie było artefaktem małej próbki
+# złożonej z pierwszych przetworzonych nagrań, a te akurat były pionowymi
+# klipami z psem w pełnej postaci. Nie warto czytać tej krzywej z mniej niż
+# kilkuset par.
 #
-# Zostaje mimo to 100, bo dwa błędy kosztują RÓŻNIE. Za wysoki próg cofa się za
-# darmo: surowy materiał zostaje w `annotations.json`, a ponowna kuracja trwa
-# sekundy i nie wymaga powtarzania przebiegu. Za niski próg płaci się godzinami
-# pracy człowieka, których nikt nie zwróci — a przy poprzednim progu 30 px
-# anotator odrzucił 11 par z 17. Sześćset par to przy tym nie jest niedobór:
-# przy stu parach dziennie starcza na tygodnie.
+# Próg zostaje 100, bo dwa błędy kosztują RÓŻNIE. Za wysoki cofa się za darmo:
+# surowy materiał zostaje w `annotations.json`, a ponowna kuracja trwa sekundy
+# i nie wymaga powtarzania przebiegu. Za niski płaci się godzinami pracy
+# człowieka, których nikt nie zwróci — przy poprzednim progu 30 px anotator
+# odrzucił 11 par z 17.
 #
 # Gdy potrzeba będzie objętości (np. pod trening sieci z Sprintu 16), wystarczy
-# zmienić tę stałą i przepuścić kurację jeszcze raz.
+# zmienić tę stałą i przepuścić kurację jeszcze raz — zejście do 80 daje około
+# trzech tysięcy par zamiast dwóch i pół.
 REVIEW_MIN_FACE_WIDTH: float = 100.0
 
 # Separator ścieżek w COCO bywa windowsowy — normalizujemy przed rozbiciem
