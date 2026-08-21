@@ -135,3 +135,24 @@ class TestShardOutputDir:
 
     def test_wiele_czesci_dostaje_wlasne_podkatalogi(self, tmp_path: Path) -> None:
         assert shard_output_dir(tmp_path, 2, 4) == tmp_path / "shard_2"
+
+
+class TestScalanieCzesciowe:
+    """Migawka z trwającego przebiegu wolno scalać z brakami — końcowe scalanie nie."""
+
+    def test_brak_czesci_domyslnie_przerywa(self, tmp_path: Path) -> None:
+        """Brak części przy scalaniu końcowym znaczy, że proces padł."""
+        with pytest.raises(FileNotFoundError, match="Brak wyniku"):
+            merge_shards([tmp_path / "nie_ma.json"])
+
+    def test_z_allow_missing_scala_to_co_jest(self, tmp_path: Path) -> None:
+        directory = shard_output_dir(tmp_path, 0, 2)
+        directory.mkdir(parents=True)
+        path = directory / "annotations.json"
+        path.write_text(json.dumps(_shard(0, "VIDEO_A")), encoding="utf-8")
+
+        merged = merge_shards([path, tmp_path / "shard_1" / "annotations.json"],
+                              allow_missing=True)
+
+        assert len(merged["images"]) == len(_shard(0, "VIDEO_A")["images"])
+        assert merged["annotations"], "anotacje obecnej części muszą przejść"

@@ -90,12 +90,17 @@ def shard_output_dir(output_dir: Path, shard: int, shards: int) -> Path:
     return output_dir / f"shard_{shard}"
 
 
-def merge_shards(shard_paths: list[Path]) -> dict:
+def merge_shards(shard_paths: list[Path], allow_missing: bool = False) -> dict:
     """
     Scala zbiory COCO z części, przenumerowując identyfikatory.
 
     Args:
         shard_paths: Ścieżki do plików annotations.json kolejnych części
+        allow_missing: Czy pominąć brakujące części zamiast przerwać. Domyślnie
+            NIE, bo przy scalaniu końcowym brak części znaczy, że proces padł,
+            a cichy wynik "o jedną dwunastą mniejszy" wygląda jak poprawny.
+            Włączane świadomie przy zdejmowaniu MIGAWKI z trwającego przebiegu,
+            gdzie części jeszcze niezapisane to normalny stan, a nie awaria.
 
     Returns:
         Scalony słownik COCO
@@ -109,7 +114,10 @@ def merge_shards(shard_paths: list[Path]) -> dict:
 
     for path in shard_paths:
         if not path.exists():
-            raise FileNotFoundError(f"Brak wyniku części: {path}")
+            if not allow_missing:
+                raise FileNotFoundError(f"Brak wyniku części: {path}")
+            print(f"[UWAGA] pomijam brakujaca czesc: {path}", file=sys.stderr)
+            continue
         with open(path, encoding="utf-8") as handle:
             shard = json.load(handle)
 
@@ -220,10 +228,17 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help="Nie uruchamiaj przetwarzania, tylko scal gotowe czesci",
     )
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="Pomin czesci bez wyniku zamiast przerwac (migawka z trwajacego przebiegu)",
+    )
     return parser.parse_known_args()
 
 
-def merge_and_save(output_dir: Path, workers: int, merged_name: str) -> Optional[Path]:
+def merge_and_save(
+    output_dir: Path, workers: int, merged_name: str, allow_missing: bool = False
+) -> Optional[Path]:
     """
     Scala części i zapisuje wynik.
 
@@ -231,6 +246,7 @@ def merge_and_save(output_dir: Path, workers: int, merged_name: str) -> Optional
         output_dir: Katalog wyjściowy
         workers: Liczba części
         merged_name: Nazwa pliku wynikowego
+        allow_missing: Czy pominąć części, które jeszcze nie zapisały wyniku
 
     Returns:
         Ścieżka scalonego pliku albo None, gdy scalenie się nie powiodło
@@ -239,7 +255,7 @@ def merge_and_save(output_dir: Path, workers: int, merged_name: str) -> Optional
         shard_output_dir(output_dir, i, workers) / "annotations.json" for i in range(workers)
     ]
     try:
-        merged = merge_shards(paths)
+        merged = merge_shards(paths, allow_missing=allow_missing)
     except FileNotFoundError as error:
         print(f"[BLAD] {error}", file=sys.stderr)
         return None
@@ -274,7 +290,9 @@ def main() -> None:
         if any(code != 0 for code in codes):
             print("[UWAGA] Nie wszystkie czesci skonczyly poprawnie — scalam to, co jest")
 
-    if merge_and_save(args.output_dir, args.workers, args.merged_name) is None:
+    if merge_and_save(
+        args.output_dir, args.workers, args.merged_name, args.allow_missing
+    ) is None:
         sys.exit(1)
 
 
