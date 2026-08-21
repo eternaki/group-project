@@ -7,8 +7,15 @@ Dociąga z folderu Google Drive to, czego jeszcze nie ma na dysku.
 W odróżnieniu od `download_drive_folder.py` NIE wymaga klucza Google API — listę
 plików bierze z `gdown`, a potem pobiera każdy plik OSOBNO po jego identyfikatorze.
 Ta okrężna droga jest konieczna: `gdown` pobierając folder jednym poleceniem tnie
-go po ~50 plikach, natomiast samo listowanie i pobieranie pojedynczych plików
-limitu nie ma.
+go po ~50 plikach.
+
+Pobieranie pojedynczych plików limitu jednak też NIE OMIJA — omija tylko ten
+jeden. Zmierzone 21.08.2026: 57 plików przeszło, po czym Drive zaczął odmawiać
+każdemu kolejnemu („Cannot retrieve the public link (...) or have had many
+accesses"). Limit jest dzienny i zwalnia się po kilkunastu godzinach; bez klucza
+API ani ciasteczek zalogowanej przeglądarki nie da się go obejść. Skrypt
+rozpoznaje serię odmów i przerywa przebieg zamiast mielić resztę listy —
+kod wyjścia 2 znaczy „limit", a nie „awaria".
 
 Struktura podfolderów jest ZACHOWYWANA, bo niesie informację: anotacja wsadowa
 czyta emocję z nazwy katalogu nadrzędnego (`batch_annotate.py`, `video_path.
@@ -47,6 +54,20 @@ MAX_ATTEMPTS: int = 3
 # Przerwa po nieudanej próbie [s]
 RETRY_PAUSE_S: float = 2.0
 
+# Po tylu plikach z rzędu odrzuconych przez Drive przerywamy przebieg.
+#
+# Drive ma dzienny limit pobrań i po jego przekroczeniu odpowiada na KAŻDY plik
+# tym samym „Cannot retrieve the public link (...) or have had many accesses".
+# Zmierzone: 57 plików przeszło, po czym odmowa objęła wszystkie następne.
+# Bez tego progu skrypt mielił jeszcze 678 plików po trzy próby z przerwami —
+# ponad godzinę pracy, której jedynym wynikiem było 678 ostrzeżeń, a dobijanie
+# się do limitu potrafi go tylko przedłużyć.
+#
+# Próg jest z zapasem: pojedyncze pliki potrafią odmówić i przy następnym
+# uruchomieniu pobrać się normalnie, więc kilka odmów pod rząd to jeszcze nie
+# limit — dopiero seria.
+QUOTA_FAILURE_STREAK: int = 12
+
 
 @dataclass
 class SyncStats:
@@ -57,6 +78,8 @@ class SyncStats:
     downloaded: int = 0
     failed: int = 0
     bytes_downloaded: int = 0
+    # Czy przebieg przerwał się na limicie Drive, a nie skończył materiał
+    stopped_on_quota: bool = False
 
 
 def folder_id_of(source: str) -> str:
@@ -140,15 +163,27 @@ def sync(source: str, output: Path) -> SyncStats:
         stats.listed, stats.already_have, len(pending),
     )
 
+    streak = 0
     for index, item in enumerate(pending, 1):
         relative = Path(item.path.replace("\\", "/"))
         size = _download_one(item.id, output / relative)
         if size:
             stats.downloaded += 1
             stats.bytes_downloaded += size
+            streak = 0
         else:
             stats.failed += 1
+            streak += 1
             logger.warning("nie pobrano: %s", relative)
+            if streak >= QUOTA_FAILURE_STREAK:
+                stats.stopped_on_quota = True
+                logger.error(
+                    "%d plikow z rzedu odrzuconych — to limit pobran Drive, nie awaria "
+                    "pojedynczych plikow. Przerywam; zostalo %d do pobrania. "
+                    "Limit zwalnia sie po kilkunastu godzinach, skrypt jest wznawialny.",
+                    streak, len(pending) - index,
+                )
+                break
         if index % PROGRESS_EVERY == 0 or index == len(pending):
             logger.info(
                 "  %d/%d  (%.1f GB, nieudanych %d)",
@@ -177,6 +212,9 @@ def main() -> None:
     logger.info("Juz mielismy  : %d", stats.already_have)
     if stats.failed:
         logger.info("Nie pobrano   : %d — uruchom ponownie, skrypt jest wznawialny", stats.failed)
+    if stats.stopped_on_quota:
+        logger.info("Przerwano na limicie Drive — uruchom ponownie za kilkanascie godzin")
+        sys.exit(2)
     if stats.failed and stats.downloaded == 0:
         sys.exit(1)
 
