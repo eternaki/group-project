@@ -87,6 +87,27 @@ REVIEW_MAX_ASYMMETRY: float = 0.60
 # potwierdzi go większa próbka. Wybrano wartość równą MINIMUM zbioru przyjętego,
 # a nie jego medianie, właśnie dlatego, że próbka jest mała — ten wybór nie
 # odrzuca żadnej pary, którą człowiek uznał za dobrą.
+#
+# CENA tego progu, zmierzona na 131 parach-kandydatach z nowego przebiegu
+# (mediana szerokości mordy u kandydata: 81 px, więc próg tnie POWYŻEJ mediany):
+#
+#     próg   pary   w przeliczeniu na 1601 nagrań
+#      70     60          ~1455
+#      80     52          ~1261
+#      90     30           ~728
+#     100     25           ~606
+#
+# Urwisko leży między 80 a 90. Zejście do 80 podwaja kolejkę.
+#
+# Zostaje mimo to 100, bo dwa błędy kosztują RÓŻNIE. Za wysoki próg cofa się za
+# darmo: surowy materiał zostaje w `annotations.json`, a ponowna kuracja trwa
+# sekundy i nie wymaga powtarzania przebiegu. Za niski próg płaci się godzinami
+# pracy człowieka, których nikt nie zwróci — a przy poprzednim progu 30 px
+# anotator odrzucił 11 par z 17. Sześćset par to przy tym nie jest niedobór:
+# przy stu parach dziennie starcza na tygodnie.
+#
+# Gdy potrzeba będzie objętości (np. pod trening sieci z Sprintu 16), wystarczy
+# zmienić tę stałą i przepuścić kurację jeszcze raz.
 REVIEW_MIN_FACE_WIDTH: float = 100.0
 
 # Separator ścieżek w COCO bywa windowsowy — normalizujemy przed rozbiciem
