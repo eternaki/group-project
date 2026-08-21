@@ -43,13 +43,24 @@ DEFAULT_MERGED_NAME: str = "annotations.json"
 #
 # Zmierzone na tej maszynie (16 rdzeni, 32 GB, CPU bez CUDA):
 #
-#     4 procesy x 4 wątki   9.3 rdzenia zajęte   0.67 nagrania/min
-#    12 procesów x 1 wątek  12.2 rdzenia zajęte  3.4 nagrania/min
+#     4 procesy x 4 wątki   9.3 rdzenia zajęte   ~0.67 nagrania/min (zgrubnie)
+#    12 procesów x 1 wątek  12.2 rdzenia zajęte   1.10 nagrania/min (okno 10 min
+#                                                 w stanie ustalonym)
 #
-# Czyli pięciokrotnie — 1600 nagrań w ~8 h zamiast ~40 h. Granicą jest PAMIĘĆ,
-# nie procesor: dwanaście procesów zajmuje 15.9 GB z 32 GB, a każdy kolejny to
-# około 1.3 GB (własny komplet HRNet-W48, YOLOv8m, EfficientNet-B4). Powyżej
-# czternastu zabrakłoby zapasu i przebieg nocny ryzykowałby zamianę na dysk.
+# Czyli około półtora raza szybciej, a nie pięć — 1600 nagrań w ~24 h.
+#
+# UWAGA na sposób mierzenia: pierwsza wersja tego komentarza mówiła o 3.4
+# nagrania/min, bo za koniec pierwszego nagrania wzięto POJAWIENIE SIĘ
+# PIERWSZEJ KLATKI. To dwie różne rzeczy — klatki zapisuje dopiero trek
+# z peakami, więc pierwsza klatka pochodzi z nagrania, które akurat miało
+# peaki, a nie z tego, które skończyło się najwcześniej. Tempo trzeba liczyć
+# z licznika URUCHOMIONYCH nagrań w oknie czasu, nie z artefaktów na dysku.
+#
+# Granicą jest PAMIĘĆ, nie procesor: dwanaście procesów zajmuje ~16.5 GB z 32 GB
+# i wychodzi na plateau. Na proces składa się komplet modeli (~1.3 GB: HRNet-W48,
+# YOLOv8m, EfficientNet-B4) ORAZ bufor klatek nagrania — `max_frames_per_video`
+# pełnych klatek naraz, czyli przy 1920x1080 około 300 MB. Ten drugi składnik
+# rośnie z rozdzielczością materiału, więc zapas poniżej ~4 GB jest ryzykowny.
 DEFAULT_WORKERS: int = 12
 
 # Pole anotacji wskazujące OBRAZ klatki neutralnej — musi jechać razem z mapą
