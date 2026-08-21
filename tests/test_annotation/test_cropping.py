@@ -7,6 +7,8 @@ w szczególności poprawka punktów klatki NEUTRALNEJ, którą łatwo zgubić, b
 zapisuje się pod własną ścieżką, a nie pod kluczem pary.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -16,8 +18,10 @@ from scripts.annotation.cropping import (
     body_box,
     crop_and_scale,
     face_box,
+    read_image,
     remap_bbox,
     remap_keypoints,
+    write_jpeg,
 )
 
 NUM_KEYPOINTS = 46
@@ -199,3 +203,32 @@ class TestRemapBbox:
         moved = remap_bbox([120.0, 220.0, 80.0, 60.0], CropBox(100, 200, 400, 400), scale=0.5)
 
         assert moved == [10.0, 10.0, 40.0, 30.0]
+
+
+class TestZapisIOdczytZeSciezkaUnicode:
+    """
+    Ścieżka z cyrylicą nie może gubić klatki.
+
+    `cv2.imread`/`cv2.imwrite` idą na Windowsie przez API ANSI i na takiej
+    ścieżce zwracają odpowiednio None i False — klatka wygląda wtedy jak
+    brakująca, choć leży na dysku. Zmierzone: nagrania `собака_*` traciły
+    w ten sposób WSZYSTKIE swoje klatki, a paczka meldowała je jako pominięte.
+    """
+
+    def test_obraz_wraca_taki_sam_jak_zapisany(self, tmp_path: Path) -> None:
+        obraz = np.full((32, 48, 3), 127, dtype=np.uint8)
+        sciezka = tmp_path / "собака_7552446540653120776" / "клатка_000042.jpg"
+
+        assert write_jpeg(sciezka, obraz) is True
+        wczytany = read_image(sciezka)
+
+        assert wczytany is not None, "klatka z cyrylicą w ścieżce musi się wczytać"
+        assert wczytany.shape == obraz.shape
+
+    def test_brak_pliku_daje_none_a_nie_wyjatek(self, tmp_path: Path) -> None:
+        assert read_image(tmp_path / "нет_такого" / "файл.jpg") is None
+
+    def test_pusty_plik_daje_none(self, tmp_path: Path) -> None:
+        pusty = tmp_path / "пустой.jpg"
+        pusty.write_bytes(b"")
+        assert read_image(pusty) is None

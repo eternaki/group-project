@@ -15,6 +15,7 @@ oryginału, a zdjęcia byłyby wycinkami — czyli wskazywałby poza własne obr
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -28,6 +29,59 @@ KEYPOINT_VISIBLE_MIN: float = 0.3
 
 # Minimalna liczba pewnych punktów, żeby w ogóle liczyć kadr mordy
 MIN_VISIBLE_KEYPOINTS: int = 6
+
+
+# Jakość zapisu JPEG używana, gdy wywołujący nie poda własnej
+DEFAULT_JPEG_QUALITY: int = 88
+
+
+def read_image(path: Path) -> Optional[np.ndarray]:
+    """
+    Wczytuje obraz ścieżką, która MOŻE zawierać znaki spoza ASCII.
+
+    `cv2.imread` na Windowsie idzie przez API ANSI i na ścieżce z cyrylicą
+    zwraca None — czyli klatka wygląda jak brakująca, choć leży na dysku.
+    Zmierzone na tym zbiorze: nagrania `собака_*` traciły w ten sposób
+    wszystkie swoje klatki, a paczka meldowała je tylko jako „pominięte".
+
+    Obejście: plik czyta Python (który ze ścieżkami Unicode radzi sobie
+    poprawnie), a OpenCV dostaje gotowy bufor bajtów.
+
+    Args:
+        path: Ścieżka do pliku obrazu
+
+    Returns:
+        Obraz BGR albo None, gdy pliku nie ma lub nie da się go zdekodować
+    """
+    if not path.is_file():
+        return None
+    buffer = np.fromfile(path, dtype=np.uint8)
+    if buffer.size == 0:
+        return None
+    return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+
+
+def write_jpeg(path: Path, image: np.ndarray, quality: int = DEFAULT_JPEG_QUALITY) -> bool:
+    """
+    Zapisuje JPEG ścieżką, która MOŻE zawierać znaki spoza ASCII.
+
+    Odpowiednik `read_image` po stronie zapisu i z tego samego powodu —
+    `cv2.imwrite` ma na Windowsie to samo ograniczenie co `cv2.imread`.
+
+    Args:
+        path: Ścieżka docelowa
+        image: Obraz BGR
+        quality: Jakość JPEG
+
+    Returns:
+        Czy zapis się powiódł
+    """
+    ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded.tofile(path)
+    return path.is_file() and path.stat().st_size > 0
 
 
 @dataclass(frozen=True)

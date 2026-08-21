@@ -33,16 +33,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import cv2
-
 from packages.pipeline.quality_gate import assess_frame
 from scripts.annotation.cropping import (
     CropBox,
     body_box,
     crop_and_scale,
     face_box,
+    read_image,
     remap_bbox,
     remap_keypoints,
+    write_jpeg,
 )
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent.parent
@@ -343,7 +343,7 @@ def _write_frame(
         Czwórka (wpis obrazu, kadr, skala, rozmiar pliku) albo None
     """
     source = dataset_dir / FRAMES_DIRNAME / entry["file_name"]
-    image = cv2.imread(str(source)) if source.is_file() else None
+    image = read_image(source)
     if image is None:
         return None
 
@@ -353,8 +353,7 @@ def _write_frame(
 
     crop, scale = crop_and_scale(image, box, _max_side_for(annotations, box))
     target = output / FRAMES_DIRNAME / entry["file_name"]
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(target), crop, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
+    if not write_jpeg(target, crop, JPEG_QUALITY):
         return None
 
     packed = dict(entry)

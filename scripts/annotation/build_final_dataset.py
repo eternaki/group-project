@@ -34,7 +34,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import cv2
 import numpy as np
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent.parent
@@ -57,7 +56,9 @@ from scripts.annotation.cropping import (  # noqa: E402
     bbox_from_keypoints,
     crop_and_scale,
     face_box,
+    read_image,
     remap_keypoints,
+    write_jpeg,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
@@ -273,7 +274,7 @@ def write_crop(
         gdy klatki nie ma na dysku lub nie da się wyznaczyć kadru mordy
     """
     source = frames_root / image_entry["file_name"]
-    image = cv2.imread(str(source)) if source.is_file() else None
+    image = read_image(source)
     if image is None:
         return None
 
@@ -284,7 +285,7 @@ def write_crop(
     crop, scale = crop_and_scale(image, box, MAX_CROP_SIDE)
     target = images_root / image_entry["file_name"]
     target.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(target), crop, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
+    if not write_jpeg(target, crop, JPEG_QUALITY):
         return None
 
     entry = {
