@@ -67,11 +67,27 @@ DEFAULT_OUTPUT: str = "data/dataset_final/curated.json"
 # z `QualityThresholds` ponowna kuracja „na domyślnych" po cichu tnie kolejkę.
 REVIEW_MAX_ASYMMETRY: float = 0.60
 
-# Ostry próg 40 px zakłada odczyt z klatki. Anotator ogląda POWIĘKSZONY kadr
-# mordy, więc czyta ucho i pysk także przy 30 px. Ten próg i tak nie jest tu
-# wiążący: odrzucone peaki mają medianę szerokości mordy 82 px — tracimy je na
-# obrocie głowy, nie na rozdzielczości.
-REVIEW_MIN_FACE_WIDTH: float = 30.0
+# Próg 30 px zakładał, że anotator odczyta mordę z powiększenia. PIERWSZE
+# WERDYKTY TEGO ZAŁOŻENIA NIE POTWIERDZIŁY. Na 15 parach, które człowiek zdążył
+# ocenić, szerokość mordy dzieli je niemal bezbłędnie:
+#
+#     przyjęte  (6): 100, 148, 172, 189, 465, 494 px
+#     odrzucone (9):  31,  32,  37,  48,  64,  66,  84, 112, 117 px
+#
+# Żadna przyjęta para nie miała mordy poniżej 100 px, a siedem z dziewięciu
+# odrzuconych leży poniżej tej wartości. Przy progu 30 px kolejka napełniała się
+# więc materiałem, który anotator i tak wyrzuca — z 17 par odrzucił 11.
+#
+# Drugi, niezależny pomiar wskazuje tę samą liczbę: paczka robocza zmniejsza
+# kadr medianowo 0.59 raza, więc morda 100 px w klatce daje anotatorowi około
+# 59 px na ekranie — i to jest granica, na której da się jeszcze odczytać ucho
+# i pysk. Poniżej pozycji uszu nie widać, a wtedy werdykt brzmi „nie oceniam".
+#
+# Zastrzeżenie: piętnaście par to mało i próg wolno podnieść dopiero wtedy, gdy
+# potwierdzi go większa próbka. Wybrano wartość równą MINIMUM zbioru przyjętego,
+# a nie jego medianie, właśnie dlatego, że próbka jest mała — ten wybór nie
+# odrzuca żadnej pary, którą człowiek uznał za dobrą.
+REVIEW_MIN_FACE_WIDTH: float = 100.0
 
 # Separator ścieżek w COCO bywa windowsowy — normalizujemy przed rozbiciem
 _WINDOWS_SEPARATOR: str = "\\"
