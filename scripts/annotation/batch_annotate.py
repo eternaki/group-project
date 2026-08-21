@@ -19,6 +19,7 @@ import argparse
 import gc
 import json
 import logging
+import os
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -1025,8 +1026,41 @@ class BatchAnnotator:
         return "\n".join(lines)
 
 
+def limit_threads() -> Optional[int]:
+    """
+    Ogranicza pule wątków do tylu rdzeni, ile przydzielił uruchamiający proces.
+
+    `run_batch_parallel` dzieli rdzenie między części przez `OMP_NUM_THREADS`,
+    ale ta zmienna rządzi WYŁĄCZNIE biblioteką OpenMP. Torch czyta ją przy
+    imporcie, natomiast OpenCV ma własną pulę i nie patrzy na nią wcale — przy
+    czterech częściach na szesnastu rdzeniach każda część uruchamiała OpenCV
+    na wszystkich szesnastu, co daje 64 wątki na 16 rdzeni. Procesy nie liczyły
+    wtedy szybciej, tylko odbierały sobie nawzajem rdzenie.
+
+    Bez zmiennej nie robimy nic — przebieg jednoprocesowy ma prawo wziąć całą
+    maszynę.
+
+    Returns:
+        Liczba wątków, na którą ograniczono pule, albo None gdy bez zmian
+    """
+    raw = os.environ.get("OMP_NUM_THREADS")
+    if not raw:
+        return None
+    try:
+        threads = int(raw)
+    except ValueError:
+        return None
+    if threads < 1:
+        return None
+
+    torch.set_num_threads(threads)
+    cv2.setNumThreads(threads)
+    return threads
+
+
 def main():
     """Główna funkcja CLI."""
+    limit_threads()
     parser = argparse.ArgumentParser(
         description="Masowa anotacja wideo dla Dog FACS Dataset"
     )

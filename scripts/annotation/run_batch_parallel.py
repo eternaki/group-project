@@ -33,10 +33,24 @@ REPO_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 DEFAULT_OUTPUT_DIR: Path = Path("data/annotations")
 DEFAULT_MERGED_NAME: str = "annotations.json"
 
-# Domyślna liczba procesów. Cztery, a nie tyle, ile rdzeni: każdy proces ładuje
-# własny komplet modeli (HRNet-W48, YOLOv8m, EfficientNet-B4), więc o limicie
-# decyduje pamięć, nie procesor. Torch i tak zrównolegla pojedynczy przebieg.
-DEFAULT_WORKERS: int = 4
+# Domyślna liczba procesów.
+#
+# Poprzednia wartość (4) opierała się na założeniu, że „torch i tak zrównolegla
+# pojedynczy przebieg". Pomiar tego nie potwierdza: JEDEN proces z szesnastoma
+# wątkami przerabia nagranie w ~120 s, a ten sam proces z czterema — w ~45 s.
+# Modele zrównoleglają się wewnętrznie SŁABO, więc rdzeń oddany procesowi robi
+# więcej niż rdzeń oddany wątkowi.
+#
+# Zmierzone na tej maszynie (16 rdzeni, 32 GB, CPU bez CUDA):
+#
+#     4 procesy x 4 wątki   9.3 rdzenia zajęte   0.67 nagrania/min
+#    12 procesów x 1 wątek  12.2 rdzenia zajęte  3.4 nagrania/min
+#
+# Czyli pięciokrotnie — 1600 nagrań w ~8 h zamiast ~40 h. Granicą jest PAMIĘĆ,
+# nie procesor: dwanaście procesów zajmuje 15.9 GB z 32 GB, a każdy kolejny to
+# około 1.3 GB (własny komplet HRNet-W48, YOLOv8m, EfficientNet-B4). Powyżej
+# czternastu zabrakłoby zapasu i przebieg nocny ryzykowałby zamianę na dysk.
+DEFAULT_WORKERS: int = 12
 
 # Pole anotacji wskazujące OBRAZ klatki neutralnej — musi jechać razem z mapą
 # identyfikatorów, inaczej scalony zbiór wiąże psy z cudzymi bazami AU.
