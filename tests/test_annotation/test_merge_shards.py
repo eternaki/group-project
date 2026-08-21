@@ -59,7 +59,7 @@ def shard_paths(tmp_path: Path) -> list[Path]:
     """Dwie części o CELOWO kolidujących identyfikatorach."""
     paths = []
     for shard, video in enumerate(("VIDEO_A", "VIDEO_B")):
-        directory = shard_output_dir(tmp_path, shard)
+        directory = shard_output_dir(tmp_path, shard, 2)
         directory.mkdir(parents=True)
         path = directory / "annotations.json"
         # Obie części zaczynają od id=1 — bez przenumerowania nadpiszą się
@@ -115,7 +115,7 @@ class TestMergeShards:
 
     def test_wiszaca_referencja_nie_wskazuje_cudzej_klatki(self, tmp_path: Path) -> None:
         """Lepszy None niż wskazanie klatki neutralnej obcego psa."""
-        directory = shard_output_dir(tmp_path, 0)
+        directory = shard_output_dir(tmp_path, 0, 2)
         directory.mkdir(parents=True)
         broken = _shard(0, "VIDEO_A")
         broken["annotations"][1]["neutral_frame_id"] = 999
@@ -124,3 +124,14 @@ class TestMergeShards:
 
         merged = merge_shards([path])
         assert merged["annotations"][1]["neutral_frame_id"] is None
+
+
+class TestShardOutputDir:
+    """Układ katalogów części musi zgadzać się z `BatchConfig.__post_init__`."""
+
+    def test_jedna_czesc_pisze_wprost_do_katalogu(self, tmp_path: Path) -> None:
+        """Bez podkatalogu — inaczej `--workers 1` nie znajduje własnego wyniku."""
+        assert shard_output_dir(tmp_path, 0, 1) == tmp_path
+
+    def test_wiele_czesci_dostaje_wlasne_podkatalogi(self, tmp_path: Path) -> None:
+        assert shard_output_dir(tmp_path, 2, 4) == tmp_path / "shard_2"

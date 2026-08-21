@@ -43,17 +43,25 @@ DEFAULT_WORKERS: int = 4
 NEUTRAL_REFERENCE_FIELD: str = "neutral_frame_id"
 
 
-def shard_output_dir(output_dir: Path, shard: int) -> Path:
+def shard_output_dir(output_dir: Path, shard: int, shards: int) -> Path:
     """
     Zwraca katalog wyników danej części.
+
+    Przy JEDNEJ części nie ma podkatalogu: `BatchConfig.__post_init__` pomija
+    wtedy rozdzielanie plików, bo nie ma z czym kolidować. Scalanie musi liczyć
+    tak samo — inaczej `--workers 1` przetwarza cały materiał poprawnie, po czym
+    wywraca się na szukaniu nieistniejącego `shard_0`.
 
     Args:
         output_dir: Katalog wyjściowy podany przez użytkownika
         shard: Numer części
+        shards: Na ile części dzielony jest materiał
 
     Returns:
         Katalog, do którego pisze ta część (zgodny z `BatchConfig.__post_init__`)
     """
+    if shards == 1:
+        return output_dir
     return output_dir / f"shard_{shard}"
 
 
@@ -202,7 +210,9 @@ def merge_and_save(output_dir: Path, workers: int, merged_name: str) -> Optional
     Returns:
         Ścieżka scalonego pliku albo None, gdy scalenie się nie powiodło
     """
-    paths = [shard_output_dir(output_dir, i) / "annotations.json" for i in range(workers)]
+    paths = [
+        shard_output_dir(output_dir, i, workers) / "annotations.json" for i in range(workers)
+    ]
     try:
         merged = merge_shards(paths)
     except FileNotFoundError as error:
