@@ -1,25 +1,31 @@
 """
-Orkiestrator kolektora wideo z psami z TikToka, z sortowaniem po emocjach.
+Orkiestrator kolektora wideo z psami (TikTok i/lub YouTube), z sortowaniem
+po emocjach.
 
-Przepływ dla każdego hashtagu: wyszukaj -> odsiej AI-caption -> pobierz ->
-sklasyfikuj emocję (odrzuca też wideo bez wyraźnie widocznej mordy) -> wyślij
-na Google Drive do podfolderu danej emocji -> usuń lokalną kopię.
+Przepływ dla każdego zapytania/hashtagu: wyszukaj -> odsiej AI-caption ->
+pobierz -> sklasyfikuj emocję (odrzuca też wideo bez wyraźnie widocznej mordy)
+-> wyślij na Google Drive do podfolderu danej emocji -> usuń lokalną kopię.
 
 Uruchomienie:
-    python -m scripts.download.tiktok.collect
+    python -m scripts.download.tiktok.collect                     # tiktok + youtube
+    python -m scripts.download.tiktok.collect --source tiktok     # tylko TikTok
+    python -m scripts.download.tiktok.collect --source youtube    # tylko YouTube (bez captchy)
 
-Wymaga zmiennej środowiskowej TIKTOK_MS_TOKEN oraz pliku
-secrets/gdrive_credentials.json (patrz README w tym katalogu).
+TikTok wymaga zmiennej środowiskowej TIKTOK_MS_TOKEN. Google Drive wymaga
+pliku secrets/gdrive_credentials.json (patrz README w tym katalogu).
 
 Stan (już przetworzone ID wideo, liczniki per emocja) jest zapisywany do
 data/tiktok_state.json, więc przerwanie i ponowne uruchomienie nie duplikuje
 pracy.
 """
 
+import argparse
 import asyncio
+import hashlib
 import json
 import random
 import time
+from pathlib import Path
 
 from packages.data.schemas import EMOTION_CLASSES
 from scripts.download.tiktok.config import (
@@ -33,13 +39,15 @@ from scripts.download.tiktok.config import (
     SOFTBAN_COOLDOWN_SECONDS,
     STATE_FILE,
     VIDEOS_PER_HASHTAG_PER_ROUND,
+    VIDEOS_PER_YOUTUBE_QUERY_PER_ROUND,
     CollectorConfig,
 )
 from scripts.download.tiktok.content_filters import AiCaptionFilter
-from scripts.download.tiktok.downloader import download_tiktok_video, get_tiktok_video_metadata
+from scripts.download.tiktok.downloader import download_video, get_video_metadata
 from scripts.download.tiktok.drive_uploader import GoogleDriveUploader
 from scripts.download.tiktok.emotion_classifier import VideoEmotionClassifier
 from scripts.download.tiktok.hashtag_search import TikTokHashtagSearcher
+from scripts.download.tiktok.youtube_search import YouTubeSearcher
 
 
 class CollectorState:
@@ -48,6 +56,9 @@ class CollectorState:
     def __init__(self, state_path) -> None:
         self.state_path = state_path
         self.processed_ids: set[str] = set()
+        # Hash zawartości pliku (SHA-256) już zaakceptowanych wideo - łapie ten sam
+        # materiał wgrany ponownie pod innym ID (repost), czego nie widać po ID.
+        self.content_hashes: set[str] = set()
         self.emotion_counts: dict[str, int] = {emotion: 0 for emotion in EMOTION_CLASSES}
         self._load()
 
@@ -55,6 +66,7 @@ class CollectorState:
         if self.state_path.exists():
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
             self.processed_ids = set(data.get("processed_ids", []))
+            self.content_hashes = set(data.get("content_hashes", []))
             saved_counts = data.get("emotion_counts", {})
             for emotion in EMOTION_CLASSES:
                 self.emotion_counts[emotion] = saved_counts.get(emotion, 0)
@@ -65,6 +77,7 @@ class CollectorState:
             json.dumps(
                 {
                     "processed_ids": sorted(self.processed_ids),
+                    "content_hashes": sorted(self.content_hashes),
                     "emotion_counts": self.emotion_counts,
                 },
                 ensure_ascii=False,
@@ -78,6 +91,12 @@ class CollectorState:
 
     def is_processed(self, video_id: str) -> bool:
         return video_id in self.processed_ids
+
+    def is_duplicate_content(self, content_hash: str) -> bool:
+        return content_hash in self.content_hashes
+
+    def mark_content_hash(self, content_hash: str) -> None:
+        self.content_hashes.add(content_hash)
 
     def is_complete(self, target_per_emotion: int) -> bool:
         return all(count >= target_per_emotion for count in self.emotion_counts.values())
@@ -103,50 +122,84 @@ async def run_collection(config: CollectorConfig) -> None:
         emotion: uploader.ensure_folder(emotion, GDRIVE_FOLDER_ID) for emotion in EMOTION_CLASSES
     }
 
-    consecutive_errors = 0
+    work_items: list[tuple[str, str, int]] = []
+    if "tiktok" in config.sources:
+        work_items += [("tiktok", h, VIDEOS_PER_HASHTAG_PER_ROUND) for h in config.hashtags]
+    if "youtube" in config.sources:
+        work_items += [
+            ("youtube", q, VIDEOS_PER_YOUTUBE_QUERY_PER_ROUND) for q in config.youtube_queries
+        ]
 
-    async with TikTokHashtagSearcher(config.ms_token) as searcher:
-        while not state.is_complete(config.target_per_emotion):
-            for hashtag in config.hashtags:
-                if state.is_complete(config.target_per_emotion):
-                    break
+    common_args = (config, state, caption_filter, emotion_classifier, uploader, emotion_folder_ids)
 
-                try:
-                    async for video in searcher.search(hashtag, VIDEOS_PER_HASHTAG_PER_ROUND):
-                        if state.is_complete(config.target_per_emotion):
-                            break
-                        if state.is_processed(video.video_id):
-                            continue
-
-                        _throttle()
-
-                        emotion = _process_video(
-                            video, state, config, caption_filter,
-                            emotion_classifier, uploader, emotion_folder_ids,
-                        )
-                        state.mark_processed(video.video_id)
-                        if emotion is not None:
-                            state.emotion_counts[emotion] += 1
-                            counts_str = ", ".join(
-                                f"{e}={state.emotion_counts[e]}/{config.target_per_emotion}"
-                                for e in EMOTION_CLASSES
-                            )
-                            print(f"Przyjęto [{emotion}]: {video.url}\n  {counts_str}")
-                        state.save()
-                        consecutive_errors = 0
-
-                except Exception as e:
-                    consecutive_errors += 1
-                    print(f"Błąd przy hashtagu #{hashtag}: {e}")
-                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                        print(
-                            f"Zbyt wiele błędów z rzędu - pauza {SOFTBAN_COOLDOWN_SECONDS}s "
-                            "(prawdopodobny rate-limit)."
-                        )
-                        time.sleep(SOFTBAN_COOLDOWN_SECONDS)
-                        consecutive_errors = 0
+    if "tiktok" in config.sources:
+        async with TikTokHashtagSearcher(config.ms_token) as tiktok_searcher:
+            youtube_searcher = YouTubeSearcher()
+            await _run_loop(work_items, tiktok_searcher, youtube_searcher, *common_args)
+    else:
+        youtube_searcher = YouTubeSearcher()
+        await _run_loop(work_items, None, youtube_searcher, *common_args)
 
     print(f"Zakończono: wszystkie emocje osiągnęły {config.target_per_emotion} wideo.")
+
+
+async def _run_loop(
+    work_items: list[tuple[str, str, int]],
+    tiktok_searcher: TikTokHashtagSearcher | None,
+    youtube_searcher: YouTubeSearcher,
+    config: CollectorConfig,
+    state: CollectorState,
+    caption_filter: AiCaptionFilter,
+    emotion_classifier: VideoEmotionClassifier,
+    uploader: GoogleDriveUploader,
+    emotion_folder_ids: dict[str, str],
+) -> None:
+    """Główna pętla: przechodzi po źródłach/zapytaniach aż komplet emocji zebrany."""
+    consecutive_errors = 0
+
+    while not state.is_complete(config.target_per_emotion):
+        for platform, query, round_size in work_items:
+            if state.is_complete(config.target_per_emotion):
+                break
+
+            searcher = tiktok_searcher if platform == "tiktok" else youtube_searcher
+
+            _throttle()
+
+            try:
+                async for video in searcher.search(query, round_size):
+                    if state.is_complete(config.target_per_emotion):
+                        break
+                    if state.is_processed(video.video_id):
+                        continue
+
+                    _throttle()
+
+                    emotion = _process_video(
+                        video, state, config, caption_filter,
+                        emotion_classifier, uploader, emotion_folder_ids,
+                    )
+                    state.mark_processed(video.video_id)
+                    if emotion is not None:
+                        state.emotion_counts[emotion] += 1
+                        counts_str = ", ".join(
+                            f"{e}={state.emotion_counts[e]}/{config.target_per_emotion}"
+                            for e in EMOTION_CLASSES
+                        )
+                        print(f"Przyjęto [{platform}/{emotion}]: {video.url}\n  {counts_str}")
+                    state.save()
+                    consecutive_errors = 0
+
+            except Exception as e:
+                consecutive_errors += 1
+                print(f"Błąd przy {platform}:{query}: {e}")
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    print(
+                        f"Zbyt wiele błędów z rzędu - pauza {SOFTBAN_COOLDOWN_SECONDS}s "
+                        "(prawdopodobny rate-limit)."
+                    )
+                    time.sleep(SOFTBAN_COOLDOWN_SECONDS)
+                    consecutive_errors = 0
 
 
 def _process_video(
@@ -164,17 +217,21 @@ def _process_video(
     Returns:
         Nazwa przypisanej emocji, jeśli wideo zostało zaakceptowane i wysłane; inaczej None
     """
-    metadata = get_tiktok_video_metadata(video.url)
+    metadata = get_video_metadata(video.url)
     if metadata is None:
         return None
     if caption_filter.is_likely_ai_generated(metadata.description, []):
         return None
 
-    result = download_tiktok_video(video.url, DOWNLOAD_TMP_DIR)
+    result = download_video(video.url, DOWNLOAD_TMP_DIR)
     if not result.success or result.path is None:
         return None
 
     try:
+        content_hash = _hash_file(result.path)
+        if state.is_duplicate_content(content_hash):
+            return None
+
         emotion = emotion_classifier.classify_video(result.path)
         if emotion is None:
             return None
@@ -183,12 +240,22 @@ def _process_video(
 
         uploader.upload_file(
             result.path,
-            remote_name=f"{video.source_hashtag}_{video.video_id}.mp4",
+            remote_name=f"{video.platform}_{video.source_label}_{video.video_id}.mp4",
             folder_id=emotion_folder_ids[emotion],
         )
+        state.mark_content_hash(content_hash)
         return emotion
     finally:
         result.path.unlink(missing_ok=True)
+
+
+def _hash_file(path: Path) -> str:
+    """Liczy SHA-256 pliku (do wykrywania duplikatów treści niezależnie od ID)."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _throttle() -> None:
@@ -196,5 +263,18 @@ def _throttle() -> None:
     time.sleep(random.uniform(MIN_REQUEST_DELAY_SECONDS, MAX_REQUEST_DELAY_SECONDS))
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Kolektor wideo z psami (TikTok/YouTube)")
+    parser.add_argument(
+        "--source",
+        choices=["tiktok", "youtube", "all"],
+        default="all",
+        help="Które źródło uruchomić (domyślnie: all)",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    asyncio.run(run_collection(CollectorConfig()))
+    args = _parse_args()
+    sources = ["tiktok", "youtube"] if args.source == "all" else [args.source]
+    asyncio.run(run_collection(CollectorConfig(sources=sources)))

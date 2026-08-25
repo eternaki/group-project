@@ -56,6 +56,25 @@ DEFAULT_HASHTAGS: list[str] = [
     "shydog",
 ]
 
+# Zapytania wyszukiwania YouTube (odpowiednik hashtagów TikTok) - ogólne
+# + ukierunkowane na konkretne emocje, z tego samego powodu co DEFAULT_HASHTAGS.
+DEFAULT_YOUTUBE_QUERIES: list[str] = [
+    "dog reaction funny face",
+    "dog facial expression closeup",
+    "dog emotions compilation",
+    "cute dog face closeup",
+    "happy dog smiling",
+    "dog wagging tail happy",
+    "sad dog face",
+    "angry dog growling",
+    "scared dog anxious",
+    "surprised dog face",
+    "shy submissive dog",
+]
+
+# Które źródła uruchomić: "tiktok", "youtube" albo oba
+DEFAULT_SOURCES: list[str] = ["tiktok", "youtube"]
+
 # Frazy/hashtagi wskazujące na treść wygenerowaną przez AI (filtr heurystyczny)
 AI_CONTENT_MARKERS: list[str] = [
     "ai generated",
@@ -84,11 +103,13 @@ TARGET_PER_EMOTION = 500
 # to główny koszt czasowy całego kolektora (patrz README: benchmark).
 EMOTION_FRAME_SAMPLE_COUNT = 14
 EMOTION_NUM_PEAKS = 5  # ile "peak frames" wybrać do głosowania nad finalną emocją
-# Progi peak selectora POLUZOWANE względem domyślnych w peak_selector.py - materiał
-# z TikToka jest bardziej zaszumiony/skompresowany niż źródło, pod które dopasowano
-# oryginalne progi (30°/60 sharpness), przez co prawie każde wideo dawało 0 peaków.
-EMOTION_MAX_HEAD_ANGLE = 60.0
+# Progi peak selectora POLUZOWANE względem domyślnych w VideoDatasetConfig -
+# materiał z TikToka/YouTube jest bardziej zaszumiony/skompresowany niż źródło,
+# pod które dopasowano oryginalne progi (min_sharpness=60), przez co prawie
+# każdy trek dawał 0 peaków (zmierzone: sharp=60 -> 0 peaków, sharp=15 -> peaki są).
 EMOTION_MIN_KEYPOINT_CONF = 0.35
+EMOTION_MAX_YAW_ASYMMETRY = 0.6
+EMOTION_MAX_ROLL = 45.0
 EMOTION_MIN_SHARPNESS = 15.0
 # Próg jakości finalnej etykiety - odrzuca niepewne/niezgodne klasyfikacje zamiast
 # wrzucać je do byle jakiej emocji (obserwacja: dużo fałszywych "neutral" przy
@@ -107,6 +128,9 @@ BREEDS_JSON = PROJECT_ROOT / "packages" / "models" / "breeds.json"
 MIN_REQUEST_DELAY_SECONDS = 4.0
 MAX_REQUEST_DELAY_SECONDS = 9.0
 VIDEOS_PER_HASHTAG_PER_ROUND = 30
+# 15, nie 30 - ytsearch paginuje po ~20 wynikach, a druga strona najczęściej
+# kończy się HTTP 403 (rate-limit). Jedna strona wyników jest stabilniejsza.
+VIDEOS_PER_YOUTUBE_QUERY_PER_ROUND = 15
 
 # Przeglądarka (Playwright) - profil trwały, żeby sesja wyglądała jak
 # powracający użytkownik, a nie nowe "czyste" urządzenie za każdym razem
@@ -146,19 +170,24 @@ class CollectorConfig:
     Pełna konfiguracja przebiegu kolektora.
 
     Attributes:
-        hashtags: Lista hashtagów do przeszukania
+        sources: Które źródła uruchomić - podzbiór {"tiktok", "youtube"}
+        hashtags: Lista hashtagów TikTok do przeszukania
+        youtube_queries: Lista zapytań YouTube do przeszukania
         target_per_emotion: Docelowa liczba zaakceptowanych wideo NA KAŻDĄ emocję
-        ms_token: Token sesji TikTok (cookie ms_token zalogowanego konta)
+        ms_token: Token sesji TikTok (cookie ms_token zalogowanego konta) - wymagany
+            tylko gdy "tiktok" jest w sources
         device: Urządzenie inference dla modeli ('cuda' lub 'cpu')
     """
 
+    sources: list[str] = field(default_factory=lambda: list(DEFAULT_SOURCES))
     hashtags: list[str] = field(default_factory=lambda: list(DEFAULT_HASHTAGS))
+    youtube_queries: list[str] = field(default_factory=lambda: list(DEFAULT_YOUTUBE_QUERIES))
     target_per_emotion: int = TARGET_PER_EMOTION
     ms_token: str = field(default_factory=lambda: os.environ.get("TIKTOK_MS_TOKEN", ""))
     device: str = field(default_factory=lambda: os.environ.get("DOG_FACS_DEVICE", "cpu"))
 
     def __post_init__(self) -> None:
-        if not self.ms_token:
+        if "tiktok" in self.sources and not self.ms_token:
             raise ValueError(
                 "Brak zmiennej środowiskowej TIKTOK_MS_TOKEN "
                 "(wartość cookie ms_token z zalogowanej sesji TikTok w przeglądarce)."

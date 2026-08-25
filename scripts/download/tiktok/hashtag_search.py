@@ -12,8 +12,8 @@ obchodzenia captchy.
 """
 
 import random
-from dataclasses import dataclass
 
+from scripts.download.tiktok.common import VideoInfo
 from scripts.download.tiktok.config import (
     CAPTCHA_FLAG_FILE,
     CAPTCHA_WAIT_TIMEOUT_SECONDS,
@@ -30,22 +30,6 @@ _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
-
-
-@dataclass
-class TikTokVideoInfo:
-    """
-    Zwięzły opis wideo znalezionego na stronie hashtagu.
-
-    Attributes:
-        video_id: ID wideo wyciągnięte z URL
-        url: Pełny URL do wideo
-        source_hashtag: Hashtag, z którego wyszukiwania pochodzi wynik
-    """
-
-    video_id: str
-    url: str
-    source_hashtag: str
 
 
 class TikTokHashtagSearcher:
@@ -103,7 +87,7 @@ class TikTokHashtagSearcher:
             count: Docelowa liczba unikalnych wideo do zebrania
 
         Yields:
-            TikTokVideoInfo dla każdego znalezionego wideo
+            VideoInfo dla każdego znalezionego wideo
         """
         if self._context is None:
             raise RuntimeError("Użyj 'async with TikTokHashtagSearcher(...)'.")
@@ -143,7 +127,7 @@ class TikTokHashtagSearcher:
 
             for url in list(found_urls)[:count]:
                 video_id = url.rstrip("/").rsplit("/", 1)[-1]
-                yield TikTokVideoInfo(video_id=video_id, url=url, source_hashtag=hashtag)
+                yield VideoInfo(video_id=video_id, url=url, source_label=hashtag, platform="tiktok")
 
         finally:
             await page.close()
