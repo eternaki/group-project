@@ -171,3 +171,14 @@ data/*.log.err
 *.stackdump
 data/review_samples/
 data/review_by_video/
+
+# Katalogi POŚREDNIE anotacji wsadowej — duże i odtwarzalne z nagrań.
+#
+# `data/*/frames/` nie łapie ich samo: części leżą o poziom głębiej
+# (`data/dataset_final/shard_3/annotations.json`), a katalogi kolejek
+# trzymają TWARDE DOWIĄZANIA do nagrań, których w gicie być nie może.
+data/*/shard_*/
+data/dataset_wave*/
+data/dataset_probe/
+data/drive_probe/
+data/todo_*/
