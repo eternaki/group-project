@@ -122,6 +122,11 @@ async def run_collection(config: CollectorConfig) -> None:
         emotion: uploader.ensure_folder(emotion, GDRIVE_FOLDER_ID) for emotion in EMOTION_CLASSES
     }
 
+    print("Sprawdzam zawartość Dysku pod kątem duplikatów (także od innych osób)...")
+    drive_hashes = uploader.collect_content_hashes(list(emotion_folder_ids.values()))
+    state.content_hashes |= drive_hashes
+    print(f"  → {len(drive_hashes)} plików już na Dysku, zliczonych jako znane treści.")
+
     work_items: list[tuple[str, str, int]] = []
     if "tiktok" in config.sources:
         work_items += [("tiktok", h, VIDEOS_PER_HASHTAG_PER_ROUND) for h in config.hashtags]
@@ -250,8 +255,15 @@ def _process_video(
 
 
 def _hash_file(path: Path) -> str:
-    """Liczy SHA-256 pliku (do wykrywania duplikatów treści niezależnie od ID)."""
-    digest = hashlib.sha256()
+    """
+    Liczy MD5 pliku (do wykrywania duplikatów treści niezależnie od ID).
+
+    MD5, nie SHA-256: Google Drive sam liczy i wystawia md5Checksum dla
+    każdego wgranego pliku, więc ten sam algorytm pozwala porównać lokalny
+    plik z tym, co już leży na wspólnym Dysku (patrz GoogleDriveUploader.
+    collect_content_hashes) - w tym z plikami wgranymi przez inną osobę.
+    """
+    digest = hashlib.md5()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(chunk)

@@ -143,18 +143,19 @@ class GoogleDriveUploader:
         )
         return uploaded["id"]
 
-    def list_files(self, folder_id: str) -> list[dict]:
+    def list_files(self, folder_id: str, fields: str = "id,name") -> list[dict]:
         """
-        Zwraca listę WSZYSTKICH plików (id, name) bezpośrednio w danym folderze.
+        Zwraca listę WSZYSTKICH plików bezpośrednio w danym folderze.
 
         Obsługuje paginację - pojedyncze zapytanie do Drive API zwraca maks.
         ~100 wyników, więc bez tego duże foldery (100+ plików) byłyby ucinane.
 
         Args:
             folder_id: ID folderu na Drive
+            fields: Pola pliku do pobrania (np. "id,name,md5Checksum")
 
         Returns:
-            Lista słowników {"id": ..., "name": ...}
+            Lista słowników z żądanymi polami
 
         Raises:
             RuntimeError: Gdy authenticate() nie zostało wcześniej wywołane
@@ -169,7 +170,7 @@ class GoogleDriveUploader:
                 self._service.files()
                 .list(
                     q=f"'{folder_id}' in parents and trashed = false",
-                    fields="nextPageToken, files(id,name)",
+                    fields=f"nextPageToken, files({fields})",
                     pageSize=1000,
                     pageToken=page_token,
                 )
@@ -180,6 +181,26 @@ class GoogleDriveUploader:
             if not page_token:
                 break
         return files
+
+    def collect_content_hashes(self, folder_ids: list[str]) -> set[str]:
+        """
+        Zbiera MD5 (liczone przez Drive przy uploadzie) wszystkich plików w
+        podanych folderach - pozwala wykryć duplikat treści wgranej wcześniej
+        przez INNĄ osobę/maszynę, nie tylko w ramach lokalnego stanu.
+
+        Args:
+            folder_ids: Lista ID folderów do przeszukania (np. wszystkie emocje)
+
+        Returns:
+            Zbiór wartości md5Checksum (małe litery hex)
+        """
+        hashes: set[str] = set()
+        for folder_id in folder_ids:
+            for file in self.list_files(folder_id, fields="md5Checksum"):
+                checksum = file.get("md5Checksum")
+                if checksum:
+                    hashes.add(checksum.lower())
+        return hashes
 
     def download_file(self, file_id: str, destination: Path) -> None:
         """

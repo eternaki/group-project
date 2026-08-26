@@ -163,6 +163,11 @@ GDRIVE_CREDENTIALS_PATH = PROJECT_ROOT / "secrets" / "gdrive_credentials.json"
 GDRIVE_TOKEN_PATH = PROJECT_ROOT / "secrets" / "token.json"
 GDRIVE_FOLDER_ID = "1jxUaN3Mq1ge8lFcPzwnN2ISl0E9k9mfQ"
 
+# YouTube Data API v3 - do WYSZUKIWANIA (search.list), zamiast scrapowanego
+# yt-dlp ytsearch, które zaczęło dostawać HTTP 403 (rate-limit na scraping).
+# Samo pobieranie wideo zostaje przez yt-dlp - ono nie było zablokowane.
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+
 
 @dataclass
 class CollectorConfig:
