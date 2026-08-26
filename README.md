@@ -176,6 +176,15 @@ verify the same pair.
 > model weights arrive as ~130-byte pointer files and the pipeline fails at
 > startup with an unhelpful error. If you already cloned, run `git lfs pull`.
 
+> **On Windows, enable long paths before cloning:**
+> `git config --global core.longpaths true`
+>
+> A handful of frames sit at exactly the 260-character limit, because the
+> recording name repeats in both the directory and the file name. Without
+> this setting `git clone` reports `Filename too long` and those frames are
+> simply absent — the queue then points at images that are not there.
+> Cloning into a short directory widens the margin further.
+
 ### Rebuild the shared material (dataset owner only)
 
 ```bash
