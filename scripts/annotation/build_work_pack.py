@@ -39,6 +39,7 @@ from scripts.annotation.cropping import (
     body_box,
     crop_and_scale,
     face_box,
+    file_size,
     read_image,
     remap_bbox,
     remap_keypoints,
@@ -362,7 +363,7 @@ def _write_frame(
     # Skąd wycięto — bez tego nie da się wrócić do pełnej klatki z nagrania.
     packed["source_bbox"] = [box.x0, box.y0, box.width, box.height]
     packed["source_scale"] = scale
-    return packed, box, scale, target.stat().st_size
+    return packed, box, scale, file_size(target)
 
 
 def _write_json(

@@ -14,6 +14,7 @@ przejechać do jego układu. Bez tego zbiór opisywałby punkty w pikselach
 oryginału, a zdjęcia byłyby wycinkami — czyli wskazywałby poza własne obrazy.
 """
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -22,6 +23,37 @@ import cv2
 import numpy as np
 
 from packages.data.schemas import NUM_KEYPOINTS
+
+# Przedrostek długiej ścieżki Windows.
+#
+# Windows tnie ścieżkę na 260 znakach (MAX_PATH) i zgłasza to jako
+# FileNotFoundError — czyli limit wygląda jak brakujący katalog, a nie jak
+# limit. Gorzej: `Path.is_file()` na takiej ścieżce zwraca po prostu False,
+# więc plik LEŻĄCY na dysku wygląda na nieistniejący i znika po cichu.
+#
+# Przedrostek przełącza wywołania na wariant długi i działa niezależnie od
+# ustawienia LongPathsEnabled w rejestrze — nie wymaga więc niczego od maszyny
+# kolegi z zespołu. Wymaga ścieżki BEZWZGLĘDNEJ, z ukośnikami wstecznymi
+# i bez składników względnych, stąd `resolve()` przed sklejeniem.
+_WINDOWS_LONG_PATH_PREFIX: str = "\\\\?\\"
+
+
+def _os_path(path: Path) -> str:
+    """
+    Zamienia ścieżkę na postać, którą system otworzy niezależnie od jej długości.
+
+    Args:
+        path: Ścieżka do pliku lub katalogu
+
+    Returns:
+        Ścieżka w postaci tekstowej; na Windowsie z przedrostkiem długiej ścieżki
+    """
+    if os.name != "nt":
+        return str(path)
+    resolved = str(path.resolve())
+    if resolved.startswith(_WINDOWS_LONG_PATH_PREFIX):
+        return resolved
+    return f"{_WINDOWS_LONG_PATH_PREFIX}{resolved}"
 
 # Punkt poniżej tej pewności nie wyznacza kadru — inaczej jedna zabłąkana
 # predykcja na tle rozdmuchuje wycinek na pół obrazu.
@@ -53,9 +85,10 @@ def read_image(path: Path) -> Optional[np.ndarray]:
     Returns:
         Obraz BGR albo None, gdy pliku nie ma lub nie da się go zdekodować
     """
-    if not path.is_file():
+    native = _os_path(path)
+    if not os.path.isfile(native):
         return None
-    buffer = np.fromfile(path, dtype=np.uint8)
+    buffer = np.fromfile(native, dtype=np.uint8)
     if buffer.size == 0:
         return None
     return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
@@ -79,9 +112,27 @@ def write_jpeg(path: Path, image: np.ndarray, quality: int = DEFAULT_JPEG_QUALIT
     ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
     if not ok:
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded.tofile(path)
-    return path.is_file() and path.stat().st_size > 0
+    os.makedirs(_os_path(path.parent), exist_ok=True)
+    native = _os_path(path)
+    encoded.tofile(native)
+    return os.path.isfile(native) and os.path.getsize(native) > 0
+
+
+def file_size(path: Path) -> int:
+    """
+    Podaje rozmiar pliku, także gdy ścieżka przekracza limit Windows.
+
+    Istnieje, żeby wiedza o długich ścieżkach została w JEDNYM module —
+    `Path.stat()` wołane wprost na kadrze wywraca się tam, gdzie zapis
+    przez `write_jpeg` przechodzi bez problemu.
+
+    Args:
+        path: Ścieżka do pliku
+
+    Returns:
+        Rozmiar w bajtach
+    """
+    return os.path.getsize(_os_path(path))
 
 
 @dataclass(frozen=True)

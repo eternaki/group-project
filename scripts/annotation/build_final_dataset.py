@@ -56,6 +56,7 @@ from scripts.annotation.cropping import (  # noqa: E402
     bbox_from_keypoints,
     crop_and_scale,
     face_box,
+    file_size,
     read_image,
     remap_keypoints,
     write_jpeg,
@@ -301,7 +302,7 @@ def write_crop(
         "source_scale": scale,
         "source_size": [image_entry.get("width"), image_entry.get("height")],
     }
-    return entry, remap_keypoints(keypoints, box, scale), target.stat().st_size
+    return entry, remap_keypoints(keypoints, box, scale), file_size(target)
 
 
 def build_annotation(

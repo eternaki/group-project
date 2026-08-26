@@ -232,3 +232,38 @@ class TestZapisIOdczytZeSciezkaUnicode:
         pusty = tmp_path / "пустой.jpg"
         pusty.write_bytes(b"")
         assert read_image(pusty) is None
+
+
+class TestDlugieSciezki:
+    """
+    Ścieżka dłuższa niż 260 znaków (Windows MAX_PATH).
+
+    Limit nie zgłasza się jako limit: zapis wywraca się na FileNotFoundError
+    (wygląda jak brakujący katalog), a `Path.is_file()` na istniejącym pliku
+    zwraca False (wygląda jak brakujący plik). Oba objawy prowadzą na manowce,
+    dlatego kadrowanie musi otwierać pliki wariantem długim.
+
+    Zmierzone na tym zbiorze: paczka robocza przerwała się na kadrze
+    `mixkit-50659__a-cute-border-collie-...` o ścieżce równej dokładnie
+    260 znaków — nazwa nagrania powtarza się w katalogu i w nazwie pliku,
+    a przedrostek `work/` dołożył ostatnie pięć znaków.
+    """
+
+    def _sciezka_ponad_limit(self, tmp_path: Path) -> Path:
+        """Buduje ścieżkę pewnie przekraczającą 260 znaków."""
+        nazwa = "mixkit-50659__a-cute-border-collie-with-eye-patches-patiently-panting"
+        sciezka = tmp_path / nazwa / f"{nazwa}_t0_000185.jpg"
+        while len(str(sciezka)) < 280:
+            sciezka = sciezka.parent.parent / f"{nazwa}_x" / nazwa / sciezka.name
+        return sciezka
+
+    def test_zapis_i_odczyt_ponad_limitem(self, tmp_path: Path) -> None:
+        obraz = np.full((16, 24, 3), 200, dtype=np.uint8)
+        sciezka = self._sciezka_ponad_limit(tmp_path)
+        assert len(str(sciezka)) > 260, "test ma sens tylko powyżej MAX_PATH"
+
+        assert write_jpeg(sciezka, obraz) is True, "zapis musi przejść mimo długiej ścieżki"
+        wczytany = read_image(sciezka)
+
+        assert wczytany is not None, "plik leżący na dysku nie może wyglądać na brakujący"
+        assert wczytany.shape == obraz.shape
