@@ -127,6 +127,14 @@ async def run_collection(config: CollectorConfig) -> None:
     state.content_hashes |= drive_hashes
     print(f"  → {len(drive_hashes)} plików już na Dysku, zliczonych jako znane treści.")
 
+    # Lokalny licznik per emocja widzi tylko WŁASNE uploady tej maszyny - żeby
+    # nie przekroczyć target_per_emotion, gdy inna osoba już dorzuciła swoje,
+    # synchronizujemy z faktycznym stanem współdzielonych podfolderów.
+    for emotion, folder_id in emotion_folder_ids.items():
+        drive_count = len(uploader.list_files(folder_id))
+        state.emotion_counts[emotion] = max(state.emotion_counts[emotion], drive_count)
+    state.save()
+
     work_items: list[tuple[str, str, int]] = []
     if "tiktok" in config.sources:
         work_items += [("tiktok", h, VIDEOS_PER_HASHTAG_PER_ROUND) for h in config.hashtags]

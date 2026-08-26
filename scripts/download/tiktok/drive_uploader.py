@@ -14,7 +14,12 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+# "drive.file" (poprzedni scope) widzi przez API tylko pliki utworzone przez
+# TĘ appkę pod TYM samym kontem - pliki wgrane przez INNĄ osobę (nawet do tego
+# samego, współdzielonego folderu) są dla API niewidoczne, mimo że widać je
+# w przeglądarce. To cicho psuło globalne wykrywanie duplikatów (patrz
+# collect_content_hashes) - stąd pełny "drive", nie samo "drive.file".
+SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
 class GoogleDriveUploader:
