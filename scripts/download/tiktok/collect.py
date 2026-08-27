@@ -232,23 +232,29 @@ def _process_video(
     """
     metadata = get_video_metadata(video.url)
     if metadata is None:
+        print(f"  odrzucono [{video.url}]: brak metadanych")
         return None
     if caption_filter.is_likely_ai_generated(metadata.description, []):
+        print(f"  odrzucono [{video.url}]: prawdopodobnie AI-generated")
         return None
 
     result = download_video(video.url, DOWNLOAD_TMP_DIR)
     if not result.success or result.path is None:
+        print(f"  odrzucono [{video.url}]: pobieranie nieudane ({result.error})")
         return None
 
     try:
         content_hash = _hash_file(result.path)
         if state.is_duplicate_content(content_hash):
+            print(f"  odrzucono [{video.url}]: duplikat treści (już na Dysku)")
             return None
 
         emotion = emotion_classifier.classify_video(result.path)
         if emotion is None:
+            print(f"  odrzucono [{video.url}]: brak pewnej emocji")
             return None
         if not state.needs_more(emotion, config.target_per_emotion):
+            print(f"  odrzucono [{video.url}]: {emotion} już ma komplet ({config.target_per_emotion})")
             return None
 
         uploader.upload_file(
