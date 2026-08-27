@@ -15,6 +15,7 @@ oryginału, a zdjęcia byłyby wycinkami — czyli wskazywałby poza własne obr
 """
 
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -116,6 +117,23 @@ def write_jpeg(path: Path, image: np.ndarray, quality: int = DEFAULT_JPEG_QUALIT
     native = _os_path(path)
     encoded.tofile(native)
     return os.path.isfile(native) and os.path.getsize(native) > 0
+
+
+def remove_tree(path: Path) -> None:
+    """
+    Kasuje katalog z zawartością, także gdy któraś ścieżka przekracza limit.
+
+    Trzecie miejsce, w którym ten sam limit uderza inaczej: `shutil.rmtree`
+    przewraca się na FileNotFoundError przy pliku, który normalnie zapisujemy
+    i odczytujemy bez problemu. Limit trzeba obchodzić W KAŻDYM wywołaniu
+    z osobna — nie ma globalnego przełącznika, który załatwiłby to raz.
+
+    Args:
+        path: Katalog do usunięcia; nieistniejący jest pomijany
+    """
+    if not path.exists():
+        return
+    shutil.rmtree(_os_path(path))
 
 
 def file_size(path: Path) -> int:
