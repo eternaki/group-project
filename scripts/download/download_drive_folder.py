@@ -189,6 +189,43 @@ def list_videos(folder_id: str, key: str, relative_dir: str = "") -> list[DriveF
     return videos
 
 
+def _download_via_gdown(video: DriveFile, destination: Path) -> int:
+    """
+    Zapasowa droga dla plików, którym klucz API odmawia.
+
+    Klucz API otwiera wyłącznie pliki udostępnione „każdemu z linkiem" WPROST.
+    Plik wrzucony do udostępnionego folderu przez inną osobę bywa czytelny
+    w przeglądarce (dziedziczy uprawnienia folderu), a przez API zwraca 403.
+    Zmierzone 27.08.2026: wszystkie odmowy dotyczyły nagrań `youtube_*`
+    wgranych kolektorem — ani jedno inne nagranie nie odmówiło.
+
+    `gdown` chodzi publicznym adresem przeglądarkowym, który dziedziczenie
+    uprawnień honoruje, więc te pliki pobiera. Płaci za to limitem dziennym
+    (~40-60 plików), dlatego jest DROGĄ ZAPASOWĄ, nie główną.
+
+    Args:
+        video: Nagranie do pobrania
+        destination: Ścieżka docelowa
+
+    Returns:
+        Liczba zapisanych bajtów; 0, gdy i ta droga zawiodła
+    """
+    try:
+        import gdown
+    except ImportError:
+        return 0
+    try:
+        result = gdown.download(
+            id=video.file_id, output=str(destination), quiet=True, use_cookies=False
+        )
+    except Exception as error:  # noqa: BLE001 — gdown rzuca czym popadnie
+        logger.debug(f"gdown nie dal rady {video.name}: {error}")
+        return 0
+    if not result or not destination.is_file():
+        return 0
+    return destination.stat().st_size
+
+
 def download_file(video: DriveFile, destination: Path, key: str) -> int:
     """
     Pobiera jedno nagranie pod wskazaną ścieżkę.
@@ -214,8 +251,12 @@ def download_file(video: DriveFile, destination: Path, key: str) -> int:
                     handle.write(chunk)
                     written += len(chunk)
     except (urllib.error.URLError, OSError, TimeoutError) as error:
-        logger.warning(f"nie pobrano: {video.name} ({error})")
         destination.unlink(missing_ok=True)
+        written = _download_via_gdown(video, destination)
+        if written:
+            logger.info(f"przez gdown (API odmowilo): {video.name}")
+            return written
+        logger.warning(f"nie pobrano: {video.name} ({error})")
         return 0
     if written == 0:
         destination.unlink(missing_ok=True)
