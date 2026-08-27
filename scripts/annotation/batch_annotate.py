@@ -85,7 +85,10 @@ class BatchConfig:
     max_frames_per_video: int = 50  # maksymalna liczba klatek z wideo
 
     # Parametry generowania datasetu (peak frames + emocje/AU)
-    num_peaks: int = 10  # liczba peak frames na wideo do anotacji emocji
+    # 15 zamiast 10: więcej klatek z dłuższych nagrań (mniej wideo na ten sam
+    # budżet klatek). Twardy odstęp `peak_min_separation_s` (1 s) nadal ogranicza
+    # krótkie klipy, a nadmiarowe peaki z ogona odsiewa bramka jakości.
+    num_peaks: int = 15  # liczba peak frames na wideo do anotacji emocji
     peak_min_separation_s: float = DATASET_PEAK_SEPARATION_S  # w SEKUNDACH nagrania
     min_keypoint_conf: float = DATASET_MIN_KEYPOINT_CONF  # min. pewność keypoints
     max_yaw_asymmetry: float = DEFAULT_MAX_YAW_ASYMMETRY  # dla peak frame
