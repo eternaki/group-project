@@ -40,6 +40,7 @@ from packages.pipeline.quality_gate import (
     QualityThresholds,
     assess_frame,
 )
+from scripts.annotation.queue_merge import merge_queues
 
 # Pas niepewności pomiaru: poniżej sygnał tonie w szumie, powyżej jest
 # bezdyskusyjny. Wewnątrz — decyduje człowiek, więc te pary idą pierwsze.
@@ -423,6 +424,15 @@ def parse_args() -> argparse.Namespace:
         help="Minimalna szerokość mordy w pikselach",
     )
     parser.add_argument(
+        "--keep",
+        default=None,
+        help=(
+            "Kolejka JUZ WYDANA anotatorom - jej pary zostaja niezaleznie od "
+            "kuracji. Bez tego przebudowa gubi pary, do ktorych przypiete sa "
+            "cudze werdykty."
+        ),
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -449,13 +459,23 @@ def main() -> None:
     if args.limit is not None:
         ordered = ordered[: args.limit]
 
+    curated = build_curated(coco, ordered)
+    if args.keep:
+        published = load_dataset(Path(args.keep))
+        curated = merge_queues(published, curated)
+        dolozone = len(curated["annotations"]) - len(published["annotations"])
+        print(
+            f"Zachowano kolejke wydana anotatorom: "
+            f"{len(published['annotations']) // 2} par, dolozono {dolozone // 2} nowych"
+        )
+
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as handle:
-        json.dump(build_curated(coco, ordered), handle, ensure_ascii=False)
+        json.dump(curated, handle, ensure_ascii=False)
 
     print_summary(pairs, rejected, total_peaks)
-    print(f"\nZapisano {len(ordered)} par do {out_path}")
+    print(f"\nZapisano {len(curated['annotations'])} par do {out_path}")
 
 
 if __name__ == "__main__":
