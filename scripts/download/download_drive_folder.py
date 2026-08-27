@@ -63,6 +63,16 @@ CHUNK_BYTES: int = 1 << 20
 REQUEST_TIMEOUT_S: int = 30
 DOWNLOAD_TIMEOUT_S: int = 300
 
+# Po tylu odmowach z rzędu przerywamy przebieg.
+#
+# Odmowa pojedynczego pliku zdarza się i sama w sobie nic nie znaczy. Seria
+# znaczy, że WYCZERPAŁY SIĘ OBIE drogi naraz: klucz nie ma dostępu do tych
+# plików (nie są udostępnione „każdemu z linkiem" wprost), a `gdown` wypalił
+# limit dzienny. Dalsze mielenie listy niczego nie przyniesie, a w obiegu
+# uruchamianym co kilkanaście godzin bez nadzoru zjadłoby godziny na samych
+# odmowach — zanim doszłoby do przerabiania tego, co JEST już na dysku.
+FAILURE_STREAK_LIMIT: int = 15
+
 
 @dataclass(frozen=True)
 class DriveFile:
@@ -189,6 +199,43 @@ def list_videos(folder_id: str, key: str, relative_dir: str = "") -> list[DriveF
     return videos
 
 
+def _download_via_gdown(video: DriveFile, destination: Path) -> int:
+    """
+    Zapasowa droga dla plików, którym klucz API odmawia.
+
+    Klucz API otwiera wyłącznie pliki udostępnione „każdemu z linkiem" WPROST.
+    Plik wrzucony do udostępnionego folderu przez inną osobę bywa czytelny
+    w przeglądarce (dziedziczy uprawnienia folderu), a przez API zwraca 403.
+    Zmierzone 27.08.2026: wszystkie odmowy dotyczyły nagrań `youtube_*`
+    wgranych kolektorem — ani jedno inne nagranie nie odmówiło.
+
+    `gdown` chodzi publicznym adresem przeglądarkowym, który dziedziczenie
+    uprawnień honoruje, więc te pliki pobiera. Płaci za to limitem dziennym
+    (~40-60 plików), dlatego jest DROGĄ ZAPASOWĄ, nie główną.
+
+    Args:
+        video: Nagranie do pobrania
+        destination: Ścieżka docelowa
+
+    Returns:
+        Liczba zapisanych bajtów; 0, gdy i ta droga zawiodła
+    """
+    try:
+        import gdown
+    except ImportError:
+        return 0
+    try:
+        result = gdown.download(
+            id=video.file_id, output=str(destination), quiet=True, use_cookies=False
+        )
+    except Exception as error:  # noqa: BLE001 — gdown rzuca czym popadnie
+        logger.debug(f"gdown nie dal rady {video.name}: {error}")
+        return 0
+    if not result or not destination.is_file():
+        return 0
+    return destination.stat().st_size
+
+
 def download_file(video: DriveFile, destination: Path, key: str) -> int:
     """
     Pobiera jedno nagranie pod wskazaną ścieżkę.
@@ -214,8 +261,12 @@ def download_file(video: DriveFile, destination: Path, key: str) -> int:
                     handle.write(chunk)
                     written += len(chunk)
     except (urllib.error.URLError, OSError, TimeoutError) as error:
-        logger.warning(f"nie pobrano: {video.name} ({error})")
         destination.unlink(missing_ok=True)
+        written = _download_via_gdown(video, destination)
+        if written:
+            logger.info(f"przez gdown (API odmowilo): {video.name}")
+            return written
+        logger.warning(f"nie pobrano: {video.name} ({error})")
         return 0
     if written == 0:
         destination.unlink(missing_ok=True)
@@ -264,14 +315,26 @@ def sync(source: str, output: Path) -> SyncStats:
         f"do pobrania {len(missing)}"
     )
 
+    streak = 0
     for index, video in enumerate(missing, start=1):
-        target = output / video.relative_dir / video.name if video.relative_dir else output / video.name
+        target = (
+            output / video.relative_dir / video.name if video.relative_dir else output / video.name
+        )
         written = download_file(video, target, key)
         if written:
             stats.downloaded += 1
             stats.bytes_downloaded += written
+            streak = 0
         else:
             stats.failed += 1
+            streak += 1
+        if streak >= FAILURE_STREAK_LIMIT:
+            logger.warning(
+                f"{streak} odmow z rzedu — obie drogi wyczerpane (klucz nie ma dostepu "
+                f"do tych plikow, a gdown wyczerpal limit dzienny). Przerywam; "
+                f"zostalo {len(missing) - index}. Skrypt jest wznawialny."
+            )
+            break
         if index % PROGRESS_EVERY == 0:
             logger.info(
                 f"  {index}/{len(missing)}  "

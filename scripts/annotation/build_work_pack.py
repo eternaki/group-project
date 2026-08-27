@@ -28,7 +28,6 @@ kolejność pracy — wszystko, na czym stoi stanowisko.
 import argparse
 import json
 import logging
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -43,6 +42,7 @@ from scripts.annotation.cropping import (
     read_image,
     remap_bbox,
     remap_keypoints,
+    remove_tree,
     write_jpeg,
 )
 
@@ -265,7 +265,7 @@ def build_pack(
     grouped = _annotations_by_image(coco)
 
     if output.exists():
-        shutil.rmtree(output)
+        remove_tree(output)
     (output / FRAMES_DIRNAME).mkdir(parents=True)
 
     stats = PackStats()

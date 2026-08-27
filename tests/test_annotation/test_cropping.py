@@ -21,6 +21,7 @@ from scripts.annotation.cropping import (
     read_image,
     remap_bbox,
     remap_keypoints,
+    remove_tree,
     write_jpeg,
 )
 
@@ -267,3 +268,20 @@ class TestDlugieSciezki:
 
         assert wczytany is not None, "plik leżący na dysku nie może wyglądać na brakujący"
         assert wczytany.shape == obraz.shape
+
+    def test_kasowanie_katalogu_ponad_limitem(self, tmp_path: Path) -> None:
+        """
+        `shutil.rmtree` wywraca się tam, gdzie zapis przechodzi.
+
+        Trzecie miejsce, w którym ten sam limit uderza inaczej — paczka robocza
+        kasuje poprzedni wynik przed złożeniem nowego i przerywała cały obieg
+        na FileNotFoundError.
+        """
+        obraz = np.full((16, 24, 3), 200, dtype=np.uint8)
+        sciezka = self._sciezka_ponad_limit(tmp_path)
+        assert write_jpeg(sciezka, obraz) is True
+
+        korzen = tmp_path / sciezka.relative_to(tmp_path).parts[0]
+        remove_tree(korzen)
+
+        assert not korzen.exists(), "katalog musi zniknąć mimo długiej ścieżki"

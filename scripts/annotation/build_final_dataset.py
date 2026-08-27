@@ -26,7 +26,6 @@ import argparse
 import csv
 import json
 import logging
-import shutil
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -59,6 +58,7 @@ from scripts.annotation.cropping import (  # noqa: E402
     file_size,
     read_image,
     remap_keypoints,
+    remove_tree,
     write_jpeg,
 )
 
@@ -486,7 +486,7 @@ class FinalDatasetBuilder:
         self.stats.pairs_labeled = len(pairs)
 
         if self.output.exists():
-            shutil.rmtree(self.output)
+            remove_tree(self.output)
         self.images_root.mkdir(parents=True)
         self.coco = self._empty_coco()
 
