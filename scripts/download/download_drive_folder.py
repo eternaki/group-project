@@ -63,6 +63,16 @@ CHUNK_BYTES: int = 1 << 20
 REQUEST_TIMEOUT_S: int = 30
 DOWNLOAD_TIMEOUT_S: int = 300
 
+# Po tylu odmowach z rzędu przerywamy przebieg.
+#
+# Odmowa pojedynczego pliku zdarza się i sama w sobie nic nie znaczy. Seria
+# znaczy, że WYCZERPAŁY SIĘ OBIE drogi naraz: klucz nie ma dostępu do tych
+# plików (nie są udostępnione „każdemu z linkiem" wprost), a `gdown` wypalił
+# limit dzienny. Dalsze mielenie listy niczego nie przyniesie, a w obiegu
+# uruchamianym co kilkanaście godzin bez nadzoru zjadłoby godziny na samych
+# odmowach — zanim doszłoby do przerabiania tego, co JEST już na dysku.
+FAILURE_STREAK_LIMIT: int = 15
+
 
 @dataclass(frozen=True)
 class DriveFile:
@@ -305,14 +315,26 @@ def sync(source: str, output: Path) -> SyncStats:
         f"do pobrania {len(missing)}"
     )
 
+    streak = 0
     for index, video in enumerate(missing, start=1):
-        target = output / video.relative_dir / video.name if video.relative_dir else output / video.name
+        target = (
+            output / video.relative_dir / video.name if video.relative_dir else output / video.name
+        )
         written = download_file(video, target, key)
         if written:
             stats.downloaded += 1
             stats.bytes_downloaded += written
+            streak = 0
         else:
             stats.failed += 1
+            streak += 1
+        if streak >= FAILURE_STREAK_LIMIT:
+            logger.warning(
+                f"{streak} odmow z rzedu — obie drogi wyczerpane (klucz nie ma dostepu "
+                f"do tych plikow, a gdown wyczerpal limit dzienny). Przerywam; "
+                f"zostalo {len(missing) - index}. Skrypt jest wznawialny."
+            )
+            break
         if index % PROGRESS_EVERY == 0:
             logger.info(
                 f"  {index}/{len(missing)}  "
