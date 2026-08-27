@@ -194,3 +194,5 @@ data/dataset_probe/
 data/drive_probe/
 data/todo_*/
 data/*/published_queue.json
+data/frames_*/
+data/.probka_peaks.json
