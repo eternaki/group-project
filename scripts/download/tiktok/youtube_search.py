@@ -115,6 +115,7 @@ class YouTubeSearcher:
             "no_warnings": True,
             "extract_flat": True,
             "skip_download": True,
+            "socket_timeout": 20,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

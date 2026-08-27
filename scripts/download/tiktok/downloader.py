@@ -39,7 +39,7 @@ def get_video_metadata(url: str) -> VideoMetadata | None:
     """
     import yt_dlp
 
-    ydl_opts = {"quiet": True, "no_warnings": True}
+    ydl_opts = {"quiet": True, "no_warnings": True, "socket_timeout": 20}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -74,7 +74,7 @@ def download_video(url: str, output_dir: Path) -> VideoDownloadResult:
     # wideo/audio bez wspólnego "best"), przez co odrzucenie zbyt długiego wideo
     # nigdy nie było osiągane - leciał od razu wyjątek pobierania.
     try:
-        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as probe:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "socket_timeout": 20}) as probe:
             info = probe.extract_info(url, download=False)
     except Exception as e:
         return VideoDownloadResult(success=False, path=None, duration=0, error=str(e))
@@ -100,6 +100,7 @@ def download_video(url: str, output_dir: Path) -> VideoDownloadResult:
         # (pip, bez uprawnień administratora) zamiast polegać na PATH.
         "format": "bestvideo+bestaudio/best",
         "ffmpeg_location": imageio_ffmpeg.get_ffmpeg_exe(),
+        "socket_timeout": 20,
     }
 
     try:
