@@ -83,6 +83,17 @@ key.txt
 *.key
 kaggle.json
 secrets.json
+secrets/
+token.json
+
+# TikTok collector - stan i tymczasowe pobrania
+data/tiktok_state.json
+data/tiktok_tmp/
+data/tiktok_captcha_pending.flag
+data/tiktok_collect.log
+data/tiktok_collect.err.log
+data/batch_annotate.log
+data/batch_annotate.err.log
 
 # Streamlit
 .streamlit/
