@@ -99,7 +99,15 @@ class YouTubeSearcher:
             )
 
     async def _search_via_yt_dlp(self, query: str, count: int):
-        """Fallback: scrapowany ytsearch yt-dlp (bez klucza API)."""
+        """
+        Fallback: scrapowany ytsearch yt-dlp (bez klucza API).
+
+        Próba użycia strony wyników z parametrem "sp" (filtr długości) dawała
+        gorsze wyniki niż zwykły ytsearch - w teście zwracała martwe/niedostępne
+        wideo. Filtr długości sprawdzamy więc dopiero po pobraniu metadanych
+        (jak wcześniej); "shorts" w zapytaniu (_shorts_biased) i tak podnosi
+        trafność bez tego dodatkowego parametru.
+        """
         import yt_dlp
 
         ydl_opts = {
@@ -107,6 +115,7 @@ class YouTubeSearcher:
             "no_warnings": True,
             "extract_flat": True,
             "skip_download": True,
+            "socket_timeout": 20,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
