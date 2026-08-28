@@ -29,6 +29,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -58,6 +59,11 @@ SKIP_PREFIXES: tuple[str, ...] = ("magnific-",)
 
 # Katalog z nagraniami zebranymi wcześniej, poza tym obiegiem
 SKIP_DIRS: tuple[str, ...] = ("DOGS",)
+
+# Znacznik "ta fala zostala juz wlana do zbioru". Bez niego nie da sie odroznic
+# fali czekajacej na scalenie od takiej, ktora juz wlano — a pomylka w jedna
+# strone gubi dane, w druga robi duplikaty.
+MERGED_MARKER: str = ".merged"
 
 DEFAULT_WORKERS: int = 12
 
@@ -212,6 +218,54 @@ def publish(result: CycleResult, allowed_orphans: int, push: bool) -> None:
     result.published = True
 
 
+def _unmerged_waves() -> list[Path]:
+    """
+    Wskazuje fale, które SIĘ SKOŃCZYŁY, ale nie zostały wlane do zbioru.
+
+    Drugi sposób na cichą stratę, tuż obok przerwanej fali: batch dobiegł końca
+    i zapisał `annotations.json`, po czym obieg padł przed scaleniem. Nagrania
+    są już odhaczone w `progress.json`, więc nikt ich nie powtórzy, a ich wynik
+    leży odłogiem. Znacznik `.merged` odróżnia „wlane" od „gotowe, ale czeka".
+
+    Returns:
+        Katalogi wyników fal czekających na scalenie, od najstarszej
+    """
+    czeka: list[Path] = []
+    for output in sorted(DATASET_DIR.parent.glob("dataset_*")):
+        if output == DATASET_DIR:
+            continue
+        if (output / "annotations.json").is_file() and not (output / MERGED_MARKER).exists():
+            czeka.append(output)
+    return czeka
+
+
+def _unfinished_wave() -> Optional[tuple[Path, Path]]:
+    """
+    Znajduje falę przerwaną w połowie, żeby ją dokończyć zamiast zakładać nową.
+
+    Bez tego przerwany obieg CICHO GUBI pracę: nagrania przerobione przed
+    przerwaniem są już zapisane w `progress.json` części, więc następny obieg
+    ich nie rozłoży — a ich anotacje leżą w częściach, których nikt nigdy nie
+    scali, bo scalanie bierze tylko `annotations.json` świeżej fali. Zmierzone
+    28.08.2026: obieg padł po 210 z 306 nagrań i tyle właśnie by przepadło.
+
+    Falę uznajemy za przerwaną, gdy ma katalog kolejki i części z postępem,
+    ale NIE MA scalonego wyniku — ten powstaje dopiero na samym końcu.
+
+    Returns:
+        Para (katalog kolejki, katalog wyniku) albo None, gdy nie ma czego kończyć
+    """
+    for output in sorted(DATASET_DIR.parent.glob("dataset_20*"), reverse=True):
+        if (output / "annotations.json").is_file():
+            continue
+        if not any(output.glob("shard_*/progress.json")):
+            continue
+        wave = output.parent / f"todo_{output.name.removeprefix('dataset_')}"
+        if wave.is_dir():
+            return wave, output
+    return None
+
+
 def run_cycle(workers: int, allowed_orphans: int, push: bool) -> CycleResult:
     """
     Wykonuje jeden pełny obieg.
@@ -226,19 +280,29 @@ def run_cycle(workers: int, allowed_orphans: int, push: bool) -> CycleResult:
     """
     result = CycleResult(pairs_before=count_pairs(QUEUE_PATH))
 
+    for zaleglosc in _unmerged_waves():
+        logger.info(f"Wlewam zalegla fale {zaleglosc.name}")
+        merge_into_dataset(zaleglosc / "annotations.json")
+
     missing = drive_has_new()
     logger.info(f"Na Dysku brakuje u nas {missing} nagran")
     if missing:
         stats = sync(DRIVE_FOLDER, VIDEO_DIR)
         result.downloaded = stats.downloaded
 
-    wave = DATASET_DIR.parent / f"todo_{datetime.now():%Y%m%d_%H%M}"
-    result.processed = stage_new_videos(wave)
+    wave, output = _unfinished_wave() or (None, None)
+    if wave is None:
+        wave = DATASET_DIR.parent / f"todo_{datetime.now():%Y%m%d_%H%M}"
+        output = DATASET_DIR.parent / f"dataset_{wave.name.removeprefix('todo_')}"
+        result.processed = stage_new_videos(wave)
+    else:
+        result.processed = sum(1 for _ in wave.rglob("*.mp4"))
+        logger.info(f"Wznawiam przerwana fale {wave.name} zamiast zakladac nowa")
+
     if not result.processed:
         logger.info("Nic nowego do przerobienia — koniec obiegu")
         return result
 
-    output = DATASET_DIR.parent / f"dataset_{wave.name.removeprefix('todo_')}"
     logger.info(f"Przerabiam {result.processed} nagran do {output}")
     _run(
         [
@@ -291,6 +355,9 @@ def merge_into_dataset(wave_coco: Path) -> None:
         if images[neutral_id].rsplit("/", 1)[0] != images[annotation["image_id"]].rsplit("/", 1)[0]:
             raise SystemExit("PRZERWANE: peak zwiazany z klatka neutralna INNEGO nagrania")
     base.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+    (wave_coco.parent / MERGED_MARKER).write_text(
+        datetime.now().isoformat(timespec="seconds"), encoding="utf-8"
+    )
 
 
 def main() -> None:
