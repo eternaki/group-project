@@ -280,7 +280,8 @@ def run_cycle(workers: int, allowed_orphans: int, push: bool) -> CycleResult:
     """
     result = CycleResult(pairs_before=count_pairs(QUEUE_PATH))
 
-    for zaleglosc in _unmerged_waves():
+    poured = _unmerged_waves()
+    for zaleglosc in poured:
         logger.info(f"Wlewam zalegla fale {zaleglosc.name}")
         merge_into_dataset(zaleglosc / "annotations.json")
 
@@ -299,24 +300,32 @@ def run_cycle(workers: int, allowed_orphans: int, push: bool) -> CycleResult:
         result.processed = sum(1 for _ in wave.rglob("*.mp4"))
         logger.info(f"Wznawiam przerwana fale {wave.name} zamiast zakladac nowa")
 
-    if not result.processed:
-        logger.info("Nic nowego do przerobienia — koniec obiegu")
-        return result
+    # Kuracja i paczka idą ZAWSZE, nawet gdy nie było czego przerabiać.
+    #
+    # Pokusa, żeby je pominąć „skoro nic nowego nie doszło", kosztowała już dwa
+    # przebiegi. Wlanie fali do zbioru i przełożenie jej do kolejki to DWA
+    # osobne kroki: obieg przerwany między nimi zostawia kadry w zbiorze, ale
+    # poza kolejką — anotatorzy ich nie zobaczą i nic o tym nie powie. Gorzej,
+    # znacznik `.merged` jest już wtedy postawiony, więc następny obieg uzna,
+    # że nie ma nic do zrobienia, i pominie kuracje NA ZAWSZE.
+    #
+    # Przebieg jałowy kosztuje kilka minut, a `publish()` i tak nic nie wysyła,
+    # gdy git nie widzi zmian. Tanio jak na usuniecie calej klasy cichych strat.
+    if result.processed:
+        logger.info(f"Przerabiam {result.processed} nagran do {output}")
+        _run(
+            [
+                sys.executable, "-m", "scripts.annotation.run_batch_parallel",
+                "--workers", str(workers),
+                "--output-dir", str(output),
+                "--input-dir", str(wave),
+                "--frames-dir", str(DATASET_DIR / "frames"),
+                "--resume",
+            ],
+            "anotacja wsadowa",
+        )
+        merge_into_dataset(output / "annotations.json")
 
-    logger.info(f"Przerabiam {result.processed} nagran do {output}")
-    _run(
-        [
-            sys.executable, "-m", "scripts.annotation.run_batch_parallel",
-            "--workers", str(workers),
-            "--output-dir", str(output),
-            "--input-dir", str(wave),
-            "--frames-dir", str(DATASET_DIR / "frames"),
-            "--resume",
-        ],
-        "anotacja wsadowa",
-    )
-
-    merge_into_dataset(output / "annotations.json")
     _run(
         [
             sys.executable, "-m", "scripts.annotation.curate_for_review",
