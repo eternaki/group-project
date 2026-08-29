@@ -85,9 +85,15 @@ MAX_CROP_SIDE: int = 512
 # 80 px. Informacja o pozycji uszu i pyska JEST w nagraniu i ginie dopiero tutaj.
 #
 # Stąd drugi warunek na skalę: kadr wolno zmniejszyć najwyżej tak, żeby morda
-# zachowała `TARGET_FACE_PX`. Wartość odpowiada progowi kuracji
-# (`REVIEW_MIN_FACE_WIDTH`), więc para dopuszczona do kolejki trafia do paczki
-# bez utraty szczegółu mordy.
+# zachowała `TARGET_FACE_PX` — para dopuszczona do kolejki trafia do paczki bez
+# utraty szczegółu mordy.
+#
+# Wartość celowo NIE schodzi razem z progiem kuracji (`REVIEW_MIN_FACE_WIDTH`,
+# obniżonym do 70). Zrównanie ich pozwoliłoby zmniejszyć mordę mającą 140 px
+# do 70 — czyli popsuć kadry, które dziś są dobre, w imię wpuszczenia słabszych.
+# Przy mordzie węższej niż 100 px warunek po prostu zabrania zmniejszania
+# (`crop_and_scale` nigdy nie powiększa), więc wąskie mordy jadą w maksymalnej
+# dostępnej rozdzielczości — ograniczone dopiero przez `HARD_MAX_CROP_SIDE`.
 TARGET_FACE_PX: float = 100.0
 
 # Twarda granica rozrostu kadru. Pies zajmujący pół klatki przy małej mordzie

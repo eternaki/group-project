@@ -128,35 +128,58 @@ def merge_queues(base: dict, extra: dict, limit: Optional[int] = None) -> dict:
         if not _is_peak(annotation)
     }
 
+    # Klatka neutralna jest WSPÓLNA dla wszystkich szczytów jednego treku, więc
+    # o powtórzeniu decyduje wyłącznie klatka SZCZYTOWA. Wcześniejsza wersja
+    # odrzucała parę, gdy w kolejce była już KTÓRAKOLWIEK z jej klatek — czyli
+    # drugi i każdy następny szczyt tego samego psa przepadał, mimo że opisuje
+    # inną chwilę mimiki. Zmierzone 29.08.2026: z 3230 par czekających na
+    # dołożenie weszło 231, a 2429 odpadło właśnie na wspólnej klatce neutralnej.
+    frame_to_id = {image[FRAME_KEY]: image["id"] for image in merged["images"]}
+
     added = 0
     for annotation in extra.get("annotations", []):
         if not _is_peak(annotation):
             continue
         frames = _pair_frames(annotation, extra_images)
-        if len(frames) < 2 or any(frame[FRAME_KEY] in known_frames for frame in frames):
+        if len(frames) < 2:
+            continue
+        peak_frame, neutral_frame = frames[0], frames[1]
+        if peak_frame[FRAME_KEY] in known_frames:
             continue
         if limit is not None and added >= limit:
             break
 
-        remapped: dict[int, int] = {}
-        for frame in frames:
-            copied = dict(frame)
-            remapped[frame["id"]] = next_id
-            copied["id"] = next_id
+        # Klatkę neutralną dokładamy tylko wtedy, gdy jeszcze jej nie ma;
+        # inaczej para wskazuje na tę, która już w kolejce leży.
+        neutral_id = frame_to_id.get(neutral_frame[FRAME_KEY])
+        rows: list[dict] = []
+        if neutral_id is None:
+            neutral_copy = dict(neutral_frame)
+            neutral_id = next_id
+            neutral_copy["id"] = next_id
             next_id += 1
-            merged["images"].append(copied)
-            known_frames.add(copied[FRAME_KEY])
+            merged["images"].append(neutral_copy)
+            known_frames.add(neutral_copy[FRAME_KEY])
+            frame_to_id[neutral_copy[FRAME_KEY]] = neutral_id
+            neutral_row = neutral_rows.get(neutral_frame["id"])
+            if neutral_row is not None:
+                rows.append((neutral_row, neutral_id, neutral_id))
 
-        for row in (neutral_rows.get(annotation["neutral_frame_id"]), annotation):
-            if row is None:
-                continue
+        peak_copy = dict(peak_frame)
+        peak_id = next_id
+        peak_copy["id"] = next_id
+        next_id += 1
+        merged["images"].append(peak_copy)
+        known_frames.add(peak_copy[FRAME_KEY])
+        frame_to_id[peak_copy[FRAME_KEY]] = peak_id
+        rows.append((annotation, peak_id, neutral_id))
+
+        for row, image_id, points_to in rows:
             moved = dict(row)
             moved["id"] = next_annotation_id
             next_annotation_id += 1
-            moved["image_id"] = remapped[row["image_id"]]
-            neutral_id = row.get("neutral_frame_id")
-            if neutral_id in remapped:
-                moved["neutral_frame_id"] = remapped[neutral_id]
+            moved["image_id"] = image_id
+            moved["neutral_frame_id"] = points_to
             merged["annotations"].append(moved)
         added += 1
 

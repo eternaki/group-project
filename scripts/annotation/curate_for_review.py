@@ -109,16 +109,36 @@ REVIEW_MAX_ASYMMETRY: float = 0.60
 # klipami z psem w pełnej postaci. Nie warto czytać tej krzywej z mniej niż
 # kilkuset par.
 #
-# Próg zostaje 100, bo dwa błędy kosztują RÓŻNIE. Za wysoki cofa się za darmo:
-# surowy materiał zostaje w `annotations.json`, a ponowna kuracja trwa sekundy
-# i nie wymaga powtarzania przebiegu. Za niski płaci się godzinami pracy
-# człowieka, których nikt nie zwróci — przy poprzednim progu 30 px anotator
-# odrzucił 11 par z 17.
+# Próg 100 pochodził z 15 pierwszych ocenionych par i te 15 par go NIE POTWIERDZA,
+# gdy policzyć je ponownie na dzisiejszym dzienniku (29.08.2026, 55 par z werdyktem
+# i zmierzoną mordą):
 #
-# Gdy potrzeba będzie objętości (np. pod trening sieci z Sprintu 16), wystarczy
-# zmienić tę stałą i przepuścić kurację jeszcze raz — zejście do 80 daje około
-# trzech tysięcy par zamiast dwóch i pół.
-REVIEW_MIN_FACE_WIDTH: float = 100.0
+#   szerokość     par   przyjęte przez człowieka   punkty uznane za dobre
+#     0-80 px      15            73%                       100%
+#    80-100 px      4           100%                       100%
+#   100-130 px     10            90%                        89%
+#    130+ px       26            90%                       100%
+#
+# Człowiek przyjmuje wąskie mordy niemal tak samo chętnie jak szerokie, a AU
+# oznacza bez „nie widać" — czyli 100 px odcinało materiał, który anotator
+# umiał ocenić.
+#
+# Dolną granicę wyznacza natomiast SZUM POMIARU: 46 punktów na wąskiej mordzie
+# leży na kilkunastu pikselach, więc drganie o 1 px jest procentowo ogromne.
+# Zmierzona mediana szumu ratio AU wobec progu aktywacji 0.15:
+#
+#     0-40 px   0.393      40-60 px   0.342      60-80 px   0.278
+#    80-100 px  0.245     100-130 px  0.225       200+ px   0.215
+#
+# Krzywa wypłaszcza się dopiero koło 130 px, ale między 100 a 70 rośnie łagodnie,
+# a poniżej 60 skacze. Stąd 70: kolejka rośnie o 36% (2945 -> 4009 par), a szum
+# rośnie o 24% wobec poziomu, który i tak jest wysoki w CAŁYM zbiorze.
+#
+# Asymetria kosztów zostaje w mocy i dlatego NIE schodzimy niżej: za wysoki próg
+# cofa się za darmo (surowy materiał leży w `annotations.json`, ponowna kuracja
+# to minuty i nie wymaga powtarzania przebiegu przez modele), za niski płaci się
+# godzinami pracy człowieka — przy progu 30 px anotator odrzucił 11 par z 17.
+REVIEW_MIN_FACE_WIDTH: float = 70.0
 
 # Separator ścieżek w COCO bywa windowsowy — normalizujemy przed rozbiciem
 _WINDOWS_SEPARATOR: str = "\\"
@@ -400,6 +420,28 @@ def print_summary(
         print(f"  {count:6d}  {reason}")
 
 
+def count_pairs(coco: dict) -> int:
+    """
+    Liczy pary w kolejce, czyli WIERSZE KLATEK SZCZYTOWYCH.
+
+    Nie wolno tu dzielić liczby wierszy przez dwa: klatka neutralna jest
+    wspólna dla wszystkich szczytów jednego treku, więc wierszy neutralnych
+    jest mniej niż par. Dzielenie zaniżało meldunek — po obniżeniu progu
+    pokazywało 3528 par przy faktycznych 5008.
+
+    Args:
+        coco: Kolejka w formacie COCO
+
+    Returns:
+        Liczba par
+    """
+    return sum(
+        1
+        for annotation in coco.get("annotations", [])
+        if annotation.get("neutral_frame_id") not in (None, annotation["image_id"])
+    )
+
+
 def parse_args() -> argparse.Namespace:
     """Parsuje argumenty wiersza poleceń."""
     parser = argparse.ArgumentParser(description="Kuracja zbioru do weryfikacji ręcznej")
@@ -463,10 +505,9 @@ def main() -> None:
     if args.keep:
         published = load_dataset(Path(args.keep))
         curated = merge_queues(published, curated)
-        dolozone = len(curated["annotations"]) - len(published["annotations"])
         print(
-            f"Zachowano kolejke wydana anotatorom: "
-            f"{len(published['annotations']) // 2} par, dolozono {dolozone // 2} nowych"
+            f"Zachowano kolejke wydana anotatorom: {count_pairs(published)} par, "
+            f"dolozono {count_pairs(curated) - count_pairs(published)} nowych"
         )
 
     out_path = Path(args.out)

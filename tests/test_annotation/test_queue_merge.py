@@ -158,3 +158,37 @@ class TestDokladanieDoKolejki:
 
         nazwy = {o["file_name"] for o in wynik["images"]}
         assert "psC/neutral.jpg" not in nazwy, "klatka bez pary nie ma czego robić w kolejce"
+
+    def test_drugi_szczyt_tego_samego_psa_wchodzi(self) -> None:
+        """
+        Klatka neutralna jest WSPÓLNA dla wszystkich szczytów jednego treku.
+
+        Odrzucanie pary, gdy w kolejce jest już którakolwiek z jej klatek,
+        gubiło drugi i każdy następny szczyt tego samego psa — a każdy opisuje
+        inną chwilę mimiki. Zmierzone: z 3230 par weszło 231.
+        """
+        baza = _kolejka([("psA/neutral.jpg", "psA/peak1.jpg")])
+        # ten sam pies, ta sama klatka neutralna, INNY szczyt
+        nowe = _kolejka([("psA/neutral.jpg", "psA/peak2.jpg")], pierwsze_id=50)
+
+        wynik = merge_queues(baza, nowe)
+
+        nazwy = {o["file_name"] for o in wynik["images"]}
+        assert "psA/peak2.jpg" in nazwy, "drugi szczyt tego psa musi wejść"
+        assert sorted(nazwy).count("psA/neutral.jpg") == 1, "klatka neutralna bez duplikatu"
+        assert len([o for o in wynik["images"] if o["file_name"] == "psA/neutral.jpg"]) == 1
+
+    def test_wspoldzielona_neutralna_wskazuje_ten_sam_obraz(self) -> None:
+        """Oba szczyty muszą pokazywać na TĘ SAMĄ, jedyną klatkę neutralną."""
+        baza = _kolejka([("psA/neutral.jpg", "psA/peak1.jpg")])
+        nowe = _kolejka([("psA/neutral.jpg", "psA/peak2.jpg")], pierwsze_id=50)
+
+        wynik = merge_queues(baza, nowe)
+
+        obrazy = {o["id"]: o["file_name"] for o in wynik["images"]}
+        szczyty = [a for a in wynik["annotations"]
+                   if a.get("neutral_frame_id") not in (None, a["image_id"])]
+        assert len(szczyty) == 2, "dwie pary"
+        wskazania = {a["neutral_frame_id"] for a in szczyty}
+        assert len(wskazania) == 1, "obie pary wskazują jedną klatkę neutralną"
+        assert obrazy[wskazania.pop()] == "psA/neutral.jpg"
