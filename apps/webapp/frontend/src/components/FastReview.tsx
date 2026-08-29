@@ -727,8 +727,13 @@ export default function FastReview() {
     }
   }, [loadStoreSession, annotator]);
 
-  // Zbiory znajdują się same. Gdy jest dokładnie jeden, od razu go otwieramy —
-  // anotator ma zobaczyć pierwszą parę, a nie formularz.
+  // Zbiory znajdują się same, ale ŻADEN nie otwiera się sam.
+  //
+  // Wcześniej pojedynczy zbiór wskakiwał od razu, żeby oszczędzić kliknięcie.
+  // Odkąd zbiór jest jeden (i taki ma zostać), znaczyło to tyle, że wybór osoby
+  // przeskakiwał prosto w parę — bez pokazania, ile jest do zrobienia i ile już
+  // zrobione. Lista zbiorów jest jedynym miejscem, gdzie widać postęp, więc
+  // musi się pokazać zawsze.
   useEffect(() => {
     listTeam().then(setTeam).catch(() => setTeam([]));
   }, []);
@@ -740,7 +745,6 @@ export default function FastReview() {
       .then(({ datasets: found }) => {
         if (cancelled) return;
         setDatasets(found);
-        if (found.length === 1) void startSession(found[0].path);
       })
       .catch((caught) =>
         setError(caught instanceof Error ? caught.message : 'Не удалось прочитать каталог данных')
@@ -748,7 +752,7 @@ export default function FastReview() {
     return () => {
       cancelled = true;
     };
-  }, [startSession, annotator]);
+  }, [annotator]);
 
   const goTo = useCallback(
     (index: number) => {

@@ -40,7 +40,7 @@ from packages.pipeline.quality_gate import (
     QualityThresholds,
     assess_frame,
 )
-from scripts.annotation.queue_merge import merge_queues
+from scripts.annotation.queue_merge import merge_queues, renumber_queue
 
 # Pas niepewności pomiaru: poniżej sygnał tonie w szumie, powyżej jest
 # bezdyskusyjny. Wewnątrz — decyduje człowiek, więc te pary idą pierwsze.
@@ -504,7 +504,7 @@ def main() -> None:
     curated = build_curated(coco, ordered)
     if args.keep:
         published = load_dataset(Path(args.keep))
-        curated = merge_queues(published, curated)
+        curated = renumber_queue(merge_queues(published, curated))
         print(
             f"Zachowano kolejke wydana anotatorom: {count_pairs(published)} par, "
             f"dolozono {count_pairs(curated) - count_pairs(published)} nowych"

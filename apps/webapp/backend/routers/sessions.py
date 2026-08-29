@@ -38,7 +38,7 @@ from coco_import import (
 )
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
-from label_store import append_label, build_record
+from label_store import append_label, build_record, labels_root
 from pydantic import BaseModel
 from session_store import (
     ANNOTATION_STATUS_REVIEWED,
@@ -376,6 +376,46 @@ def _preferred_datasets(paths: list[Path]) -> list[Path]:
     return list(best.values())
 
 
+def _verified_from_journals(dataset: Path, annotator: Optional[str]) -> int:
+    """
+    Liczy pary ocenione przez tę osobę, czytając DZIENNIKI, a nie sesję.
+
+    Sesja jest lokalna: powstaje na maszynie, na której ktoś klika. Werdykty
+    Maszy i Danka jadą do nas przez gita jako `data/labels/**/*.jsonl` i żadnej
+    sesji u nas nie zakładają — dlatego postęp liczony z sesji pokazywał im
+    zero, choć każde miało po kilkaset ocenionych par.
+
+    Args:
+        dataset: Ścieżka kolejki (`curated.json`)
+        annotator: Klucz anotatora; None znaczy „wszyscy razem"
+
+    Returns:
+        Liczba par tej osoby, na które padł werdykt
+    """
+    try:
+        frames = {image["file_name"] for image in load_coco(dataset).get("images", [])}
+    except CocoImportError:
+        return 0
+    labels = labels_root()
+    if not labels.is_dir():
+        return 0
+    ocenione: set[str] = set()
+    for journal in labels.rglob("*.jsonl"):
+        for line in journal.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("usable") is None:
+                continue
+            if annotator is not None and record.get("annotator") != annotator:
+                continue
+            key = record.get("pair_key", "")
+            if key in frames:
+                ocenione.add(key)
+    return len(ocenione)
+
+
 @router.get("/datasets/available")
 async def list_datasets(annotator: Optional[str] = None):
     """
@@ -395,8 +435,8 @@ async def list_datasets(annotator: Optional[str] = None):
     datasets = []
     for path in _preferred_datasets(find_datasets(root)):
         session_id = session_id_for(path, annotator)
-        verified = 0
-        if _store.exists(session_id):
+        verified = _verified_from_journals(path, annotator)
+        if verified == 0 and _store.exists(session_id):
             session = _store.load(session_id)
             verified = sum(
                 1

@@ -118,6 +118,14 @@ def merge_queues(base: dict, extra: dict, limit: Optional[int] = None) -> dict:
     next_annotation_id = max(
         (annotation["id"] for annotation in merged["annotations"]), default=0
     ) + 1
+    next_order = max(
+        (
+            annotation["review_order"]
+            for annotation in merged["annotations"]
+            if annotation.get("review_order") is not None
+        ),
+        default=-1,
+    )
 
     # Wiersze opisujące klatki neutralne, pod identyfikatorem ich obrazu.
     # Para potrzebuje ICH TEŻ — bez wiersza neutralnego stanowisko nie ma z czego
@@ -149,10 +157,13 @@ def merge_queues(base: dict, extra: dict, limit: Optional[int] = None) -> dict:
         if limit is not None and added >= limit:
             break
 
-        # Klatkę neutralną dokładamy tylko wtedy, gdy jeszcze jej nie ma;
-        # inaczej para wskazuje na tę, która już w kolejce leży.
+        # OBRAZ klatki neutralnej jest współdzielony (nie dublujemy pliku),
+        # ale WIERSZ musi być własny dla każdej pary. Stanowisko składa parę
+        # po `review_order` (`coco_import._group_pairs`), więc jeden wiersz
+        # neutralny może obsłużyć dokładnie jeden numer — przy współdzieleniu
+        # wiersza wszystkie szczyty poza jednym zostają bez klatki neutralnej
+        # i para po cichu znika z kolejki.
         neutral_id = frame_to_id.get(neutral_frame[FRAME_KEY])
-        rows: list[dict] = []
         if neutral_id is None:
             neutral_copy = dict(neutral_frame)
             neutral_id = next_id
@@ -161,9 +172,6 @@ def merge_queues(base: dict, extra: dict, limit: Optional[int] = None) -> dict:
             merged["images"].append(neutral_copy)
             known_frames.add(neutral_copy[FRAME_KEY])
             frame_to_id[neutral_copy[FRAME_KEY]] = neutral_id
-            neutral_row = neutral_rows.get(neutral_frame["id"])
-            if neutral_row is not None:
-                rows.append((neutral_row, neutral_id, neutral_id))
 
         peak_copy = dict(peak_frame)
         peak_id = next_id
@@ -172,15 +180,81 @@ def merge_queues(base: dict, extra: dict, limit: Optional[int] = None) -> dict:
         merged["images"].append(peak_copy)
         known_frames.add(peak_copy[FRAME_KEY])
         frame_to_id[peak_copy[FRAME_KEY]] = peak_id
-        rows.append((annotation, peak_id, neutral_id))
 
-        for row, image_id, points_to in rows:
+        # Numer porządkowy MUSI być świeży. Obie kolejki numerują od zera, więc
+        # przepisany numer zderza się z numerem pary już obecnej — a wtedy
+        # `_group_pairs` nadpisuje wpis i zestawia szczyt jednego psa z klatką
+        # neutralną DRUGIEGO. Zmierzone: 1840 zderzeń, numer 0 w trzech parach.
+        next_order += 1
+        # Braku wiersza neutralnego NIE zastępujemy namiastką: wyszłaby anotacja
+        # bez `bbox`, na której składanie paczki wywraca się KeyError-em daleko
+        # od miejsca powstania. Para bez kompletu wierszy po prostu nie wchodzi.
+        neutral_row = neutral_rows.get(neutral_frame["id"])
+        if neutral_row is None:
+            continue
+        for row, image_id in ((neutral_row, neutral_id), (annotation, peak_id)):
             moved = dict(row)
             moved["id"] = next_annotation_id
             next_annotation_id += 1
             moved["image_id"] = image_id
-            moved["neutral_frame_id"] = points_to
+            moved["neutral_frame_id"] = neutral_id
+            moved["review_order"] = next_order
             merged["annotations"].append(moved)
         added += 1
 
     return merged
+
+
+def renumber_queue(coco: dict) -> dict:
+    """
+    Nadaje każdej parze WŁASNY `review_order` i własny wiersz klatki neutralnej.
+
+    Stanowisko skleja parę po `review_order` (`coco_import._group_pairs`), więc
+    numer powtórzony znaczy, że jeden wpis NADPISUJE drugi — szczyt jednego psa
+    dostaje wtedy klatkę neutralną innego, a część par znika z kolejki. Zmierzone
+    29.08.2026 na kolejce z `main`: 7057 wierszy miało tylko 3585 numerów,
+    stanowisko złożyło 1628 par z 5008, a 1222 z nich były sparowane błędnie.
+
+    Naprawa jest możliwa bez utraty czegokolwiek, bo psuje się WYŁĄCZNIE
+    numeracja: pole `neutral_frame_id` w każdym wierszu szczytowym wskazywało
+    właściwą klatkę (sprawdzone: 0 błędów na 5008 par). Obrazy zostają nietknięte
+    razem ze ścieżkami, więc `pair_key` w dzienniku dalej pasuje.
+
+    Kolejność zachowujemy po dotychczasowym numerze, żeby anotator wrócił mniej
+    więcej tam, gdzie skończył.
+
+    Args:
+        coco: Kolejka w formacie COCO
+
+    Returns:
+        Kolejka z poprawną numeracją i po dwa wiersze na parę
+    """
+    neutral_templates = {
+        annotation["image_id"]: annotation
+        for annotation in coco.get("annotations", [])
+        if not _is_peak(annotation)
+    }
+    peaks = [
+        annotation for annotation in coco.get("annotations", []) if _is_peak(annotation)
+    ]
+    peaks.sort(key=lambda a: (a.get("review_order") or 0, a["image_id"]))
+
+    rows: list[dict] = []
+    annotation_id = 1
+    for order, peak in enumerate(peaks):
+        neutral_id = peak["neutral_frame_id"]
+        template = neutral_templates.get(neutral_id)
+        if template is None:
+            continue
+        for row, image_id in ((template, neutral_id), (peak, peak["image_id"])):
+            moved = dict(row)
+            moved["id"] = annotation_id
+            annotation_id += 1
+            moved["image_id"] = image_id
+            moved["neutral_frame_id"] = neutral_id
+            moved["review_order"] = order
+            rows.append(moved)
+
+    repaired = {key: value for key, value in coco.items() if key != "annotations"}
+    repaired["annotations"] = rows
+    return repaired

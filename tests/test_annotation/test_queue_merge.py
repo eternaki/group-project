@@ -14,7 +14,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.annotation.queue_merge import merge_queues  # noqa: E402
+from scripts.annotation.queue_merge import (  # noqa: E402
+    merge_queues,
+    renumber_queue,
+)
 
 
 def _kolejka(pary: list[tuple[str, str]], pierwsze_id: int = 1) -> dict:
@@ -192,3 +195,103 @@ class TestDokladanieDoKolejki:
         wskazania = {a["neutral_frame_id"] for a in szczyty}
         assert len(wskazania) == 1, "obie pary wskazują jedną klatkę neutralną"
         assert obrazy[wskazania.pop()] == "psA/neutral.jpg"
+
+    def test_numery_porzadkowe_nie_zderzaja_sie(self) -> None:
+        """
+        Stanowisko skleja parę po `review_order` (`coco_import._group_pairs`).
+
+        Obie kolejki numerują od zera, więc przepisany numer zderza się
+        z numerem pary już obecnej — wtedy wpis zostaje NADPISANY i szczyt
+        jednego psa dostaje klatkę neutralną drugiego. Zmierzone: 1840 zderzeń.
+        """
+        baza = _kolejka([("psA/neutral.jpg", "psA/peak.jpg")])
+        for a in baza["annotations"]:
+            a["review_order"] = 0
+        nowe = _kolejka([("psB/neutral.jpg", "psB/peak.jpg")], pierwsze_id=1)
+        for a in nowe["annotations"]:
+            a["review_order"] = 0
+
+        wynik = merge_queues(baza, nowe)
+
+        numery = [a["review_order"] for a in wynik["annotations"]]
+        assert len(set(numery)) == 2, "każda para ma własny numer porządkowy"
+
+    def test_kazda_para_ma_wlasny_wiersz_neutralny(self) -> None:
+        """
+        Wiersz neutralny nie może być współdzielony, choć OBRAZ może.
+
+        Jeden wiersz obsługuje dokładnie jeden `review_order`, więc przy
+        współdzieleniu wszystkie szczyty poza jednym zostają bez klatki
+        neutralnej i para po cichu znika z kolejki.
+        """
+        baza = _kolejka([("psA/neutral.jpg", "psA/peak1.jpg")])
+        for i, a in enumerate(baza["annotations"]):
+            a["review_order"] = 0
+        nowe = _kolejka([("psA/neutral.jpg", "psA/peak2.jpg")], pierwsze_id=50)
+        for a in nowe["annotations"]:
+            a["review_order"] = 0
+
+        wynik = merge_queues(baza, nowe)
+
+        # tak samo jak stanowisko: grupujemy po numerze i roli
+        po_numerze: dict[int, dict[str, dict]] = {}
+        for a in wynik["annotations"]:
+            po_numerze.setdefault(a["review_order"], {})[a["frame_role"]] = a
+        kompletne = [n for n, e in po_numerze.items() if "neutral" in e and "peak" in e]
+        assert len(kompletne) == 2, "obie pary muszą się złożyć"
+
+        obrazy = {o["id"]: o["file_name"] for o in wynik["images"]}
+        assert len([o for o in wynik["images"] if o["file_name"] == "psA/neutral.jpg"]) == 1, \
+            "obraz klatki neutralnej bez duplikatu"
+        for numer in kompletne:
+            e = po_numerze[numer]
+            assert obrazy[e["neutral"]["image_id"]] == "psA/neutral.jpg"
+
+
+class TestNaprawaNumeracji:
+    """Kolejka ze zderzonymi numerami daje się naprawić bez utraty par."""
+
+    def _zepsuta(self) -> dict:
+        """Dwie pary różnych psów z TYM SAMYM numerem porządkowym."""
+        kolejka = _kolejka([("psA/n.jpg", "psA/p.jpg"), ("psB/n.jpg", "psB/p.jpg")])
+        for a in kolejka["annotations"]:
+            a["review_order"] = 0
+        return kolejka
+
+    def test_stanowisko_gubi_pary_przed_naprawa(self) -> None:
+        """Dowód, że problem jest realny: grupowanie po numerze zjada parę."""
+        zepsuta = self._zepsuta()
+        po_numerze: dict = {}
+        for a in zepsuta["annotations"]:
+            po_numerze.setdefault(a["review_order"], {})[a["frame_role"]] = a
+        assert len(po_numerze) == 1, "obie pary siedzą pod jednym numerem"
+
+    def test_po_naprawie_kazda_para_ma_swoj_numer(self) -> None:
+        wynik = renumber_queue(self._zepsuta())
+
+        po_numerze: dict = {}
+        for a in wynik["annotations"]:
+            po_numerze.setdefault(a["review_order"], {})[a["frame_role"]] = a
+        kompletne = [e for e in po_numerze.values() if "neutral" in e and "peak" in e]
+        assert len(kompletne) == 2, "obie pary muszą się złożyć"
+
+    def test_naprawa_nie_miesza_psow(self) -> None:
+        wynik = renumber_queue(self._zepsuta())
+
+        obrazy = {o["id"]: o["file_name"] for o in wynik["images"]}
+        po_numerze: dict = {}
+        for a in wynik["annotations"]:
+            po_numerze.setdefault(a["review_order"], {})[a["frame_role"]] = a
+        for wpis in po_numerze.values():
+            pies_n = obrazy[wpis["neutral"]["image_id"]].split("/")[0]
+            pies_p = obrazy[wpis["peak"]["image_id"]].split("/")[0]
+            assert pies_n == pies_p, "szczyt dostał klatkę neutralną innego psa"
+
+    def test_naprawa_nie_rusza_obrazow(self) -> None:
+        """Ścieżki obrazów to klucze werdyktów — muszą przeżyć nietknięte."""
+        zepsuta = self._zepsuta()
+        przed = [o["file_name"] for o in zepsuta["images"]]
+
+        wynik = renumber_queue(zepsuta)
+
+        assert [o["file_name"] for o in wynik["images"]] == przed
