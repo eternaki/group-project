@@ -29,6 +29,9 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
+
+import numpy as np
 
 from packages.data.coco import (
     FRAME_ROLE_NEUTRAL,
@@ -40,7 +43,9 @@ from packages.pipeline.quality_gate import (
     QualityThresholds,
     assess_frame,
 )
+from scripts.annotation.cropping import KEYPOINT_VISIBLE_MIN
 from scripts.annotation.queue_unpack import is_packed, unpack_queue
+from scripts.annotation.scene_match import face_similarity
 
 # Pas niepewności pomiaru: poniżej sygnał tonie w szumie, powyżej jest
 # bezdyskusyjny. Wewnątrz — decyduje człowiek, więc te pary idą pierwsze.
@@ -139,6 +144,43 @@ REVIEW_MAX_ASYMMETRY: float = 0.60
 # to minuty i nie wymaga powtarzania przebiegu przez modele), za niski płaci się
 # godzinami pracy człowieka — przy progu 30 px anotator odrzucił 11 par z 17.
 REVIEW_MIN_FACE_WIDTH: float = 70.0
+
+# Minimalne podobieństwo mordy między klatką neutralną a szczytową.
+#
+# Trek psa urywa się na cięciu montażowym, ale numer treku nie: w kompilacji
+# (`youtube_*`) ten sam `track_id` biegnie przez kilka różnych zwierząt i para
+# dostaje klatkę neutralną INNEGO psa. AU są różnicą względem niej, więc
+# wszystkie 21 pomiarów opisuje wtedy różnicę między zwierzętami zamiast
+# mimiki — to nie brak informacji, to informacja fałszywa.
+#
+# Wartość wybrana po obejrzeniu par w pasmach (29.08.2026, pomiar na 500 parach):
+#
+#     poniżej 0.40  za każdym razem INNY pies (dorosły kontra szczeniak,
+#                   chihuahua kontra RYSUNEK psa, collie kontra pitbull)
+#     0.40 - 0.60   ten sam pies, inna mimika i oświetlenie
+#     powyżej 0.60  ten sam pies, wyraźnie
+#
+# Mierzymy WYCINEK MORDY, nie całą klatkę: cała klatka reaguje na ruch psa
+# i zmianę tła, więc wymagałaby progu 0.70 i odrzucała pary poprawne.
+# Koszt progu 0.40: około 4% par.
+REVIEW_MIN_SCENE_SIMILARITY: float = 0.40
+
+# Ile punktów wolno leżeć POZA boksem własnego psa.
+#
+# Przy dwóch psach w kadrze model punktów potrafi rozdzielić 46 punktów między
+# DWIE morody — część na jednym zwierzęciu, część na drugim. Kadr wygląda wtedy
+# sensownie, ale opisuje dwa psy naraz i żadnego z nich poprawnie.
+#
+# Boks psa pochodzi z detektora ciał, czyli z pomiaru NIEZALEŻNEGO od modelu
+# punktów — dlatego nadaje się na sprawdzian. Zapas 15% na boks, bo uszy
+# i podgardle bywają tuż poza nim.
+#
+# Zmierzone 29.08.2026 na 9820 anotacjach: mediana udziału punktów poza boksem
+# wynosi 0.000, a próg 20% odrzuca 1.3% anotacji — czyli tnie ogon, nie masę.
+REVIEW_MAX_KEYPOINTS_OUTSIDE: float = 0.20
+
+# Zapas wokół boksu psa przy sprawdzaniu, czy punkty z niego nie uciekły
+BBOX_MARGIN: float = 0.15
 
 # Separator ścieżek w COCO bywa windowsowy — normalizujemy przed rozbiciem
 _WINDOWS_SEPARATOR: str = "\\"
@@ -252,9 +294,42 @@ def ambiguity_score(annotation: dict) -> int:
     return count
 
 
+def keypoints_outside_bbox(annotation: dict) -> float:
+    """
+    Liczy, jaka część pewnych punktów leży poza boksem własnego psa.
+
+    Args:
+        annotation: Anotacja z `bbox` i `keypoints`
+
+    Returns:
+        Udział w zakresie [0, 1]; 0.0 gdy pomiar niemożliwy
+    """
+    bbox = annotation.get("bbox")
+    keypoints = annotation.get("keypoints")
+    if not bbox or not keypoints:
+        return 0.0
+    x, y, width, height = (float(v) for v in bbox)
+    if width <= 0 or height <= 0:
+        return 0.0
+    points = np.asarray(keypoints, dtype=float).reshape(-1, 3)
+    visible = points[points[:, 2] > KEYPOINT_VISIBLE_MIN]
+    if len(visible) == 0:
+        return 0.0
+    margin_x, margin_y = width * BBOX_MARGIN, height * BBOX_MARGIN
+    outside = (
+        (visible[:, 0] < x - margin_x)
+        | (visible[:, 0] > x + width + margin_x)
+        | (visible[:, 1] < y - margin_y)
+        | (visible[:, 1] > y + height + margin_y)
+    ).sum()
+    return float(outside) / len(visible)
+
+
 def build_pairs(
     coco: dict,
     thresholds: QualityThresholds,
+    frames_dir: Optional[Path] = None,
+    min_similarity: float = REVIEW_MIN_SCENE_SIMILARITY,
 ) -> tuple[list[ReviewPair], dict[str, int]]:
     """
     Buduje pary szczyt-neutral przechodzące bramkę jakości.
@@ -291,6 +366,28 @@ def build_pairs(
             for reason in peak_quality.reasons + neutral_quality.reasons:
                 rejected[reason] += 1
             continue
+
+        # Punkty rozdzielone miedzy dwa psy: kadr wyglada sensownie, ale opisuje
+        # dwa zwierzeta naraz i zadnego poprawnie.
+        rozjazd = max(keypoints_outside_bbox(peak), keypoints_outside_bbox(neutral))
+        if rozjazd > REVIEW_MAX_KEYPOINTS_OUTSIDE:
+            rejected["punkty rozdzielone miedzy dwa psy"] += 1
+            continue
+
+        # Ostatnia proba: czy to na pewno TEN SAM pies. Trek nie urywa sie na
+        # cieciu montazowym, wiec w kompilacji para dostaje klatke neutralna
+        # innego zwierzecia — a AU sa roznica wzgledem niej.
+        if frames_dir is not None:
+            similarity = face_similarity(
+                frames_dir,
+                images[neutral["image_id"]]["file_name"],
+                neutral.get("keypoints"),
+                images[peak["image_id"]]["file_name"],
+                peak.get("keypoints"),
+            )
+            if similarity is not None and similarity < min_similarity:
+                rejected["inny pies na klatce neutralnej (cięcie montażowe)"] += 1
+                continue
 
         pairs.append(
             ReviewPair(
@@ -673,6 +770,12 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--min-similarity",
+        type=float,
+        default=REVIEW_MIN_SCENE_SIMILARITY,
+        help="Minimalne podobienstwo mordy miedzy klatka neutralna a szczytowa",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -709,7 +812,9 @@ def main() -> None:
         if len(coco["images"]) > przed:
             print(f"Dolozono {len(coco['images']) - przed} klatek spoza surowego COCO")
 
-    pairs, rejected = build_pairs(coco, thresholds)
+    pairs, rejected = build_pairs(
+        coco, thresholds, Path(args.dataset).parent / "frames", args.min_similarity
+    )
 
     if zachowane:
         maja = {pair.peak_name for pair in pairs}
