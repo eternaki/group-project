@@ -18,6 +18,7 @@ def _pair(video: str, signal: int, ambiguity: int = 0) -> ReviewPair:
     return ReviewPair(
         peak={"id": f"{video}-{signal}-{ambiguity}"},
         neutral={"id": f"{video}-neutral"},
+        peak_name=f"{video}/{signal}-{ambiguity}.jpg",
         video=video,
         signal=signal,
         ambiguity=ambiguity,

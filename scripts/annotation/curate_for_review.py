@@ -40,7 +40,7 @@ from packages.pipeline.quality_gate import (
     QualityThresholds,
     assess_frame,
 )
-from scripts.annotation.queue_merge import merge_queues, renumber_queue
+from scripts.annotation.queue_unpack import is_packed, unpack_queue
 
 # Pas niepewności pomiaru: poniżej sygnał tonie w szumie, powyżej jest
 # bezdyskusyjny. Wewnątrz — decyduje człowiek, więc te pary idą pierwsze.
@@ -153,6 +153,8 @@ class ReviewPair:
     Attributes:
         peak: Anotacja klatki szczytowej
         neutral: Anotacja klatki neutralnej tego samego psa
+        peak_name: Ścieżka klatki szczytowej — ten sam klucz, którym dziennik
+            werdyktów identyfikuje parę (`pair_key`)
         video: Klucz nagrania źródłowego (katalog klatek)
         signal: Ile AU przewyższa szum treku — po tym układa się kolejka
         ambiguity: Ile AU leży w pasie niepewności — rozstrzyga przy równym sygnale
@@ -162,6 +164,7 @@ class ReviewPair:
 
     peak: dict
     neutral: dict
+    peak_name: str
     video: str
     signal: int
     ambiguity: int
@@ -293,6 +296,7 @@ def build_pairs(
             ReviewPair(
                 peak=peak,
                 neutral=neutral,
+                peak_name=images[peak["image_id"]]["file_name"],
                 video=video_key(images[peak["image_id"]]["file_name"]),
                 signal=signal_score(peak),
                 ambiguity=ambiguity_score(peak),
@@ -301,6 +305,200 @@ def build_pairs(
             )
         )
     return pairs, dict(rejected)
+
+
+def with_legacy(coco: dict, published: dict) -> dict:
+    """
+    Dokłada do surowego COCO te klatki z wydanej kolejki, których w nim nie ma.
+
+    Zbiór bywa generowany na nowo i wtedy `annotations.json` nie zawiera już
+    par sprzed przebiegu — zmierzone 29.08.2026: z 4976 par wydanej kolejki
+    1007 nie miało odpowiednika w dzisiejszym surowym COCO, a niosły 554
+    werdykty. Pełne klatki tych par LEŻĄ na dysku, brakowało tylko wpisów.
+
+    `published` musi być już przeliczona do pełnych klatek (`unpack_queue`),
+    inaczej dołożylibyśmy współrzędne w układzie wycinka.
+
+    Args:
+        coco: Surowy zbiór po anotacji wsadowej
+        published: Wydana kolejka we współrzędnych pełnych klatek
+
+    Returns:
+        Zbiór źródłowy uzupełniony o brakujące klatki
+    """
+    known = {image["file_name"] for image in coco["images"]}
+    next_image_id = max((image["id"] for image in coco["images"]), default=0) + 1
+    next_annotation_id = max((a["id"] for a in coco["annotations"]), default=0) + 1
+
+    merged = {key: value for key, value in coco.items() if key not in ("images", "annotations")}
+    merged["images"] = list(coco["images"])
+    merged["annotations"] = list(coco["annotations"])
+
+    # Wskazania rozwiązujemy po NAZWIE klatki, nie po numerze: klatka neutralna
+    # pary bywa już obecna w surowym COCO pod INNYM identyfikatorem. Pierwsza
+    # wersja pomijała takie pary i gubiła 66 werdyktów — a wystarczy wskazać
+    # ten obraz, który już leży w zbiorze.
+    by_name = {image["file_name"]: image["id"] for image in merged["images"]}
+    published_names = {image["id"]: image["file_name"] for image in published.get("images", [])}
+
+    for image in published.get("images", []):
+        if image["file_name"] in known:
+            continue
+        copied = dict(image)
+        copied["id"] = next_image_id
+        by_name[copied["file_name"]] = next_image_id
+        next_image_id += 1
+        merged["images"].append(copied)
+        known.add(copied["file_name"])
+
+    # Jedna klatka bywa szczytową w jednej parze i neutralną w innej, więc
+    # dopuszczamy po jednym wierszu NA ROLĘ, a nie na klatkę. Ograniczenie do
+    # jednego wiersza gubiło klatkę neutralną pary, gdy ta sama klatka weszła
+    # wcześniej jako szczytowa — 62 pary z werdyktami przepadały w ten sposób.
+    added_rows: set[tuple[str, str]] = set()
+    raw_images = {a["image_id"] for a in coco["annotations"]}
+    for annotation in published.get("annotations", []):
+        name = published_names.get(annotation["image_id"])
+        role = annotation.get("frame_role", "")
+        if name is None or (name, role) in added_rows:
+            continue
+        target = by_name.get(name)
+        if target is None:
+            continue
+        # Wiersz dla klatki, która i tak jest w surowym COCO, tylko dublowałby
+        # istniejącą anotację — bierzemy wyłącznie te, których tam brakuje.
+        if target in raw_images:
+            continue
+        neutral_name = published_names.get(annotation.get("neutral_frame_id"))
+        neutral_target = by_name.get(neutral_name) if neutral_name else None
+        if annotation.get("neutral_frame_id") is not None and neutral_target is None:
+            continue
+        moved = dict(annotation)
+        moved["id"] = next_annotation_id
+        next_annotation_id += 1
+        moved["image_id"] = target
+        if neutral_target is not None:
+            moved["neutral_frame_id"] = neutral_target
+        merged["annotations"].append(moved)
+        added_rows.add((name, role))
+
+    # Para bez wiersza NEUTRALNEGO nie da się złożyć. Zdarza się, gdy klatka
+    # neutralna istnieje już w surowym COCO, ale opisana tam jest jako szczytowa
+    # innego treku — wtedy wiersz neutralny trzeba dołożyć osobno. Bez tego
+    # 62 pary z werdyktami wypadały z kolejki mimo obecności obu klatek.
+    have_neutral = {
+        annotation["image_id"]
+        for annotation in merged["annotations"]
+        if annotation.get("frame_role") == FRAME_ROLE_NEUTRAL
+    }
+    published_neutrals = {
+        annotation["image_id"]: annotation
+        for annotation in published.get("annotations", [])
+        if annotation.get("frame_role") == FRAME_ROLE_NEUTRAL
+    }
+    by_id = {image["id"]: image["file_name"] for image in merged["images"]}
+    for annotation in list(merged["annotations"]):
+        neutral_id = annotation.get("neutral_frame_id")
+        if annotation.get("frame_role") != FRAME_ROLE_PEAK:
+            continue
+        if neutral_id is None or neutral_id in have_neutral:
+            continue
+        source = next(
+            (
+                row
+                for image_id, row in published_neutrals.items()
+                if published_names.get(image_id) == by_id.get(neutral_id)
+            ),
+            None,
+        )
+        if source is None:
+            continue
+        copied = dict(source)
+        copied["id"] = next_annotation_id
+        next_annotation_id += 1
+        copied["image_id"] = neutral_id
+        copied["neutral_frame_id"] = neutral_id
+        merged["annotations"].append(copied)
+        have_neutral.add(neutral_id)
+
+    return merged
+
+
+def pairs_for_names(coco: dict, names: set[str], thresholds: QualityThresholds) -> list[ReviewPair]:
+    """
+    Buduje pary dla WSKAZANYCH klatek szczytowych, z pominięciem bramki.
+
+    Służy do zachowania par już wydanych anotatorom, gdy dzisiejsza bramka
+    by ich nie przepuściła. Bramka bywa zaostrzana i luzowana; werdykt raz
+    postawiony ma przeżyć jedno i drugie.
+
+    KLUCZOWE: pary odtwarzamy z surowego COCO, a NIE przepisujemy z opublikowanej
+    kolejki. Opublikowana kolejka to paczka robocza — jej współrzędne są w
+    układzie WYCINKA (obrazy 512 px), a nie pełnej klatki. Przepisane wprost,
+    trafiały do ponownego pakowania jako współrzędne pełnej klatki i wycinek
+    lądował w lewym górnym rogu: anotator dostawał kadr podłogi z punktami na
+    drzwiach zamiast psa. Zmierzone 29.08.2026 na 1818 odziedziczonych parach.
+
+    Args:
+        coco: Surowy zbiór po anotacji wsadowej (współrzędne pełnej klatki)
+        names: Ścieżki klatek szczytowych, które mają zostać
+        thresholds: Progi — służą tylko do opisu jakości, nie do odsiewu
+
+    Returns:
+        Pary dla tych klatek, które udało się odtworzyć
+    """
+    images = {image["id"]: image for image in coco["images"]}
+    neutrals = {
+        ann["image_id"]: ann
+        for ann in coco["annotations"]
+        if ann.get("frame_role") == FRAME_ROLE_NEUTRAL
+    }
+    found: list[ReviewPair] = []
+    for peak in coco["annotations"]:
+        if peak.get("frame_role") != FRAME_ROLE_PEAK:
+            continue
+        if images[peak["image_id"]]["file_name"] not in names:
+            continue
+        neutral = neutrals.get(peak.get("neutral_frame_id"))
+        if neutral is None:
+            continue
+        found.append(
+            ReviewPair(
+                peak=peak,
+                neutral=neutral,
+                peak_name=images[peak["image_id"]]["file_name"],
+                video=video_key(images[peak["image_id"]]["file_name"]),
+                signal=signal_score(peak),
+                ambiguity=ambiguity_score(peak),
+                peak_quality=assess_frame(peak.get("keypoints"), thresholds),
+                neutral_quality=assess_frame(neutral.get("keypoints"), thresholds),
+            )
+        )
+    return found
+
+
+def peak_names(queue: dict) -> set[str]:
+    """
+    Wyciąga ścieżki klatek szczytowych z kolejki.
+
+    Args:
+        queue: Kolejka w formacie COCO
+
+    Returns:
+        Ścieżki klatek szczytowych — te same wartości, którymi posługuje się
+        `pair_key` w dzienniku werdyktów
+    """
+    images = {image["id"]: image["file_name"] for image in queue.get("images", [])}
+    # Rolę bierzemy z `frame_role`, a NIE z porównania `neutral_frame_id`
+    # z własnym `image_id`. Część wierszy szczytowych wskazuje samą siebie
+    # (klatka szczytowa bywa zarazem bazą AU swojego treku) i heurystyka
+    # uznawała je za neutralne — 59 par z werdyktami wypadało wtedy z listy
+    # do zachowania, choć w kolejce stały jako szczytowe.
+    return {
+        images[annotation["image_id"]]
+        for annotation in queue.get("annotations", [])
+        if annotation.get("frame_role") == FRAME_ROLE_PEAK
+    }
 
 
 def order_for_review(pairs: list[ReviewPair]) -> list[ReviewPair]:
@@ -496,19 +694,38 @@ def main() -> None:
     total_peaks = sum(
         1 for ann in coco["annotations"] if ann.get("frame_role") == FRAME_ROLE_PEAK
     )
+    # Kolejka wydana anotatorom jest PACZKĄ — współrzędne ma w układzie wycinka.
+    # Bez odwrócenia trafiłaby do pakowania po raz drugi i wycinek wylądowałby
+    # w lewym górnym rogu pełnej klatki: kadr podłogi zamiast psa.
+    zachowane: set[str] = set()
+    if args.keep:
+        published = load_dataset(Path(args.keep))
+        if is_packed(published):
+            published = unpack_queue(published, Path(args.dataset).parent / "frames")
+            print("Kolejka bazowa byla spakowana — przeliczona do pelnych klatek")
+        zachowane = peak_names(published)
+        przed = len(coco["images"])
+        coco = with_legacy(coco, published)
+        if len(coco["images"]) > przed:
+            print(f"Dolozono {len(coco['images']) - przed} klatek spoza surowego COCO")
+
     pairs, rejected = build_pairs(coco, thresholds)
+
+    if zachowane:
+        maja = {pair.peak_name for pair in pairs}
+        odzyskane = pairs_for_names(coco, zachowane - maja, thresholds)
+        pairs = pairs + odzyskane
+        print(
+            f"Zachowano kolejke wydana anotatorom: {len(zachowane)} par "
+            f"({len(odzyskane)} odzyskanych spod dzisiejszej bramki), "
+            f"nowych {len(maja - zachowane)}"
+        )
+
     ordered = order_for_review(pairs)
     if args.limit is not None:
         ordered = ordered[: args.limit]
 
     curated = build_curated(coco, ordered)
-    if args.keep:
-        published = load_dataset(Path(args.keep))
-        curated = renumber_queue(merge_queues(published, curated))
-        print(
-            f"Zachowano kolejke wydana anotatorom: {count_pairs(published)} par, "
-            f"dolozono {count_pairs(curated) - count_pairs(published)} nowych"
-        )
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

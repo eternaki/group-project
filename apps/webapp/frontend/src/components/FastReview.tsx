@@ -119,24 +119,6 @@ function missingAnswers(keypointsOk: boolean | null, emotion: string | null): st
   if (!emotion) gaps.push('не выбрана эмоция');
   return gaps;
 }
-
-/** Zapas wokół boksu psa przy kadrowaniu — ułamek jego szerokości i wysokości */
-const CROP_PADDING = 0.18;
-
-/**
- * Zapas wokół rozpiętości punktów przy kadrowaniu mordy.
- *
- * Ćwierć szerokości z każdej strony zostawia ucho i podgardle — sam obrys punktów
- * ucina je i anotator traci odniesienie, na którą część psa patrzy.
- */
-const FACE_CROP_PADDING = 0.25;
-
-/** Punkt poniżej tej pewności nie wyznacza kadru mordy */
-const FACE_CROP_MIN_VISIBILITY = 0.3;
-
-/** Poniżej tylu pewnych punktów kadr mordy jest zgadywaniem — wracamy do boksu psa */
-const FACE_CROP_MIN_POINTS = 6;
-
 interface Rect {
   x: number;
   y: number;
@@ -144,75 +126,8 @@ interface Rect {
   height: number;
 }
 
-/**
- * Wylicza wycinek wokół boksu CAŁEGO psa.
- *
- * Zapasowy sposób kadrowania: używany, gdy punktów jest za mało, żeby wyznaczyć
- * z nich mordę.
- */
-function bodyRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
-  if (!natural || !frame.bbox) return null;
-  const [x, y, width, height] = frame.bbox;
-  const padX = width * CROP_PADDING;
-  const padY = height * CROP_PADDING;
-  const left = Math.max(0, x - padX);
-  const top = Math.max(0, y - padY);
-  return {
-    x: left,
-    y: top,
-    width: Math.min(natural.width - left, width + 2 * padX),
-    height: Math.min(natural.height - top, height + 2 * padY),
-  };
-}
 
-/**
- * Wylicza wycinek MORDY z rozpiętości pewnych punktów.
- *
- * Kadr po boksie psa jest za szeroki do pracy: na leżącym psie ma około 1000 px,
- * a morda w nim jakieś 50 — czyli 46 punktów zlewa się w plamę i trafienie
- * w konkretny jest loterią. Kadr liczony z samych punktów daje mordę na całą
- * kolumnę niezależnie od tego, ile psa jest w kadrze.
- *
- * Pełna klatka zostaje pod klawiszem `F` — potrzebna, żeby zobaczyć kontekst
- * (który to pies, co robi), ale nie do oceny ruchu mięśni.
- */
-function faceRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
-  const keypoints = frame.keypoints;
-  if (!natural || !keypoints) return null;
-
-  const xs: number[] = [];
-  const ys: number[] = [];
-  for (let i = 0; i < keypoints.length / 3; i++) {
-    if (keypoints[i * 3 + 2] <= FACE_CROP_MIN_VISIBILITY) continue;
-    xs.push(keypoints[i * 3]);
-    ys.push(keypoints[i * 3 + 1]);
-  }
-  if (xs.length < FACE_CROP_MIN_POINTS) return null;
-
-  const x0 = Math.min(...xs);
-  const x1 = Math.max(...xs);
-  const y0 = Math.min(...ys);
-  const y1 = Math.max(...ys);
-  const padX = Math.max((x1 - x0) * FACE_CROP_PADDING, 1);
-  const padY = Math.max((y1 - y0) * FACE_CROP_PADDING, 1);
-  const left = Math.max(0, x0 - padX);
-  const top = Math.max(0, y0 - padY);
-  return {
-    x: left,
-    y: top,
-    width: Math.min(natural.width - left, x1 - x0 + 2 * padX),
-    height: Math.min(natural.height - top, y1 - y0 + 2 * padY),
-  };
-}
-
-/**
- * Wybiera kadr roboczy: morda, a gdy jej nie da się wyznaczyć — cały pies.
- */
-function cropRect(frame: FrameAnnotation, natural: Rect | null): Rect | null {
-  return faceRect(frame, natural) ?? bodyRect(frame, natural);
-}
-
-/** Promien punktu keypoint jako ułamek szerokości wycinka — skaluje się z kadrem */
+/** Promien punktu keypoint jako ułamek szerokości kadru — skaluje się z nim */
 const KEYPOINT_RADIUS_RATIO = 0.006;
 
 interface KeypointOverlayProps {
@@ -354,7 +269,6 @@ interface FrameViewProps {
   frame: FrameAnnotation;
   label: string;
   accent: string;
-  showFullFrame: boolean;
   showKeypoints: boolean;
   keypoints: number[] | null;
   editable?: boolean;
@@ -366,7 +280,6 @@ function FrameView({
   frame,
   label,
   accent,
-  showFullFrame,
   showKeypoints,
   keypoints,
   editable,
@@ -376,10 +289,18 @@ function FrameView({
   const [natural, setNatural] = useState<Rect | null>(null);
   const quality = frame.quality ?? {};
 
-  // Pełna klatka to po prostu wycinek obejmujący cały obraz. Dzięki temu punkty
-  // kluczowe rysują się tym samym mechanizmem w obu trybach — przy `object-contain`
-  // obraz bywa opasany pustym tłem i nakładka rozjeżdżałaby się z nim.
-  const region = showFullFrame ? natural : cropRect(frame, natural);
+  // Pokazujemy CAŁY kadr z paczki, bez przybliżania na mordę.
+  //
+  // Przybliżenie liczyło wycinek Z KEYPOINTS — czyli z tego, co anotator ma
+  // dopiero sprawdzić. Gdy model postawił punkty obok psa (a stawia, i po to
+  // właśnie jest ta weryfikacja), kadr jechał za nimi w trawę i pies wypadał
+  // poza widok. Anotator dostawał wtedy zieleń z kropkami i nie miał jak
+  // ocenić, czy punkty leżą dobrze — bo psa nie widział.
+  //
+  // Paczka jest już wycięta wokół psa z zachowaniem szczegółu mordy
+  // (`build_work_pack`, `TARGET_FACE_PX`), więc drugie przybliżenie i tak
+  // niczego nie wnosiło poza tym błędem.
+  const region = natural;
 
   // Klatka i pies się zmieniły — poprzedni rozmiar naturalny już nie obowiązuje
   useEffect(() => setNatural(null), [frame.image_url]);
@@ -663,7 +584,6 @@ export default function FastReview() {
   const [error, setError] = useState<string | null>(null);
   // Anotator czasem potrzebuje kontekstu sceny — np. gdy trzeba rozstrzygnąć,
   // czy pies reaguje na człowieka poza wycinkiem.
-  const [showFullFrame, setShowFullFrame] = useState(false);
   // Punkty domyślnie WIDOCZNE: ich ocena jest częścią tego samego przejścia,
   // a niewidoczne trzeba by włączać przy każdej parze osobno.
   const [showKeypoints, setShowKeypoints] = useState(true);
@@ -873,10 +793,6 @@ export default function FastReview() {
         case 'KeyK':
           event.preventDefault();
           setShowKeypoints((shown) => !shown);
-          break;
-        case 'KeyF':
-          event.preventDefault();
-          setShowFullFrame((shown) => !shown);
           break;
         case 'KeyX':
           event.preventDefault();
@@ -1108,7 +1024,6 @@ export default function FastReview() {
             frame={frame}
             label={index === 0 ? 'Нейтральный (база AU)' : 'Пиковый (оцениваем)'}
             accent={index === 0 ? 'text-blue-600' : 'text-amber-600'}
-            showFullFrame={showFullFrame}
             showKeypoints={showKeypoints}
             keypoints={
               (role === 'neutral' ? editedNeutral : editedPeak) ?? frame.keypoints ?? null
@@ -1269,8 +1184,6 @@ export default function FastReview() {
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">S</kbd> поменять роли ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">K</kbd> точки ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">P</kbd> править точки ·{' '}
-          <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">F</kbd>{' '}
-          {showFullFrame ? 'вернуться к морде' : 'весь кадр'} ·{' '}
           <kbd className="px-1.5 py-0.5 bg-gray-100 rounded font-mono">←→</kbd> навигация
           {gaps.length > 0 && (
             <span className="block mt-1 text-amber-700 font-medium">
