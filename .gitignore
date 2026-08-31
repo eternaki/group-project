@@ -160,6 +160,7 @@ drive_key.txt
 
 # Pobrane wideo z Google Drive (lokalne)
 data/drive_dogs/
+data/dog_tv_24_7_nareski_partner_share/
 
 # Dane: klatki i wideo NIGDY do repozytorium (setki MB do gigabajtów).
 # Etykiety człowieka i gotowy zbiór w formacie finalnym — TAK, bo to one są
