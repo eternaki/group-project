@@ -16,7 +16,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.annotation.refresh_dataset import merge_into_dataset, publish, CycleResult, count_pairs
+from scripts.annotation.refresh_dataset import (  # noqa: E402
+    CycleResult,
+    count_pairs,
+    merge_into_dataset,
+    publish,
+)
 
 DATASET_DIR = REPO_ROOT / "data" / "dataset_final"
 QUEUE_PATH = DATASET_DIR / "work" / "curated.json"
