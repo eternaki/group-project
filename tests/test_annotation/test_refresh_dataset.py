@@ -133,3 +133,46 @@ class TestZalegleScalenia:
         )
 
         assert obieg._unmerged_waves() == []
+
+
+class TestPodzialPracy:
+    """
+    Przy podziale folderu miedzy dwie osoby obieg NIE MOZE pobierac z Dysku.
+
+    `sync` sciaga CALY folder, wiec obieg uruchomiony z pobieraniem przyciagnie
+    takze polowe kolegi — i obie osoby przerobia te same nagrania, kazda po
+    kilkadziesiat godzin. Material dostarcza sie wtedy osobno
+    (`download_by_manifest`), a obieg bierze to, co lezy na dysku.
+    """
+
+    def test_bez_pobierania_nie_dotyka_dysku(self, dane: Path, monkeypatch) -> None:
+        wolane = []
+        monkeypatch.setattr(obieg, "sync", lambda *a, **k: wolane.append("sync"))
+        monkeypatch.setattr(obieg, "drive_has_new", lambda: wolane.append("lista") or 99)
+        monkeypatch.setattr(obieg, "stage_new_videos", lambda wave: 0)
+        monkeypatch.setattr(obieg, "_run", lambda *a, **k: None)
+        monkeypatch.setattr(obieg, "publish", lambda *a, **k: False)
+        monkeypatch.setattr(obieg, "count_pairs", lambda *a, **k: 0)
+        monkeypatch.setattr(obieg, "orphaned_verdicts", lambda *a, **k: set())
+
+        obieg.run_cycle(workers=1, allowed_orphans=2, push=False, download=False)
+
+        assert wolane == [], "obieg siegnal po Dysk mimo --no-download"
+
+    def test_z_pobieraniem_siega_po_dysk(self, dane: Path, monkeypatch) -> None:
+        """Domyslne zachowanie zostaje nietkniete."""
+        wolane = []
+        from scripts.download.download_drive_folder import SyncStats
+        monkeypatch.setattr(
+            obieg, "sync", lambda *a, **k: wolane.append("sync") or SyncStats()
+        )
+        monkeypatch.setattr(obieg, "drive_has_new", lambda: 99)
+        monkeypatch.setattr(obieg, "stage_new_videos", lambda wave: 0)
+        monkeypatch.setattr(obieg, "_run", lambda *a, **k: None)
+        monkeypatch.setattr(obieg, "publish", lambda *a, **k: False)
+        monkeypatch.setattr(obieg, "count_pairs", lambda *a, **k: 0)
+        monkeypatch.setattr(obieg, "orphaned_verdicts", lambda *a, **k: set())
+
+        obieg.run_cycle(workers=1, allowed_orphans=2, push=False, download=True)
+
+        assert wolane == ["sync"]

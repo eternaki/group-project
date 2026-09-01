@@ -266,7 +266,7 @@ def _unfinished_wave() -> Optional[tuple[Path, Path]]:
     return None
 
 
-def run_cycle(workers: int, allowed_orphans: int, push: bool) -> CycleResult:
+def run_cycle(workers: int, allowed_orphans: int, push: bool, download: bool = True) -> CycleResult:
     """
     Wykonuje jeden pełny obieg.
 
@@ -285,11 +285,18 @@ def run_cycle(workers: int, allowed_orphans: int, push: bool) -> CycleResult:
         logger.info(f"Wlewam zalegla fale {zaleglosc.name}")
         merge_into_dataset(zaleglosc / "annotations.json")
 
-    missing = drive_has_new()
-    logger.info(f"Na Dysku brakuje u nas {missing} nagran")
-    if missing:
-        stats = sync(DRIVE_FOLDER, VIDEO_DIR)
-        result.downloaded = stats.downloaded
+    # Przy podziale pracy pobieranie CALEGO folderu jest szkodliwe: sciagneloby
+    # takze polowe kolegi i obie osoby przerabialyby te same nagrania. Wtedy
+    # material dostarcza sie osobno (`download_by_manifest`), a obieg bierze to,
+    # co juz lezy na dysku.
+    if download:
+        missing = drive_has_new()
+        logger.info(f"Na Dysku brakuje u nas {missing} nagran")
+        if missing:
+            stats = sync(DRIVE_FOLDER, VIDEO_DIR)
+            result.downloaded = stats.downloaded
+    else:
+        logger.info("Pomijam pobieranie — biore nagrania lezace na dysku")
 
     wave, output = _unfinished_wave() or (None, None)
     if wave is None:
@@ -380,9 +387,16 @@ def main() -> None:
         help="Ile werdyktow bez pary wolno zastac (stan zastany, nie cel)",
     )
     parser.add_argument("--no-push", action="store_true", help="Nie wysylaj do zdalnego repo")
+    parser.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Nie pobieraj z Dysku — przerabiaj to, co juz lezy na dysku (podzial pracy)",
+    )
     args = parser.parse_args()
 
-    result = run_cycle(args.workers, args.allowed_orphans, not args.no_push)
+    result = run_cycle(
+        args.workers, args.allowed_orphans, not args.no_push, not args.no_download
+    )
     logger.info(
         f"OBIEG: pobrane {result.downloaded}, przerobione {result.processed}, "
         f"kolejka {result.pairs_before} -> {result.pairs_after}, "

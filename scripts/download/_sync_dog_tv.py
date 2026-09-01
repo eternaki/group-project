@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
-from scripts.download.tiktok.config import GDRIVE_CREDENTIALS_PATH, GDRIVE_TOKEN_PATH, GDRIVE_FOLDER_ID
+from scripts.download.tiktok.config import (
+    GDRIVE_CREDENTIALS_PATH,
+    GDRIVE_FOLDER_ID,
+    GDRIVE_TOKEN_PATH,
+)
 from scripts.download.tiktok.drive_uploader import GoogleDriveUploader
 
 u = GoogleDriveUploader(GDRIVE_CREDENTIALS_PATH, GDRIVE_TOKEN_PATH, GDRIVE_FOLDER_ID)
