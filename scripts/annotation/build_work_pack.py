@@ -246,7 +246,7 @@ def _within_limit(annotations: list[dict], limit: Optional[int]) -> bool:
 
 
 def build_pack(
-    dataset_dir: Path, output: Path, limit: Optional[int] = None
+    dataset_dir: Path, output: Path, limit: Optional[int] = None, append: bool = False
 ) -> PackStats:
     """
     Składa paczkę roboczą ze zbioru po kuracji.
@@ -255,6 +255,12 @@ def build_pack(
         dataset_dir: Katalog zbioru roboczego
         output: Katalog paczki
         limit: Ile pierwszych par kolejki spakować; None znaczy „całą kurację"
+        append: Dopisz tylko obrazy, których jeszcze nie ma w istniejącej
+            paczce, zamiast składać ją od nowa. Bez tego pełne przebudowanie
+            wymaga surowej klatki KAŻDEJ pary lokalnie w `frames/` — polu
+            roboczym, którego gita nie niesie — więc na maszynie bez pełnej
+            historii brakujące klatki po cichu wypadają z opublikowanej
+            kolejki (anotator traci już zweryfikowane pary, nie tylko nowe).
 
     Returns:
         Statystyki przebiegu
@@ -270,18 +276,30 @@ def build_pack(
     images = {image["id"]: image for image in coco["images"]}
     grouped = _annotations_by_image(coco)
 
-    if output.exists():
-        remove_tree(output)
-    (output / FRAMES_DIRNAME).mkdir(parents=True)
-
-    stats = PackStats()
     packed_images: list[dict] = []
     packed_annotations: list[dict] = []
+    already_packed: set[str] = set()
+
+    pack_path = output / PACK_NAME
+    if append and pack_path.is_file():
+        existing = json.loads(pack_path.read_text(encoding="utf-8"))
+        packed_images = existing["images"]
+        packed_annotations = existing["annotations"]
+        already_packed = {image["file_name"] for image in packed_images}
+        (output / FRAMES_DIRNAME).mkdir(parents=True, exist_ok=True)
+    else:
+        if output.exists():
+            remove_tree(output)
+        (output / FRAMES_DIRNAME).mkdir(parents=True)
+
+    stats = PackStats()
 
     for image_id, annotations in grouped.items():
         if not _within_limit(annotations, limit):
             continue
         entry = images[image_id]
+        if entry["file_name"] in already_packed:
+            continue
         result = _write_frame(dataset_dir, output, entry, annotations)
         if result is None:
             continue
@@ -293,12 +311,16 @@ def build_pack(
         stats.bytes_written += size
 
     # Liczymy względem obrazów WZIĘTYCH POD UWAGĘ, nie całej kuracji — inaczej
-    # obrazy odcięte limitem raportowałyby się jako brakujące klatki.
+    # obrazy odcięte limitem albo już obecne w paczce raportowałyby się jako
+    # brakujące klatki.
     considered = sum(
-        1 for annotations in grouped.values() if _within_limit(annotations, limit)
+        1
+        for image_id, annotations in grouped.items()
+        if _within_limit(annotations, limit)
+        and images[image_id]["file_name"] not in already_packed
     )
     stats.skipped_missing = considered - stats.images_written
-    _write_json(output / PACK_NAME, coco, packed_images, packed_annotations)
+    _write_json(pack_path, coco, packed_images, packed_annotations)
     return stats
 
 
@@ -407,6 +429,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Ile pierwszych par kolejki spakowac (domyslnie: cala kuracja)",
     )
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Dopisz tylko nowe obrazy do istniejacej paczki zamiast ja przebudowac",
+    )
     return parser.parse_args()
 
 
@@ -417,7 +444,7 @@ def main() -> None:
     dataset_dir = data_root / args.dataset
     output = dataset_dir / WORK_DIRNAME
 
-    stats = build_pack(dataset_dir, output, args.limit)
+    stats = build_pack(dataset_dir, output, args.limit, args.append)
     logger.info("Obrazow w paczce   : %d", stats.images_written)
     logger.info("Anotacji w paczce  : %d", stats.annotations_written)
     if stats.skipped_missing:
