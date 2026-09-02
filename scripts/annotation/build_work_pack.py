@@ -400,6 +400,11 @@ def _write_json(
     """
     Zapisuje COCO paczki bez wcięć — 15 MB zamiast 23 MB przy tej samej treści.
 
+    `Path.write_text` na tym Pythonie/Windows rzuca `OSError: [Errno 22]
+    Invalid argument` przy zapisie w okolicach 70 MB (zmierzone: 70835522
+    znakow) — zwykłe `open()` + `write()` tej samej tresci przechodzi bez
+    problemu, wiec pisze przez nie.
+
     Args:
         path: Ścieżka pliku
         coco: Oryginalna kuracja (dla `info`, `licenses`, `categories`)
@@ -413,9 +418,8 @@ def _write_json(
         "images": images,
         "annotations": annotations,
     }
-    path.write_text(
-        json.dumps(packed, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
-    )
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(json.dumps(packed, ensure_ascii=False, separators=(",", ":")))
 
 
 def parse_args() -> argparse.Namespace:
