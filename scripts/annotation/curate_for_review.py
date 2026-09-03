@@ -44,6 +44,7 @@ from packages.pipeline.quality_gate import (
     assess_frame,
 )
 from scripts.annotation.cropping import KEYPOINT_VISIBLE_MIN
+from scripts.annotation.queue_guard import verdict_keys
 from scripts.annotation.queue_unpack import is_packed, unpack_queue
 from scripts.annotation.scene_match import face_similarity
 
@@ -438,8 +439,20 @@ def with_legacy(coco: dict, published: dict) -> dict:
     by_name = {image["file_name"]: image["id"] for image in merged["images"]}
     published_names = {image["id"]: image["file_name"] for image in published.get("images", [])}
 
+    # Obraz, ktorego NIE UDALO SIE rozpakowac, zostaje w ukladzie WYCINKA —
+    # `unpack_queue` zostawia wtedy `source_bbox`. Dolozenie takiego obrazu
+    # miesza dwa uklady wspolrzednych w jednym zbiorze i psuje parowanie:
+    # zmierzone 03.09.2026 — 130 takich kadrow dalo 25 par, w ktorych klatka
+    # neutralna pochodzila z INNEGO nagrania niz szczytowa.
+    #
+    # Dzieje sie tak przy materiale kolegi: do nas przyjezdza przez gita sama
+    # paczka (wycinki), a pelnych klatek na dysku nie ma, wiec nie ma z czego
+    # odtworzyc wspolrzednych. Takie pary pomijamy — wroca, gdy pojawia sie
+    # pelne klatki. Sprawdzone: zaden z tych kadrow nie niosl werdyktu.
     for image in published.get("images", []):
         if image["file_name"] in known:
+            continue
+        if image.get("source_bbox"):
             continue
         copied = dict(image)
         copied["id"] = next_image_id
@@ -770,6 +783,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--labels",
+        default="data/labels",
+        help="Katalog dziennikow werdyktow — ich pary zostaja w kolejce zawsze",
+    )
+    parser.add_argument(
         "--min-similarity",
         type=float,
         default=REVIEW_MIN_SCENE_SIMILARITY,
@@ -807,6 +825,11 @@ def main() -> None:
             published = unpack_queue(published, Path(args.dataset).parent / "frames")
             print("Kolejka bazowa byla spakowana — przeliczona do pelnych klatek")
         zachowane = peak_names(published)
+        # Werdykt czlowieka rozstrzyga, co MUSI zostac — mocniej niz obecnosc
+        # w opublikowanej kolejce. Zdarza sie, ze kolejka gubi wiersze pary
+        # (u nas: obraz bez ani jednej anotacji), a werdykt na nia juz padl;
+        # bez tego rozszerzenia praca anotatora przepada razem z wierszem.
+        zachowane |= verdict_keys(Path(args.labels))
         przed = len(coco["images"])
         coco = with_legacy(coco, published)
         if len(coco["images"]) > przed:
