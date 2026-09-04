@@ -8,6 +8,7 @@ nie wymagały ponownego logowania.
 
 from pathlib import Path
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -64,9 +65,22 @@ class GoogleDriveUploader:
             creds = Credentials.from_authorized_user_file(str(self.token_path), SCOPES)
 
         if not creds or not creds.valid:
+            # Odswiezenie potrafi SIE NIE UDAC, a nie tylko „byc niepotrzebne":
+            # Google uniewaznia refresh_token po cofnieciu zgody, zmianie hasla
+            # albo po pol roku bezczynnosci. Kod, ktory tylko probowal odswiezyc,
+            # konczyl sie wtedy `RefreshError` i NIE proponowal zalogowania sie
+            # na nowo — narzedzie wygladalo na zepsute, choc wystarczylo jedno
+            # okno logowania. Zmierzone 03.09.2026: „invalid_grant: Token has
+            # been expired or revoked" przy 1129 nagraniach do pobrania.
+            odswiezone = False
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
+                try:
+                    creds.refresh(Request())
+                    odswiezone = True
+                except RefreshError:
+                    creds = None
+
+            if not odswiezone:
                 if not self.credentials_path.exists():
                     raise FileNotFoundError(
                         f"Brak pliku OAuth credentials: {self.credentials_path}"
