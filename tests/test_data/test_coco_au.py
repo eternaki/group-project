@@ -5,7 +5,13 @@ Sprawdzają, że eksport zachowuje wiarygodność pomiaru (is_active, confidence
 a odczyt pozostaje wsteczne kompatybilny ze starym formatem (samo ratio).
 """
 
-from packages.data.coco import COCODataset, au_analysis_from_delta_aus, au_ratio
+from packages.data.coco import (
+    COCODataset,
+    au_analysis_from_delta_aus,
+    au_auto_verdict,
+    au_auto_verdicts,
+    au_ratio,
+)
 from packages.models.delta_action_units import DeltaActionUnit
 
 
@@ -131,3 +137,38 @@ class TestStatisticsZNowymFormatem:
         annotation = dataset.to_dict()["annotations"][0]
 
         assert annotation["au_analysis"]["AU101"]["confidence"] == 0.9
+
+
+class TestAuAutoVerdict:
+    """Trójstanowa etykieta AU z szumowego gejtu."""
+
+    def test_sygnal_powyzej_szumu_daje_active(self):
+        assert au_auto_verdict({"ratio": 1.5, "is_active": True, "snr": 2.0}) == "active"
+
+    def test_reguła_zapalona_ale_utopiona_w_szumie_daje_not_observable(self):
+        # is_active=True, ale sygnał nie przewyższa szumu — nie potwierdzamy aktywacji
+        assert (
+            au_auto_verdict({"ratio": 1.2, "is_active": True, "snr": 0.4})
+            == "not_observable"
+        )
+
+    def test_spoczynek_w_granicach_szumu_daje_inactive(self):
+        assert (
+            au_auto_verdict({"ratio": 1.01, "is_active": False, "snr": 0.3}) == "inactive"
+        )
+
+    def test_brak_zmierzonego_szumu_daje_not_observable(self):
+        # Bez snr nie ma jak porównać — to brak wiedzy, nie spoczynek
+        assert (
+            au_auto_verdict({"ratio": 1.5, "is_active": True}) == "not_observable"
+        )
+
+    def test_stary_format_float_daje_not_observable(self):
+        assert au_auto_verdict(1.5) == "not_observable"
+
+    def test_mapa_calego_au_analysis(self):
+        au_analysis = {
+            "AU101": {"ratio": 1.5, "is_active": True, "snr": 2.0},
+            "AU25": {"ratio": 1.01, "is_active": False, "snr": 0.2},
+        }
+        assert au_auto_verdicts(au_analysis) == {"AU101": "active", "AU25": "inactive"}

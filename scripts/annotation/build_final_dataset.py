@@ -44,6 +44,7 @@ sys.path.insert(0, str(REPO_ROOT / "apps" / "webapp" / "backend"))
 
 from label_store import LabelRecord, read_all  # noqa: E402
 
+from packages.data.coco import au_auto_verdicts  # noqa: E402
 from packages.data.schemas import (  # noqa: E402
     EMOTION_CLASSES,
     KEYPOINT_NAMES,
@@ -345,6 +346,9 @@ def build_annotation(
         "breed": source.get("breed"),
         "emotion": source.get("emotion"),
         "au_analysis": source.get("au_analysis", {}),
+        # Trójstanowa etykieta z szumowego gejtu — automatyczna, obok pomiaru reguł.
+        # Materiał porównawczy dla werdyktu człowieka, nie zastępuje go.
+        "au_auto_verdict": au_auto_verdicts(source.get("au_analysis", {})),
         "au_noise": source.get("au_noise"),
         "au_sample_count": source.get("au_sample_count"),
         "label_source": "auto_rules",
@@ -420,6 +424,25 @@ def _csv_row(
     return row
 
 
+def _resolve_data(dataset_dir: Path, name: str) -> Path:
+    """
+    Zwraca ścieżkę materiału roboczego, akceptując oba układy katalogów.
+
+    Kuracja i klatki trzymane są w podkatalogu `work/`, ale historycznie leżały
+    wprost w katalogu zbioru. Bierzemy ten wariant, który istnieje; przy braku obu
+    zwracamy wariant płaski, żeby komunikat błędu wskazał oczekiwaną ścieżkę.
+
+    Args:
+        dataset_dir: Katalog zbioru w `data/`
+        name: Nazwa pliku lub katalogu (`curated.json`, `frames`)
+
+    Returns:
+        Istniejąca ścieżka albo wariant płaski
+    """
+    flat = dataset_dir / name
+    return flat if flat.exists() else dataset_dir / "work" / name
+
+
 class FinalDatasetBuilder:
     """
     Składa katalog `dataset_final` z kuracji, dziennika etykiet i klatek.
@@ -447,7 +470,7 @@ class FinalDatasetBuilder:
         self.output = output
         self.include_unusable = include_unusable
         self.dataset_dir = (data_root or REPO_ROOT / "data") / dataset
-        self.frames_root = self.dataset_dir / "frames"
+        self.frames_root = _resolve_data(self.dataset_dir, "frames")
         self.images_root = output / IMAGES_DIRNAME
         self.stats = BuildStats()
         self.rows: list[dict[str, object]] = []
@@ -468,7 +491,7 @@ class FinalDatasetBuilder:
         Raises:
             SystemExit: Gdy nie ma pliku kuracji
         """
-        curated_path = self.dataset_dir / "curated.json"
+        curated_path = _resolve_data(self.dataset_dir, "curated.json")
         if not curated_path.is_file():
             raise SystemExit(f"Brak kuracji {curated_path} — uruchom curate_for_review")
 
@@ -727,9 +750,10 @@ def write_readme(path: Path, stats: BuildStats, dataset: str, coco: dict) -> Non
         f"- Par spornych (różni anotatorzy, różny werdykt): **{stats.disagreements}**",
         "",
         "```",
-        f"{IMAGES_DIRNAME}/          kadry mordy, JPEG q{JPEG_QUALITY}, dłuższy bok <= {MAX_CROP_SIDE} px",
-        f"{ANNOTATIONS_NAME}   COCO: 46 keypoints, 21 AU (reguły + werdykt człowieka)",
-        f"{CSV_NAME}       tabela pod trening sieci AU (Sprint 16)",
+        f"{IMAGES_DIRNAME}/            kadry mordy, JPEG q{JPEG_QUALITY}, dłuższy bok <= {MAX_CROP_SIDE} px",
+        f"{ANNOTATIONS_NAME}     COCO: 46 keypoints, 21 AU (reguły + werdykt człowieka + auto)",
+        f"{CSV_NAME}         tabela pod trening sieci AU: werdykt CZŁOWIEKA (Sprint 16)",
+        "au_auto_labels.csv    werdykt AUTOMATYCZNY po szumowym gejcie dla całego zbioru 9k",
         "```",
         "",
         "## Czego tu nie ma",
@@ -749,6 +773,13 @@ def write_readme(path: Path, stats: BuildStats, dataset: str, coco: dict) -> Non
         "",
         "`au_analysis` to pomiar reguł geometrycznych — materiał porównawczy, NIE etykieta.",
         "Zmierzony szum tych reguł przewyższa próg aktywacji na większości par trek–AU.",
+        "",
+        "`au_auto_verdict` (w COCO) i `au_auto_labels.csv` (dla całego zbioru 9k) to",
+        "etykieta AUTOMATYCZNA po szumowym gejcie: aktywacja orzeczona tylko wtedy, gdy",
+        "reguła zapaliła AU I sygnał przewyższył zmierzony szum treku. Surowe `is_active`",
+        "jest bezużyteczne jako etykieta — 44% jego zapaleń na materiale 9k tonie w szumie.",
+        "Gejt je usuwa (znak `not_observable`), ale nie dorównuje weryfikacji człowieka:",
+        "to słaba, choć uczciwa etykieta reguł. Odtworzenie: `apply_noise_gate.py`.",
         "",
         "## Rozkłady",
         "",
