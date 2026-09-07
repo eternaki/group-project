@@ -783,6 +783,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--include",
+        default=None,
+        help="Plik z parami wybranymi recznie (`select_candidates.py`) — wchodza mimo bramki",
+    )
+    parser.add_argument(
         "--labels",
         default="data/labels",
         help="Katalog dziennikow werdyktow — ich pary zostaja w kolejce zawsze",
@@ -835,9 +840,27 @@ def main() -> None:
         if len(coco["images"]) > przed:
             print(f"Dolozono {len(coco['images']) - przed} klatek spoza surowego COCO")
 
+    # Recznie wybrane pary wchodza NIEZALEZNIE od bramki. Bramka jest
+    # przyblizeniem — czlowiek, ktory obejrzal kadr z narysowanymi punktami,
+    # wie o nim wiecej niz prog liczbowy. Wybor robi `select_candidates.py`.
+    wybrane_recznie: set[str] = set()
+    if args.include:
+        sciezka = Path(args.include)
+        if sciezka.is_file():
+            wybrane_recznie = {
+                wpis["peak"] for wpis in json.loads(sciezka.read_text(encoding="utf-8"))
+            }
+            print(f"Recznie wybrane pary: {len(wybrane_recznie)}")
+
     pairs, rejected = build_pairs(
         coco, thresholds, Path(args.dataset).parent / "frames", args.min_similarity
     )
+
+    if wybrane_recznie:
+        maja_juz = {para.peak_name for para in pairs}
+        dolozone = pairs_for_names(coco, wybrane_recznie - maja_juz, thresholds)
+        pairs = pairs + dolozone
+        print(f"  z tego doszlo do kolejki: {len(dolozone)}")
 
     if zachowane:
         maja = {pair.peak_name for pair in pairs}
