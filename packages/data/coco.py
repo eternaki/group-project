@@ -113,6 +113,62 @@ def au_signal_above_noise(value: AUValue) -> Optional[bool]:
     return bool(snr >= MIN_SIGNAL_TO_NOISE)
 
 
+# Trójstanowa etykieta AU z reguł, słownik zgodny z werdyktem człowieka
+# (`au_verdicts`), żeby dało się je porównać wprost.
+AU_VERDICT_ACTIVE: str = "active"
+AU_VERDICT_INACTIVE: str = "inactive"
+AU_VERDICT_NOT_OBSERVABLE: str = "not_observable"
+
+
+def au_auto_verdict(value: AUValue) -> str:
+    """
+    Wyprowadza trójstanową etykietę AU z pomiaru, odsiewając szum.
+
+    Surowe `is_active` jako etykieta jest bezużyteczne: zapala się od drgania
+    keypoints i na materiale 9k klatek 44% jego zapaleń nie przeżywa porównania
+    z szumem treku. Ten werdykt bierze aktywację TYLKO wtedy, gdy sygnał AU
+    przewyższa zmierzony szum. Ruch utopiony w szumie oraz brak zmierzonego szumu
+    znaczą „nie wiadomo" (`not_observable`), nie „spoczynek" — inaczej sieć uczyłaby
+    się zmyślonych negatywów. Spoczynek (`inactive`) orzekamy tylko wtedy, gdy szum
+    zmierzono i reguła AU nie zapaliła.
+
+    Aktywację orzekamy przy koniunkcji DWÓCH warunków: reguła zapaliła AU (ruch
+    dość duży, `is_active`) ORAZ sygnał przewyższa szum treku (`snr >= 1`). Samo
+    `snr >= 1` nie wystarcza — czysty, ale malutki ruch (ratio 1.02 przy szumie
+    0.01) jest odróżnialny od szumu, lecz nie jest aktywacją mimiki. Reguła
+    zapalona, lecz utopiona w szumie (albo bez zmierzonego szumu) to „nie wiadomo",
+    nie „spoczynek". Spoczynek orzekamy, gdy reguła nie zapaliła.
+
+    Args:
+        value: Wartość z au_analysis (nowy format słownikowy albo stary float)
+
+    Returns:
+        "active" | "inactive" | "not_observable"
+    """
+    if not isinstance(value, dict):
+        # Stary format (samo ratio) — nie ma `is_active` ani szumu do orzeczenia.
+        return AU_VERDICT_NOT_OBSERVABLE
+    if not value.get("is_active"):
+        return AU_VERDICT_INACTIVE
+    # Reguła zapaliła AU — potwierdzamy tylko, gdy sygnał bije szum.
+    if au_signal_above_noise(value) is True:
+        return AU_VERDICT_ACTIVE
+    return AU_VERDICT_NOT_OBSERVABLE
+
+
+def au_auto_verdicts(au_analysis: Mapping[str, AUValue]) -> dict[str, str]:
+    """
+    Trójstanowe etykiety automatyczne dla całego pola au_analysis.
+
+    Args:
+        au_analysis: Mapa {nazwa AU: wartość pomiaru}
+
+    Returns:
+        Mapa {nazwa AU: "active" | "inactive" | "not_observable"}
+    """
+    return {name: au_auto_verdict(value) for name, value in au_analysis.items()}
+
+
 def _au_entry(
     name: str,
     au: "DeltaActionUnit",  # type: ignore[name-defined]  # noqa: F821
