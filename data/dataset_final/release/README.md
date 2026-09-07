@@ -63,7 +63,24 @@ LICENSE                 CC BY-NC 4.0
 - **Obrazem są PEŁNE klatki** z `data/dataset_final/work/frames/` (już w repo),
   a `file_name` wskazuje je względem tego katalogu. Punkty są w układzie pełnej
   klatki. Pomiar reguł (`au_analysis`) jest w `work/curated.json`.
-- **AU auto to słaba etykieta reguł po szumowym gejcie**, NIE weryfikacja człowieka:
-  na złotym podzbiorze auto zgadza się z człowiekiem rzadko. Do treningu bierz
-  `au_verdicts` (człowiek) tam gdzie jest, `au_auto_verdict` reszta — kolumna
-  `label_source` mówi które.
+
+### Skąd bierze się etykieta AU i ile jest warta
+
+Kolumna `label_source` mówi, kto orzekł. Zmierzone na parach człowieka,
+sprawdzianem krzyżowym z podziałem po nagraniach:
+
+| źródło | pole w COCO | precyzja | pokrycie |
+|--------|-------------|----------|----------|
+| `human_verified` | `au_verdicts` | etykieta odniesienia | — |
+| `auto_model` | `au_model_verdict` | 26.8% | 22.5% |
+| `auto_rules` | `au_auto_verdict` | 5.0% | 40.5% |
+
+- **Do treningu bierz `au_verdicts` tam, gdzie jest, a dalej `au_model_verdict`.**
+  Reguły (`au_auto_verdict`) zostają w pliku wyłącznie dla porównania.
+- **Żadna etykieta automatyczna nie jest prawdą.** Przy precyzji 27% trzy
+  aktywacje na cztery są zmyślone. Model zapala średnio 0.50 AU na kadr,
+  człowiek 0.42, reguły 5.65 — to jedyny sens, w jakim model „się zgadza".
+- **Sufit jest nisko i to nie wina modelu.** Na parach ocenionych niezależnie
+  przez dwie osoby zgoda na aktywacjach AU wynosi 7.4% (kappa 0.132), więc
+  samo zjawisko jest słabo powtarzalne. Odtworzenie liczb:
+  `python -m scripts.annotation.eval_au_rules` i `train_au_model`.

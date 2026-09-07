@@ -29,6 +29,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "apps" / "webapp" / "backend"))
@@ -39,16 +40,19 @@ from packages.data.schemas import (  # noqa: E402
     KEYPOINT_NAMES,
     SKELETON_CONNECTIONS,
 )
+from packages.models.au_geometry import AUGeometryModel, pair_features  # noqa: E402
 from packages.models.delta_action_units import ACTION_UNIT_NAMES  # noqa: E402
 from scripts.annotation.build_final_dataset import (  # noqa: E402
     DEFAULT_DATASET,
     LICENSES,
     VERDICT_TO_CSV,
+    _neutral_of,
     _resolve_data,
     index_curated,
     resolve_labels,
 )
 from scripts.annotation.build_work_pack import shrink  # noqa: E402
+from scripts.annotation.train_au_model import DEFAULT_WEIGHTS, load_model  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -60,7 +64,9 @@ CC_BY_NC_TEXT: str = (
 )
 
 
-def build_full_coco(coco: dict, labels: dict) -> tuple[dict, list[dict]]:
+def build_full_coco(
+    coco: dict, labels: dict, model: Optional[AUGeometryModel] = None
+) -> tuple[dict, list[dict]]:
     """
     Składa COCO całego zbioru i wiersze CSV etykiet AU.
 
@@ -71,6 +77,7 @@ def build_full_coco(coco: dict, labels: dict) -> tuple[dict, list[dict]]:
     Args:
         coco: Wczytany `curated.json`
         labels: Mapa pair_key -> werdykt człowieka
+        model: Wyuczony model AU albo None, gdy nie ma zapisanych wag
 
     Returns:
         Para (COCO, wiersze CSV pików)
@@ -104,6 +111,7 @@ def build_full_coco(coco: dict, labels: dict) -> tuple[dict, list[dict]]:
         is_peak = source.get("frame_role") == "peak"
         record = verdict_by_peak.get(file_name) if is_peak else None
         auto = au_auto_verdicts(source.get("au_analysis", {}))
+        from_model = _model_verdicts(model, index, source) if is_peak else {}
         annotation = {
             "id": source["id"],
             "image_id": source["image_id"],
@@ -121,17 +129,21 @@ def build_full_coco(coco: dict, labels: dict) -> tuple[dict, list[dict]]:
             "breed": (record.breed if record else None) or source.get("breed"),
             "emotion": (record.emotion if record else None) or source.get("emotion"),
             "au_auto_verdict": auto,
-            "label_source": "auto_rules",
+            "label_source": "auto_model" if from_model else "auto_rules",
         }
         if record is not None:
             annotation["au_verdicts"] = record.au_verdicts
             annotation["annotator"] = record.annotator
             annotation["roles_swapped"] = record.roles_swapped
             annotation["label_source"] = "human_verified"
+        if from_model:
+            annotation["au_model_verdict"] = from_model
         annotations.append(annotation)
 
         if is_peak:
-            rows.append(_peak_row(index.images[source["image_id"]], source, auto, record))
+            rows.append(
+                _peak_row(index.images[source["image_id"]], source, auto, record, from_model)
+            )
 
     full = {
         "info": {
@@ -163,28 +175,65 @@ def build_full_coco(coco: dict, labels: dict) -> tuple[dict, list[dict]]:
     return full, rows
 
 
-def _peak_row(image: dict, source: dict, auto: dict, record) -> dict[str, object]:
+def _model_verdicts(model: Optional[AUGeometryModel], index, peak: dict) -> dict[str, str]:
     """
-    Buduje wiersz CSV dla klatki szczytowej: werdykt człowieka albo auto.
+    Liczy werdykt modelu geometrycznego dla jednej pary.
+
+    Model dostaje role TAKIE, JAKIE DAŁ PIPELINE — przy nowym materiale nikt nie
+    powie, że klatki są zamienione. Dokładnie tak został zmierzony (precyzja
+    26.8%), więc etykieta w zbiorze odpowiada podanej liczbie.
+
+    Args:
+        model: Wyuczony model albo None
+        index: Indeks kuracji
+        peak: Anotacja klatki szczytowej
+
+    Returns:
+        Werdykt na każde AU, które model umie ocenić; pusty, gdy modelu nie ma
+    """
+    if model is None:
+        return {}
+    neutral = _neutral_of(index, peak)
+    if neutral is None:
+        return {}
+    return model.predict(pair_features(peak.get("keypoints"), neutral.get("keypoints")))
+
+
+def _peak_row(
+    image: dict, source: dict, auto: dict, record, from_model: Optional[dict] = None
+) -> dict[str, object]:
+    """
+    Buduje wiersz CSV dla klatki szczytowej: człowiek, potem model, potem reguły.
+
+    Kolejność nie jest dowolna — to porządek zmierzonej wiarygodności. Werdykt
+    człowieka jest etykietą. Model ma precyzję 26.8%, reguły 5.0%, więc tam,
+    gdzie model się wypowiada, jego zdanie zastępuje regułę.
 
     Args:
         image: Wpis obrazu z kuracji
         source: Anotacja piku
         auto: Automatyczne werdykty AU tego piku
         record: Werdykt człowieka albo None
+        from_model: Werdykt modelu geometrycznego albo None
 
     Returns:
         Wiersz jako słownik kolumn
     """
     human_verdicts = record.au_verdicts if record is not None else None
+    if record is not None:
+        zrodlo = "human_verified"
+    elif from_model:
+        zrodlo = "auto_model"
+    else:
+        zrodlo = "auto_rules"
     row: dict[str, object] = {
         "pair_key": image["file_name"],
         "source_video": image.get("source_video"),
         "emotion": (record.emotion if record else None) or source.get("emotion"),
-        "label_source": "human_verified" if record is not None else "auto_rules",
+        "label_source": zrodlo,
         "annotator": record.annotator if record is not None else "",
     }
-    verdicts = human_verdicts if human_verdicts else auto
+    verdicts = human_verdicts or from_model or auto
     for au in ACTION_UNIT_NAMES:
         row[au] = VERDICT_TO_CSV.get(verdicts.get(au, "not_observable"), "")
     return row
@@ -260,10 +309,27 @@ def _append_readme(path: Path, full: dict, rows: list[dict]) -> None:
             "- **Obrazem są PEŁNE klatki** z `data/dataset_final/work/frames/` (już w repo),",
             "  a `file_name` wskazuje je względem tego katalogu. Punkty są w układzie pełnej",
             "  klatki. Pomiar reguł (`au_analysis`) jest w `work/curated.json`.",
-            "- **AU auto to słaba etykieta reguł po szumowym gejcie**, NIE weryfikacja człowieka:",
-            "  na złotym podzbiorze auto zgadza się z człowiekiem rzadko. Do treningu bierz",
-            "  `au_verdicts` (człowiek) tam gdzie jest, `au_auto_verdict` reszta — kolumna",
-            "  `label_source` mówi które.",
+            "",
+            "### Skąd bierze się etykieta AU i ile jest warta",
+            "",
+            "Kolumna `label_source` mówi, kto orzekł. Zmierzone na parach człowieka,",
+            "sprawdzianem krzyżowym z podziałem po nagraniach:",
+            "",
+            "| źródło | pole w COCO | precyzja | pokrycie |",
+            "|--------|-------------|----------|----------|",
+            "| `human_verified` | `au_verdicts` | etykieta odniesienia | — |",
+            "| `auto_model` | `au_model_verdict` | 26.8% | 22.5% |",
+            "| `auto_rules` | `au_auto_verdict` | 5.0% | 40.5% |",
+            "",
+            "- **Do treningu bierz `au_verdicts` tam, gdzie jest, a dalej `au_model_verdict`.**",
+            "  Reguły (`au_auto_verdict`) zostają w pliku wyłącznie dla porównania.",
+            "- **Żadna etykieta automatyczna nie jest prawdą.** Przy precyzji 27% trzy",
+            "  aktywacje na cztery są zmyślone. Model zapala średnio 0.50 AU na kadr,",
+            "  człowiek 0.42, reguły 5.65 — to jedyny sens, w jakim model „się zgadza\".",
+            "- **Sufit jest nisko i to nie wina modelu.** Na parach ocenionych niezależnie",
+            "  przez dwie osoby zgoda na aktywacjach AU wynosi 7.4% (kappa 0.132), więc",
+            "  samo zjawisko jest słabo powtarzalne. Odtworzenie liczb:",
+            "  `python -m scripts.annotation.eval_au_rules` i `train_au_model`.",
             "",
         ]
     )
@@ -287,7 +353,12 @@ def main() -> None:
     coco = json.loads(_resolve_data(dataset_dir, "curated.json").read_text(encoding="utf-8"))
     labels, _ = resolve_labels(args.dataset)
 
-    full, rows = build_full_coco(coco, labels)
+    model = load_model()
+    if model is None:
+        logger.warning("Brak %s — etykieta automatyczna zostanie z regul", DEFAULT_WEIGHTS.name)
+    else:
+        logger.info("Model AU: %d jednostek z %s", len(model.per_unit), DEFAULT_WEIGHTS.name)
+    full, rows = build_full_coco(coco, labels, model)
     write_outputs(full, rows, dataset_dir / "release")
 
     sources = Counter(row["label_source"] for row in rows)
@@ -295,7 +366,8 @@ def main() -> None:
     logger.info("Anotacji                   : %d", len(full["annotations"]))
     logger.info("Pików w CSV                : %d", len(rows))
     logger.info("  w tym werdykt człowieka  : %d", sources.get("human_verified", 0))
-    logger.info("  etykieta automatyczna    : %d", sources.get("auto_rules", 0))
+    logger.info("  etykieta modelu          : %d", sources.get("auto_model", 0))
+    logger.info("  etykieta regul           : %d", sources.get("auto_rules", 0))
     logger.info("Gotowe: %s", dataset_dir / "release")
 
 
