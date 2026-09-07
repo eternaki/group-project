@@ -1,13 +1,13 @@
 # Dog FACS Dataset — zbiór finalny
 
-Złożono: 2026-09-07 10:31 UTC
+Złożono: 2026-09-07 20:31 UTC
 Źródło: `data/dataset_final/curated.json` + `data/labels/dataset_final/*.jsonl`
 
 ## Zawartość
 
-- Par zweryfikowanych przez człowieka: **528**
-- Obrazów (kadry mordy): **824**
-- Rozmiar obrazów: **20.1 MB**
+- Par zweryfikowanych przez człowieka: **529**
+- Obrazów (kadry mordy): **825**
+- Rozmiar obrazów: **23.9 MB**
 - Par spornych (różni anotatorzy, różny werdykt): **11**
 
 ```
@@ -44,7 +44,7 @@ to słaba, choć uczciwa etykieta reguł. Odtworzenie: `apply_noise_gate.py`.
 
 ## Rozkłady
 
-Emocje (klatki zweryfikowane): neutral 200, relaxed 182, sad 55, happy 33, surprise 33, fearful 5, angry 5, submission 3, pain 1
+Emocje (klatki zweryfikowane): neutral 200, relaxed 183, sad 55, happy 33, surprise 33, fearful 5, angry 5, submission 3, pain 1
 
 AU oznaczone jako aktywne: AD19 36, AU25 35, AU27 24, EAD105 19, AU101 19, AU26 18, AU116 15, AU118 11, AU12 10, AU143 6, AD137 5, AD37 4, EAD104 4, AU145 3, EAD103 3, AU109 2, AU110 1
 
@@ -54,12 +54,12 @@ Obok złotego podzbioru (`annotations.json` — kadry mordy zweryfikowane
 przez człowieka) leży CAŁY materiał:
 
 ```
-annotations_full.json   COCO 9150 klatek, 14238 anotacji
-au_full_labels.csv      7119 pików: werdykt człowieka albo auto (label_source)
+annotations_full.json   COCO 12238 klatek, 19038 anotacji
+au_full_labels.csv      9519 pików: werdykt człowieka albo auto (label_source)
 LICENSE                 CC BY-NC 4.0
 ```
 
-- Klatek: **9150**, pików: **7119** (w tym **529** z werdyktem człowieka, reszta etykieta automatyczna).
+- Klatek: **12238**, pików: **9519** (w tym **529** z werdyktem człowieka, reszta etykieta automatyczna).
 - **Obrazem są PEŁNE klatki** z `data/dataset_final/work/frames/` (już w repo),
   a `file_name` wskazuje je względem tego katalogu. Punkty są w układzie pełnej
   klatki. Pomiar reguł (`au_analysis`) jest w `work/curated.json`.
