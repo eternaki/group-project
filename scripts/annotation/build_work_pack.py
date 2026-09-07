@@ -394,6 +394,77 @@ def _write_frame(
     return packed, box, scale, file_size(target)
 
 
+# Do ilu miejsc zaokraglamy przed zapisem paczki.
+#
+# GitHub ODRZUCA pliki powyzej 100 MB, a kolejka przy 9519 parach urosla do
+# 129.5 MB i push zostal odbity przez pre-receive hook. 76% pliku to byly same
+# liczby zapisane z pelna precyzja `float`, na przyklad 1213.4567890123457.
+#
+# Ta precyzja jest fikcyjna. Punkty to POZYCJE W PIKSELACH, a blad modelu to
+# NME 0.091 rozstawu oczu, czyli jednostki pikseli — 0.1 px jest o rzad
+# wielkosci ponizej szumu pomiaru. Ratio AU porownuje sie z progiem aktywacji
+# 0.15, wiec cztery miejsca to zapas tysiackrotny.
+#
+# Zmierzone: 139.1 MB -> 80.8 MB, czyli 42% mniej przy tej samej informacji.
+KEYPOINT_DECIMALS: int = 1
+MEASUREMENT_DECIMALS: int = 4
+
+# Pola we wspolrzednych pikselowych i pola pomiarowe — zaokraglane inaczej
+PIXEL_FIELDS: tuple[str, ...] = ("keypoints", "bbox", "procrustes_keypoints")
+MEASUREMENT_FIELDS: tuple[str, ...] = (
+    "au_analysis",
+    "au_noise",
+    "quality",
+    "tfm_score",
+    "confidence",
+    "emotion_confidence",
+    "breed_confidence",
+)
+
+
+def _rounded(value: object, decimals: int) -> object:
+    """
+    Zaokragla liczby w zagnieżdżonej strukturze, resztę zostawia bez zmian.
+
+    Args:
+        value: Liczba, lista albo słownik
+        decimals: Do ilu miejsc po przecinku
+
+    Returns:
+        Struktura tego samego kształtu z zaokrąglonymi liczbami
+    """
+    if isinstance(value, float):
+        return round(value, decimals)
+    if isinstance(value, list):
+        return [_rounded(item, decimals) for item in value]
+    if isinstance(value, dict):
+        return {key: _rounded(item, decimals) for key, item in value.items()}
+    return value
+
+
+def shrink(annotations: list[dict]) -> list[dict]:
+    """
+    Obcina fikcyjną precyzję liczb, żeby paczka zmieściła się w limicie gita.
+
+    Args:
+        annotations: Anotacje paczki
+
+    Returns:
+        Nowe anotacje z zaokrąglonymi liczbami
+    """
+    out: list[dict] = []
+    for annotation in annotations:
+        copied = dict(annotation)
+        for field in PIXEL_FIELDS:
+            if field in copied:
+                copied[field] = _rounded(copied[field], KEYPOINT_DECIMALS)
+        for field in MEASUREMENT_FIELDS:
+            if field in copied:
+                copied[field] = _rounded(copied[field], MEASUREMENT_DECIMALS)
+        out.append(copied)
+    return out
+
+
 def _write_json(
     path: Path, coco: dict, images: list[dict], annotations: list[dict]
 ) -> None:
@@ -416,7 +487,7 @@ def _write_json(
         "licenses": coco.get("licenses", []),
         "categories": coco.get("categories", []),
         "images": images,
-        "annotations": annotations,
+        "annotations": shrink(annotations),
     }
     with open(path, "w", encoding="utf-8", newline="") as handle:
         handle.write(json.dumps(packed, ensure_ascii=False, separators=(",", ":")))

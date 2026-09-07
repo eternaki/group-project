@@ -353,9 +353,20 @@ def build_pairs(
     pairs: list[ReviewPair] = []
     rejected: dict[str, int] = defaultdict(int)
 
+    # Ta sama klatka lezy w surowym COCO pod KILKOMA `image_id` — nagranie
+    # przerobione w dwoch falach daje ten sam kadr dwa razy (zmierzone 3.9%
+    # przy dwoch falach, wiecej przy kolejnych). Bez odsiania po nazwie
+    # anotator oglada te sama morde kilka razy, a kazde obejrzenie to jego
+    # czas. Odsiewamy TU, przy budowaniu par, a nie dopiero w paczce.
+    widziane_klatki: set[str] = set()
+
     for peak in annotations:
         if peak.get("frame_role") != FRAME_ROLE_PEAK:
             continue
+        nazwa_peaku = images[peak["image_id"]]["file_name"]
+        if nazwa_peaku in widziane_klatki:
+            continue
+        widziane_klatki.add(nazwa_peaku)
         neutral = neutrals.get(peak.get("neutral_frame_id"))
         if neutral is None:
             rejected["brak klatki neutralnej"] += 1
@@ -563,12 +574,20 @@ def pairs_for_names(coco: dict, names: set[str], thresholds: QualityThresholds) 
         for ann in coco["annotations"]
         if ann.get("frame_role") == FRAME_ROLE_NEUTRAL
     }
+    # Ta sama klatka lezy w surowym COCO pod KILKOMA `image_id` — nagranie
+    # przerobione w dwoch falach daje ten sam kadr dwa razy. Bez odsiania po
+    # nazwie jedna klatka wchodzi do kolejki tyle razy, ile ma kopii: zmierzone
+    # 07.09.2026 — 1557 peakow powtorzonych, 2334 nadmiarowe pary, rekordzista
+    # cztery razy z TA SAMA klatka neutralna. Anotator ogladalby to samo.
     found: list[ReviewPair] = []
+    juz_wziete: set[str] = set()
     for peak in coco["annotations"]:
         if peak.get("frame_role") != FRAME_ROLE_PEAK:
             continue
-        if images[peak["image_id"]]["file_name"] not in names:
+        name = images[peak["image_id"]]["file_name"]
+        if name not in names or name in juz_wziete:
             continue
+        juz_wziete.add(name)
         neutral = neutrals.get(peak.get("neutral_frame_id"))
         if neutral is None:
             continue

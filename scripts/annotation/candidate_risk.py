@@ -120,7 +120,7 @@ def order_by_risk(
     weights = fit(_normalise(x_raw, center, spread), y)
 
     fresh = [k for k in candidates if k["peak"] not in decisions]
-    seen = [k for k in candidates if k["peak"] in decisions]
+    seen = [dict(k, reviewed=True) for k in candidates if k["peak"] in decisions]
     if fresh:
         x_fresh = np.array(
             [
@@ -178,10 +178,21 @@ def read_decisions(directory: Path) -> dict[str, bool]:
         return {}
     keep = {entry["peak"] for entry in json.loads(saved.read_text(encoding="utf-8"))}
     everything = json.loads((directory / "candidates.json").read_text(encoding="utf-8"))
-    reviewed_to = max(
-        (i for i, k in enumerate(everything) if k["peak"] not in keep), default=-1
-    )
-    return {k["peak"]: k["peak"] not in keep for k in everything[: reviewed_to + 1]}
+
+    # Kto zostal PRZEJRZANY. Znacznik `reviewed` stawia sortowanie i tylko on
+    # jest wiarygodny — wczesniejsza wersja wnioskowala to z POZYCJI na liscie
+    # (odrzucenia skupiaja sie na poczatku), co przestaje dzialac po pierwszym
+    # przesortowaniu: przejrzane ida wtedy na koniec i cala lista wyglada jak
+    # przejrzana. Model uczyl sie wtedy z 2654 NIEOBEJRZANYCH kadrow opisanych
+    # jako "przyjete" i precyzja spadala z 64% do 27%.
+    if any("reviewed" in k for k in everything):
+        przejrzane = [k for k in everything if k.get("reviewed")]
+    else:
+        do_ktorego = max(
+            (i for i, k in enumerate(everything) if k["peak"] not in keep), default=-1
+        )
+        przejrzane = everything[: do_ktorego + 1]
+    return {k["peak"]: k["peak"] not in keep for k in przejrzane}
 
 
 def main() -> None:
