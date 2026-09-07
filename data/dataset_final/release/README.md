@@ -47,3 +47,23 @@ to słaba, choć uczciwa etykieta reguł. Odtworzenie: `apply_noise_gate.py`.
 Emocje (klatki zweryfikowane): neutral 200, relaxed 182, sad 55, happy 33, surprise 33, fearful 5, angry 5, submission 3, pain 1
 
 AU oznaczone jako aktywne: AD19 36, AU25 35, AU27 24, EAD105 19, AU101 19, AU26 18, AU116 15, AU118 11, AU12 10, AU143 6, AD137 5, AD37 4, EAD104 4, AU145 3, EAD103 3, AU109 2, AU110 1
+
+## Pełny zbiór 9k
+
+Obok złotego podzbioru (`annotations.json` — kadry mordy zweryfikowane
+przez człowieka) leży CAŁY materiał:
+
+```
+annotations_full.json   COCO 9150 klatek, 14238 anotacji
+au_full_labels.csv      7119 pików: werdykt człowieka albo auto (label_source)
+LICENSE                 CC BY-NC 4.0
+```
+
+- Klatek: **9150**, pików: **7119** (w tym **529** z werdyktem człowieka, reszta etykieta automatyczna).
+- **Obrazem są PEŁNE klatki** z `data/dataset_final/work/frames/` (już w repo),
+  a `file_name` wskazuje je względem tego katalogu. Punkty są w układzie pełnej
+  klatki. Pomiar reguł (`au_analysis`) jest w `work/curated.json`.
+- **AU auto to słaba etykieta reguł po szumowym gejcie**, NIE weryfikacja człowieka:
+  na złotym podzbiorze auto zgadza się z człowiekiem rzadko. Do treningu bierz
+  `au_verdicts` (człowiek) tam gdzie jest, `au_auto_verdict` reszta — kolumna
+  `label_source` mówi które.
