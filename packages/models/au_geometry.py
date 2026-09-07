@@ -12,18 +12,26 @@ PRZESUNIĘCIE WSZYSTKICH 46 punktów względem klatki bazowej:
 
     reguły surowe               precyzja  5.0%   pokrycie 40.5%   F1  8.9%
     reguły z progiem na AU      precyzja 10.7%   pokrycie 38.5%   F1 16.7%
-    model, role poprawione      precyzja 31.8%   pokrycie 28.5%   F1 30.1%
-    model, role z pipeline'u    precyzja 26.8%   pokrycie 22.5%   F1 24.5%
+    model na wszystkich ocenach precyzja 26.8%   pokrycie 22.5%   F1 24.5%
+    model, spójny standard      precyzja 39.5%   pokrycie 36.1%   F1 37.7%
+    ten sam, role z pipeline'u  precyzja 32.7%   pokrycie 26.3%   F1 29.1%
 
-Ostatni wiersz jest tym, którego należy używać mówiąc o nowym materiale: przy
-puszczeniu na nieoznaczone pary nikt nie powie modelowi, że pipeline zamienił
-klatki rolami, a myli się na 8.5% par. Różnica między dwoma ostatnimi wierszami
-to cena tej pomyłki.
+Dwa ostatnie wiersze wymagają komentarza. „Spójny standard" znaczy: uczone
+wyłącznie na ocenach anotatorów, którzy w ogóle orzekają aktywacje — jeden
+członek zespołu zapala 0.17% komórek wobec 3.78% u reszty, więc jego oceny
+uczą modelu, że mimika nie istnieje. Pominięcie ich zostawia 273 pary zamiast
+527 i mimo to podnosi precyzję z 26.8% na 39.5%: DWA RAZY MNIEJ danych wypada
+o połowę lepiej. Ostatni wiersz to ta sama liczba przy rolach z pipeline'u,
+czyli tak, jak wypadnie na nowym materiale, gdzie nikt nie powie modelowi, że
+klatki są zamienione — i to jego należy cytować mówiąc o zbiorze 9k.
+
+Model odtwarza więc JEDEN standard oceniania, nie „prawdę o psach". Przy
+precyzji 33% dwie aktywacje na trzy są zmyślone.
 
 CO TO ZNACZY DLA PROJEKTU: wąskim gardłem nie są keypoints, tylko reguły.
 Punkty niosą sygnał, którego geometryczne wzory nie wyciągają.
 
-CZEGO TEN MODEL NIE ZAŁATWIA. Precyzja 27% to nadal nie jest etykieta do
+CZEGO TEN MODEL NIE ZAŁATWIA. Precyzja 33% to nadal nie jest etykieta do
 oddania jako prawda — to lepsza PRE-etykieta. Sufit jest niżej, niż się wydaje:
 na 39 parach ocenionych niezależnie przez dwie osoby zgoda na aktywacjach AU
 wynosi 7.4% (kappa 0.132), więc model dobija do powtarzalności samego zjawiska.

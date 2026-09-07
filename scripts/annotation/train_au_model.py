@@ -8,9 +8,16 @@ Reguły sprowadzają każde AU do jednej odległości między punktami i wspóln
 progu 1.15. Ten skrypt uczy na tych samych parach model, który widzi
 przesunięcie WSZYSTKICH punktów, i sprawdza go tak samo jak `eval_au_rules`:
 sprawdzianem krzyżowym z podziałem PO NAGRANIACH, z progiem dobieranym wyłącznie
-na części uczącej. Zmierzone na 527 parach człowieka — F1 8.9% (reguły surowe)
--> 16.7% (reguły z progiem na AU) -> 24.5% (geometria przy rolach z pipeline'u,
-czyli tak, jak wypadnie na nowym materiale).
+na części uczącej. Zmierzone — F1 8.9% (reguły surowe) -> 16.7% (reguły
+z progiem na AU) -> 24.5% (geometria na wszystkich ocenach) -> 29.1%
+(geometria na ocenach o spójnym standardzie). Wszystko przy rolach
+z pipeline'u, czyli tak, jak wypadnie na nowym materiale.
+
+NAJWIĘKSZY POJEDYNCZY ZYSK DAŁO ODRZUCENIE CZĘŚCI ETYKIET, NIE ULEPSZANIE
+MODELU. Jeden anotator zapala 0.17% komórek, reszta 3.5-5.4% — mieszanie tych
+standardów uczy model, że ten sam kadr jest i aktywny, i spoczynkowy. Uczenie
+na 273 parach o spójnym standardzie bije uczenie na wszystkich 527: precyzja
+32.7% wobec 26.8%. Przełącznik `--mixed-standards` pozwala to sprawdzić.
 
 DLACZEGO PODZIAŁ IDZIE PO NAGRANIACH. Kadry jednego nagrania pokazują tego
 samego psa w tej samej scenie; model, który zobaczył część kadrów nagrania,
@@ -66,6 +73,16 @@ FOLDS: int = 5
 # wolno go liczyć ani jako aktywację, ani jako spoczynek.
 VERDICT_ACTIVE: str = "active"
 VERDICT_INACTIVE: str = "inactive"
+
+# Najniższy udział aktywacji, przy którym oceny anotatora niosą jakikolwiek
+# sygnał dodatni. Zmierzone udziały w zespole rozjeżdżają się o dwa rzędy
+# wielkości: 0.19%, 3.57%, 3.78%, 11.91% — więc próg 1% rozdziela je czysto
+# i nie jest dobrany do konkretnej osoby.
+MIN_ACTIVATION_RATE: float = 0.01
+
+# Poniżej tylu ocenionych komórek udział aktywacji jest zbyt niepewny, żeby
+# na jego podstawie kogokolwiek pomijać.
+MIN_CELLS_TO_JUDGE: int = 200
 
 
 class TrainingSet:
@@ -132,7 +149,60 @@ class TrainingSet:
         return len(self.features)
 
 
-def collect_training_set(dataset: str) -> TrainingSet:
+def activation_rates(labels: dict) -> dict[str, tuple[float, int]]:
+    """
+    Liczy, jak często każdy anotator w ogóle orzeka aktywację.
+
+    Args:
+        labels: Mapa pair_key -> werdykt obowiązujący
+
+    Returns:
+        Mapa anotator -> (udział aktywacji, liczba ocenionych komórek)
+    """
+    counters: dict[str, list[int]] = {}
+    for record in labels.values():
+        if not record.usable or not record.au_verdicts:
+            continue
+        entry = counters.setdefault(record.annotator, [0, 0])
+        for verdict in record.au_verdicts.values():
+            if verdict == VERDICT_ACTIVE:
+                entry[0] += 1
+            if verdict in (VERDICT_ACTIVE, VERDICT_INACTIVE):
+                entry[1] += 1
+    return {
+        name: (active / cells if cells else 0.0, cells) for name, (active, cells) in counters.items()
+    }
+
+
+def inconsistent_annotators(labels: dict) -> set[str]:
+    """
+    Wskazuje anotatorów, których oceny nie niosą sygnału dodatniego.
+
+    NIE chodzi o to, że ktoś ocenia „źle" — chodzi o MIESZANIE STANDARDÓW.
+    Anotator zapalający 0.19% komórek i anotator zapalający 3.78% opisują tę
+    samą mimikę sprzecznie, a model uczony na sumie dostaje ten sam kadr raz
+    jako aktywny, raz jako spoczynek. Zmierzone: uczenie na wszystkich 527
+    parach daje precyzję 26.8%, a na 240 parach o spójnym standardzie — 37.5%,
+    czyli DWA RAZY MNIEJ danych wypada lepiej.
+
+    Oceny pominiętego anotatora zostają w dzienniku i w zbiorze — niosą
+    `usable`, emocję, rasę i poprawki punktów. Odpada tylko ich udział
+    w uczeniu AU.
+
+    Args:
+        labels: Mapa pair_key -> werdykt obowiązujący
+
+    Returns:
+        Nazwy anotatorów do pominięcia przy uczeniu
+    """
+    return {
+        name
+        for name, (rate, cells) in activation_rates(labels).items()
+        if cells >= MIN_CELLS_TO_JUDGE and rate < MIN_ACTIVATION_RATE
+    }
+
+
+def collect_training_set(dataset: str, mixed_standards: bool = False) -> TrainingSet:
     """
     Zbiera pary ocenione przez człowieka razem z geometrią obu klatek.
 
@@ -149,6 +219,8 @@ def collect_training_set(dataset: str) -> TrainingSet:
 
     Args:
         dataset: Nazwa zbioru w `data/`
+        mixed_standards: Czy uczyć na ocenach wszystkich anotatorów, także tych
+            o niezgodnym standardzie (do porównania, nie do produkcji)
 
     Returns:
         Zebrane pary uczące
@@ -157,11 +229,16 @@ def collect_training_set(dataset: str) -> TrainingSet:
     coco = json.loads(_resolve_data(dataset_dir, "curated.json").read_text(encoding="utf-8"))
     labels, _ = resolve_labels(dataset)
     index = index_curated(coco)
+    skipped = set() if mixed_standards else inconsistent_annotators(labels)
+    if skipped:
+        logger.info("Pominieci przy uczeniu (standard bez aktywacji): %s", ", ".join(sorted(skipped)))
 
     zbior = TrainingSet()
     for file_name, peak in index.peak_by_file.items():
         record = labels.get(file_name)
         if record is None or not record.usable or not record.au_verdicts:
+            continue
+        if record.annotator in skipped:
             continue
         neutral = _neutral_of(index, peak)
         if neutral is None:
@@ -371,6 +448,19 @@ def _report(zbior: TrainingSet, folds: dict[str, int]) -> Score:
     return total
 
 
+def _log_annotators(dataset: str) -> None:
+    """
+    Wypisuje, jak często każdy anotator orzeka aktywację.
+
+    Args:
+        dataset: Nazwa zbioru w `data/`
+    """
+    labels, _ = resolve_labels(dataset)
+    logger.info("%-10s %10s %10s", "anotator", "aktywacje", "komorki")
+    for name, (rate, cells) in sorted(activation_rates(labels).items(), key=lambda kv: -kv[1][1]):
+        logger.info("%-10s %9.2f%% %10d", name, 100 * rate, cells)
+
+
 def main() -> None:
     """Uczy model, mierzy go sprawdzianem krzyżowym i zapisuje współczynniki."""
     parser = argparse.ArgumentParser(description="Model AU z geometrii twarzy")
@@ -379,9 +469,15 @@ def main() -> None:
     parser.add_argument(
         "--skip-eval", action="store_true", help="Tylko naucz i zapisz, bez sprawdzianu"
     )
+    parser.add_argument(
+        "--mixed-standards",
+        action="store_true",
+        help="Ucz na ocenach wszystkich anotatorow (do porownania, nie do produkcji)",
+    )
     args = parser.parse_args()
 
-    zbior = collect_training_set(args.dataset)
+    _log_annotators(args.dataset)
+    zbior = collect_training_set(args.dataset, args.mixed_standards)
     logger.info("Par uczacych : %d", len(zbior))
     if not len(zbior):
         raise SystemExit("Brak par z werdyktem czlowieka — nie ma na czym uczyc")

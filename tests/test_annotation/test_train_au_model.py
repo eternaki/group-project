@@ -122,3 +122,67 @@ def test_puste_zliczenia_nie_dziela_przez_zero() -> None:
     assert wynik.precision == 0.0
     assert wynik.recall == 0.0
     assert wynik.f1 == 0.0
+
+
+class _Zapis:
+    """Minimalny odpowiednik `LabelRecord` na potrzeby testu."""
+
+    def __init__(self, annotator: str, au_verdicts: dict, usable: bool = True) -> None:
+        self.annotator = annotator
+        self.au_verdicts = au_verdicts
+        self.usable = usable
+
+
+def _oceny(annotator: str, aktywne: int, spoczynek: int, pary: int) -> dict:
+    """Buduje dziennik jednego anotatora o zadanym udziale aktywacji."""
+    zapisy = {}
+    for index in range(pary):
+        werdykty = {f"AU{i}": "active" for i in range(aktywne)}
+        werdykty.update({f"AU{i + aktywne}": "inactive" for i in range(spoczynek)})
+        zapisy[f"para_{annotator}_{index}"] = _Zapis(annotator, werdykty)
+    return zapisy
+
+
+def test_udzial_aktywacji_liczy_sie_na_komorki_a_nie_na_pary() -> None:
+    """Anotator oceniający więcej AU na parze nie wygląda przez to na hojniejszego."""
+    from scripts.annotation.train_au_model import activation_rates
+
+    wynik = activation_rates(_oceny("kto", aktywne=1, spoczynek=9, pary=30))
+
+    assert wynik["kto"][0] == 0.1
+    assert wynik["kto"][1] == 300
+
+
+def test_not_observable_nie_wchodzi_do_mianownika() -> None:
+    """„Nie wiem" nie jest oceną, więc nie rozcieńcza udziału aktywacji."""
+    from scripts.annotation.train_au_model import activation_rates
+
+    zapisy = {"p": _Zapis("kto", {"AU25": "active", "AU26": "not_observable"})}
+
+    assert activation_rates(zapisy)["kto"] == (1.0, 1)
+
+
+def test_para_odrzucona_nie_liczy_sie_do_udzialu() -> None:
+    """Odrzucenie pary wpisuje `not_observable` we wszystkie AU — to nie ocena."""
+    from scripts.annotation.train_au_model import activation_rates
+
+    zapisy = {"p": _Zapis("kto", {"AU25": "inactive"}, usable=False)}
+
+    assert "kto" not in activation_rates(zapisy)
+
+
+def test_anotator_bez_aktywacji_odpada_od_uczenia() -> None:
+    """Standard „nic nigdy nie jest aktywne" przeczy standardowi reszty zespołu."""
+    from scripts.annotation.train_au_model import inconsistent_annotators
+
+    zapisy = {**_oceny("skapy", aktywne=0, spoczynek=20, pary=30),
+              **_oceny("hojny", aktywne=1, spoczynek=19, pary=30)}
+
+    assert inconsistent_annotators(zapisy) == {"skapy"}
+
+
+def test_maly_dziennik_nie_wystarcza_do_pominiecia() -> None:
+    """Przy kilku ocenach zerowy udział to przypadek, nie standard."""
+    from scripts.annotation.train_au_model import inconsistent_annotators
+
+    assert inconsistent_annotators(_oceny("nowy", aktywne=0, spoczynek=5, pary=3)) == set()

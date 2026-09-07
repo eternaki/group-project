@@ -206,7 +206,7 @@ def _peak_row(
     Buduje wiersz CSV dla klatki szczytowej: człowiek, potem model, potem reguły.
 
     Kolejność nie jest dowolna — to porządek zmierzonej wiarygodności. Werdykt
-    człowieka jest etykietą. Model ma precyzję 26.8%, reguły 5.0%, więc tam,
+    człowieka jest etykietą. Model ma precyzję 32.7%, reguły 5.0%, więc tam,
     gdzie model się wypowiada, jego zdanie zastępuje regułę.
 
     Args:
@@ -318,14 +318,16 @@ def _append_readme(path: Path, full: dict, rows: list[dict]) -> None:
             "| źródło | pole w COCO | precyzja | pokrycie |",
             "|--------|-------------|----------|----------|",
             "| `human_verified` | `au_verdicts` | etykieta odniesienia | — |",
-            "| `auto_model` | `au_model_verdict` | 26.8% | 22.5% |",
+            "| `auto_model` | `au_model_verdict` | 32.7% | 26.3% |",
             "| `auto_rules` | `au_auto_verdict` | 5.0% | 40.5% |",
             "",
             "- **Do treningu bierz `au_verdicts` tam, gdzie jest, a dalej `au_model_verdict`.**",
             "  Reguły (`au_auto_verdict`) zostają w pliku wyłącznie dla porównania.",
-            "- **Żadna etykieta automatyczna nie jest prawdą.** Przy precyzji 27% trzy",
-            "  aktywacje na cztery są zmyślone. Model zapala średnio 0.50 AU na kadr,",
-            "  człowiek 0.42, reguły 5.65 — to jedyny sens, w jakim model „się zgadza\".",
+            "- **Żadna etykieta automatyczna nie jest prawdą.** Przy precyzji 33% dwie",
+            "  aktywacje na trzy są zmyślone.",
+            "- **Model odtwarza JEDEN standard oceniania.** Uczony jest na ocenach tych",
+            "  anotatorów, którzy w ogóle orzekają aktywacje: udziały w zespole rozjeżdżają",
+            "  się od 0.17% do 5.4% komórek, a mieszanie ich obniża precyzję z 32.7% na 26.8%.",
             "- **Sufit jest nisko i to nie wina modelu.** Na parach ocenionych niezależnie",
             "  przez dwie osoby zgoda na aktywacjach AU wynosi 7.4% (kappa 0.132), więc",
             "  samo zjawisko jest słabo powtarzalne. Odtworzenie liczb:",
