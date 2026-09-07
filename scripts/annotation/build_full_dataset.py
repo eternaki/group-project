@@ -37,7 +37,6 @@ from packages.data.coco import au_auto_verdicts  # noqa: E402
 from packages.data.schemas import (  # noqa: E402
     EMOTION_CLASSES,
     KEYPOINT_NAMES,
-    NUM_KEYPOINTS,
     SKELETON_CONNECTIONS,
 )
 from packages.models.delta_action_units import ACTION_UNIT_NAMES  # noqa: E402
@@ -49,6 +48,7 @@ from scripts.annotation.build_final_dataset import (  # noqa: E402
     index_curated,
     resolve_labels,
 )
+from scripts.annotation.build_work_pack import shrink  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -193,6 +193,25 @@ def _peak_row(image: dict, source: dict, auto: dict, record) -> dict[str, object
 README_MARKER: str = "## Pełny zbiór 9k"
 
 
+def _write_full_json(path: Path, coco: dict) -> None:
+    """
+    Zapisuje COCO pełnego zbioru możliwie ciasno.
+
+    Dwa powody, oba zmierzone. Precyzja: same współrzędne niosą po 15 cyfr
+    znaczących, z których realne są dwie — `shrink` ścina to bez straty treści
+    (68.6 MB -> 29.8 MB). Sposób zapisu: `Path.write_text` na tym
+    Pythonie/Windows wywraca się na `OSError: [Errno 22]` w okolicach 70 MB,
+    a zwykłe `open()` tej samej treści przechodzi — przy 9.5k par byliśmy
+    1.4 MB od tej granicy.
+
+    Args:
+        path: Ścieżka pliku
+        coco: Złożony COCO całego zbioru
+    """
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(json.dumps(coco, ensure_ascii=False, separators=(",", ":")))
+
+
 def write_outputs(full: dict, rows: list[dict], output_dir: Path) -> None:
     """
     Zapisuje COCO, CSV, licencję i dopisuje sekcję do README.
@@ -203,9 +222,8 @@ def write_outputs(full: dict, rows: list[dict], output_dir: Path) -> None:
         output_dir: Katalog `release`
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "annotations_full.json").write_text(
-        json.dumps(full, ensure_ascii=False), encoding="utf-8"
-    )
+    slim = {**full, "annotations": shrink(full["annotations"])}
+    _write_full_json(output_dir / "annotations_full.json", slim)
     with (output_dir / "au_full_labels.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
