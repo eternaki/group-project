@@ -47,6 +47,9 @@ dev = [
 download = [
     "yt-dlp>=2023.10.0",       # YouTube downloading
 ]
+report = [
+    "reportlab>=4.0.0",        # Raport wynikow do PDF
+]
 tiktok = [
     "TikTokApi>=6.2.0",              # Wyszukiwanie po hashtagach
     "playwright>=1.40.0",            # Backend przeglądarki dla TikTokApi
