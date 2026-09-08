@@ -62,6 +62,11 @@ data/*.mp4
 data/tmpl/
 data/rec/
 data/probe/
+# Fale anotacji wsadowej: surowe COCO kazdej czesci przed scaleniem (setki MB).
+# Do repozytorium idzie dopiero wynik — data/dataset_final/release/ i data/labels/.
+data/fala_*/
+# Progi regul dobierane doraznie; zastapione modelem models/au_geometry.json
+data/progi_au.json
 
 # Model weights (large files NOT tracked - keep in models/ directory)
 # *.pt  # Разрешаем .pt файлы для моделей
