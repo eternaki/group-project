@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 # Bez tego pliki pobierają się puste (SABR/HLS bez prawidłowych URL).
 JS_RUNTIMES = {"node": {"path": None}}
 
+# Cookies z przeglądarki — YouTube wymaga ich do pobrania (bot check / SABR).
+# Format yt-dlp: (browser, profile, keyring, container). Zmień "chrome" na swoją
+# przeglądarkę, jeśli logujesz się do YouTube w innej.
+COOKIES_FROM_BROWSER: tuple = ("chrome", None, None, None)
+
 
 @dataclass
 class VideoMetadata:
@@ -60,8 +65,8 @@ class DownloadConfig:
     output_dir: Path = field(default_factory=lambda: Path("data/raw"))
     metadata_file: Path = field(default_factory=lambda: Path("data/collection/metadata.json"))
     max_resolution: int = 720
-    min_duration: int = 10
-    max_duration: int = 60
+    min_duration: int = 8
+    max_duration: int = 180
     target_duration: int = 20
 
 
@@ -147,7 +152,7 @@ class VideoDownloader:
 
         # Pobierz informacje o wideo
         try:
-            with yt_dlp.YoutubeDL({"quiet": True, "js_runtimes": JS_RUNTIMES}) as ydl:
+            with yt_dlp.YoutubeDL({"quiet": True, "js_runtimes": JS_RUNTIMES, "cookiesfrombrowser": COOKIES_FROM_BROWSER, "remote_components": ["ejs:github"]}) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
             logger.error(f"Nie można pobrać informacji o wideo: {e}")
@@ -187,6 +192,8 @@ class VideoDownloader:
             "quiet": False,
             "no_warnings": True,
             "js_runtimes": JS_RUNTIMES,
+            "cookiesfrombrowser": COOKIES_FROM_BROWSER,
+            "remote_components": ["ejs:github"],
             "progress_hooks": [self._progress_hook],
         }
 
@@ -270,8 +277,10 @@ class VideoDownloader:
             "quiet": True,
             "extract_flat": True,
             "js_runtimes": JS_RUNTIMES,
+            "cookiesfrombrowser": COOKIES_FROM_BROWSER,
+            "remote_components": ["ejs:github"],
         }
-        search_query = f"ytsearch{limit * 2}:{query}"
+        search_query = f"ytsearch{limit * 4}:{query}"
 
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:

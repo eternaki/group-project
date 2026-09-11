@@ -72,6 +72,14 @@ data/dataset_final/release_50/
 data/dataset_final/release_startend/
 data/dataset_final/structured/
 data/dataset_final/structured_synthetic/
+data/dataset_final/structured_emotional/
+data/dataset_final/bad_examples/
+
+# Kopie zapasowe / pliki jednorazowe (nie do repo)
+models/*_OLD_backup.pt
+packages/models/*_OLD_recovered.json
+packages/models/*.synset_backup.json
+data/recovered_idx2name.json
 
 # Model weights (large files NOT tracked - keep in models/ directory)
 # *.pt  # Разрешаем .pt файлы для моделей
