@@ -63,6 +63,16 @@ data/tmpl/
 data/rec/
 data/probe/
 
+# dataset_final: zbiór roboczy i warianty składania — duże artefakty pośrednie.
+# Do gita idą TYLKO data/dataset_final/release/ i data/labels/ (patrz CLAUDE.md).
+data/dataset_final/work/
+data/dataset_final/annotations.json
+data/dataset_final/curated.json
+data/dataset_final/release_50/
+data/dataset_final/release_startend/
+data/dataset_final/structured/
+data/dataset_final/structured_synthetic/
+
 # Model weights (large files NOT tracked - keep in models/ directory)
 # *.pt  # Разрешаем .pt файлы для моделей
 # *.pth
