@@ -251,6 +251,7 @@ def build() -> None:
                     "breed": ann.breed.class_name if ann.breed else None,
                     "emotion": emotion,
                     "frame_role": role,
+                    "frame_time_s": round(float(t), 2),
                     "label_source": "human_verified",
                     "source_video": video,
                 }
@@ -282,6 +283,28 @@ def _write_outputs(out_images, out_anns, lic_rows, per_emotion, n_videos, substi
         writer = csv.DictWriter(handle, fieldnames=["video_id", "platform", "license", "link"])
         writer.writeheader()
         writer.writerows(lic_rows)
+
+    # frames.csv — czytelna mapa: które wideo, początek/koniec, sekunda, plik
+    file_by_img = {i["id"]: i["file_name"] for i in out_images}
+    frame_rows = sorted(
+        (
+            {
+                "source_video": a["source_video"],
+                "emotion": a["emotion"],
+                "frame_role": a["frame_role"],
+                "frame_time_s": a["frame_time_s"],
+                "file_name": file_by_img[a["image_id"]],
+            }
+            for a in out_anns
+        ),
+        key=lambda r: (r["emotion"], r["source_video"], r["frame_role"]),
+    )
+    with (OUTPUT / "frames.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=["source_video", "emotion", "frame_role", "frame_time_s", "file_name"]
+        )
+        writer.writeheader()
+        writer.writerows(frame_rows)
 
     lines = [
         "# Dog FACS Dataset — kadry początku i końca emocji",

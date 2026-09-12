@@ -111,7 +111,11 @@ class GoogleDriveUploader:
         return created["id"]
 
     def upload_file(
-        self, file_path: Path, remote_name: str | None = None, folder_id: str | None = None
+        self,
+        file_path: Path,
+        remote_name: str | None = None,
+        folder_id: str | None = None,
+        resumable: bool = True,
     ) -> str:
         """
         Wysyła pojedynczy plik do folderu na Drive.
@@ -120,6 +124,8 @@ class GoogleDriveUploader:
             file_path: Ścieżka do lokalnego pliku
             remote_name: Nazwa pliku na Drive (domyślnie nazwa lokalna)
             folder_id: Docelowy folder (domyślnie self.folder_id)
+            resumable: Upload wznawialny (domyślnie True; dla małych plików
+                False bywa stabilniejszy — omija błąd "HttpError 200 OK")
 
         Returns:
             ID utworzonego pliku na Google Drive
@@ -134,7 +140,7 @@ class GoogleDriveUploader:
             "name": remote_name or file_path.name,
             "parents": [folder_id or self.folder_id],
         }
-        media = MediaFileUpload(str(file_path), resumable=True)
+        media = MediaFileUpload(str(file_path), resumable=resumable)
 
         uploaded = (
             self._service.files()
