@@ -13,6 +13,7 @@ data/labels/dataset_final/select_<kto>.jsonl. Kolejka globalna z rezerwacją.
 """
 
 import json
+import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
@@ -40,10 +41,14 @@ PORT = 8001
 EMOTIONS = ["neutral", "sad", "happy", "surprise", "angry", "fearful"]
 EMO_PL = {"neutral": "нейтрально", "sad": "грусть", "happy": "радость",
           "surprise": "удивление", "angry": "злость", "fearful": "страх"}
+# fearful i surprise znów rozdzielone (na życzenie prowadzącego) — bez scalania
+MERGE: dict[str, str] = {}
 
 # Źródła: folder na Drive -> (pool, emocja lub None)
-OTOBRANE = {"DataSet_neutral": "neutral", "DataSet_sad": "sad", "DataSet_happy": "happy"}
-SUROWE = ["dog_tv_24_7_nareski", "tiktok_playlist_nareski"]
+OTOBRANE = {"DataSet_neutral": "neutral", "DataSet_sad": "sad", "DataSet_happy": "happy",
+            "new_angry_dogs": "angry", "new_surprised_dogs": "surprise",
+            "new_happy_dogs": "happy", "angry_dogs_2": "angry", "angry_dogs_3": "angry"}
+SUROWE = ["tiktok_playlist_nareski"]
 
 _drive = GoogleDriveUploader(GDRIVE_CREDENTIALS_PATH, GDRIVE_TOKEN_PATH, GDRIVE_FOLDER_ID)
 _drive.authenticate()
@@ -84,29 +89,6 @@ def _build_pools() -> dict[str, list[dict]]:
 POOLS = _build_pools()
 print(f"Odebrane: {len(POOLS['otobrane'])} | Surowe: {len(POOLS['surowe'])}", file=sys.stderr)
 
-# Ile wideo w folderach Odebrane per emocja (do liczników done/total)
-OTOB_TOTAL = Counter(it["emotion"] for it in POOLS["otobrane"])
-
-
-def _prev_stats() -> dict:
-    """Poprzednie statystyki: ile wideo przetworzono i dawna rozmowa start/koniec."""
-    full = REPO / "data" / "dataset_final" / "work" / "annotations_full.json"
-    processed = 0
-    if full.is_file():
-        coco = json.loads(full.read_text(encoding="utf-8"))
-        processed = len({(i.get("source_video") or i["file_name"].split("/")[-2])
-                         for i in coco["images"]})
-    labeled: Counter = Counter()
-    for path in LABELS.glob("video_*.jsonl"):  # dawne metki start/koniec (302 wideo)
-        for line in path.open(encoding="utf-8"):
-            if line.strip():
-                r = json.loads(line)
-                if r.get("emotion"):
-                    labeled[r["emotion"]] += 1
-    return {"processed": processed, "labeled": dict(labeled)}
-
-
-PREV = _prev_stats()
 
 
 def _scan() -> tuple[set[str], Counter, Counter, int]:
@@ -120,10 +102,11 @@ def _scan() -> tuple[set[str], Counter, Counter, int]:
             if line.strip():
                 r = json.loads(line)
                 done.add(r["fid"])
-                if r.get("emotion"):
-                    now[r["emotion"]] += 1
-                if r.get("pool") == "otobrane" and r.get("emotion"):
-                    otob[r["emotion"]] += 1
+                emo = MERGE.get(r.get("emotion"), r.get("emotion"))
+                if emo:
+                    now[emo] += 1
+                if r.get("pool") == "otobrane" and emo:
+                    otob[emo] += 1
                 elif r.get("pool") == "surowe":
                     surowe_done += 1
     for path in LABELS.glob("select_skip_*.txt"):
@@ -131,14 +114,43 @@ def _scan() -> tuple[set[str], Counter, Counter, int]:
     return done, now, otob, surowe_done
 
 
+def _rated() -> dict[str, dict]:
+    """fid -> {name, raters:[kto]} po WSZYSTKICH ocenach (pierwsze + podwójne)."""
+    out: dict[str, dict] = {}
+    for path in list(LABELS.glob("select_*.jsonl")) + list(LABELS.glob("double_*.jsonl")):
+        for line in path.open(encoding="utf-8"):
+            if line.strip():
+                r = json.loads(line)
+                if r.get("emotion"):
+                    d = out.setdefault(r["fid"], {"name": r.get("video"), "raters": []})
+                    if r.get("annotator") not in d["raters"]:
+                        d["raters"].append(r.get("annotator"))
+    return out
+
+
 @app.get("/next")
 def next_video(pool: str, annotator: str, emotion: str | None = None) -> JSONResponse:
     """Wydaje następne wideo z kolejki (Odebrane można zawęzić do jednej emocji)."""
+    now = time.time()
+    # Tryb podwójnej oceny: wideo ocenione już przez KOGOŚ INNEGO, na ślepo.
+    if pool == "double":
+        rated = _rated()
+        with _LOCK:
+            for k in [k for k, t in _CLAIMS.items() if now - t > _CLAIM_TTL]:
+                del _CLAIMS[k]
+            payload = {"total": len(rated), "pool": "double"}
+            for fid, info in rated.items():
+                if annotator in info["raters"] or fid in _CLAIMS:
+                    continue
+                _CLAIMS[fid] = now
+                payload.update({"fid": fid, "name": info["name"], "emotion": None})
+                return JSONResponse(payload)
+            return JSONResponse(payload)
+
     items = POOLS.get(pool, [])
     if pool == "otobrane" and emotion:
         items = [it for it in items if it["emotion"] == emotion]
     done, *_ = _scan()
-    now = time.time()
     with _LOCK:
         for k in [k for k, t in _CLAIMS.items() if now - t > _CLAIM_TTL]:
             del _CLAIMS[k]
@@ -152,18 +164,52 @@ def next_video(pool: str, annotator: str, emotion: str | None = None) -> JSONRes
         return JSONResponse(payload)
 
 
+def _video_codec(path: Path) -> str:
+    """Kodek wideo pliku (np. h264, av1, vp9) — przez ffprobe."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1",
+             str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        return r.stdout.strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _ensure_cached(fid: str) -> Path | None:
-    """Pobiera plik z Drive po ID (raz) do cache."""
+    """Pobiera plik z Drive po ID (raz) do cache; transkoduje do H.264 jeśli trzeba.
+
+    Safari/iOS nie odtwarza AV1/VP9 — dlatego wszystko, co nie jest H.264,
+    przekodowujemy, żeby grało na telefonach zespołu.
+    """
     dst = CACHE / f"{fid}.mp4"
-    if not dst.is_file():
-        with _dl_lock:
-            if not dst.is_file():
-                tmp = dst.with_suffix(".part")
-                try:
-                    _drive.download_file(fid, tmp)
-                    tmp.rename(dst)
-                except Exception:  # noqa: BLE001
-                    return None
+    if dst.is_file():
+        return dst
+    with _dl_lock:
+        if dst.is_file():
+            return dst
+        raw = CACHE / f"{fid}.raw"
+        try:
+            _drive.download_file(fid, raw)
+        except Exception:  # noqa: BLE001
+            raw.unlink(missing_ok=True)
+            return None
+        if _video_codec(raw) == "h264":
+            raw.rename(dst)
+        else:
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(raw), "-c:v", "libx264", "-preset", "veryfast",
+                     "-crf", "23", "-c:a", "aac", "-movflags", "+faststart", str(dst)],
+                    capture_output=True, timeout=300, check=True,
+                )
+            except Exception:  # noqa: BLE001
+                raw.unlink(missing_ok=True)
+                dst.unlink(missing_ok=True)
+                return None
+            raw.unlink(missing_ok=True)
     return dst
 
 
@@ -182,15 +228,40 @@ def warm(fid: str) -> JSONResponse:
     return JSONResponse({"ok": _ensure_cached(fid) is not None})
 
 
+TARGET = 250  # cel: tyle wideo na każdą emocję
+
+
+def _totals() -> Counter:
+    """Łącznie ręcznie oznaczonych wideo na emocję: stare (video_*) + nowe (select_*)."""
+    tot: Counter = Counter()
+    old: dict[str, str] = {}
+    for p in LABELS.glob("video_*.jsonl"):
+        for line in p.open(encoding="utf-8"):
+            if line.strip():
+                r = json.loads(line)
+                if r.get("emotion"):
+                    old[r["video"]] = r["emotion"]
+    new: dict[str, str] = {}
+    for p in LABELS.glob("select_*.jsonl"):
+        for line in p.open(encoding="utf-8"):
+            if line.strip():
+                r = json.loads(line)
+                if r.get("emotion"):
+                    new[r["fid"]] = r["emotion"]
+    for e in list(old.values()) + list(new.values()):
+        tot[MERGE.get(e, e)] += 1
+    return tot
+
+
 @app.get("/stats")
 def stats() -> JSONResponse:
-    _, now, otob, surowe_done = _scan()
+    tot = _totals()
+    double = sum(1 for p in LABELS.glob("double_*.jsonl")
+                 for line in p.open(encoding="utf-8") if line.strip())
     return JSONResponse({
-        "prev": PREV,
-        "now": {e: now.get(e, 0) for e in EMOTIONS},
-        "otobrane": {e: {"done": otob.get(e, 0), "total": OTOB_TOTAL.get(e, 0)}
-                     for e in OTOB_TOTAL},
-        "surowe": {"done": surowe_done, "total": len(POOLS["surowe"])},
+        "totals": {e: tot.get(e, 0) for e in EMOTIONS},
+        "target": TARGET,
+        "double": double,
     })
 
 
@@ -202,6 +273,14 @@ async def save(payload: dict) -> JSONResponse:
         with (LABELS / f"select_skip_{annotator}.txt").open("a", encoding="utf-8") as h:
             h.write(payload["fid"] + "\n")
         return JSONResponse({"ok": True, "skipped": True})
+    # Tryb podwójnej oceny -> osobny plik double_<kto>.jsonl (sama emocja)
+    if payload.get("pool") == "double":
+        rec = {"fid": payload["fid"], "video": payload.get("name"),
+               "emotion": payload["emotion"], "annotator": annotator, "pool": "double",
+               "timestamp": datetime.now(timezone.utc).isoformat()}
+        with (LABELS / f"double_{annotator}.jsonl").open("a", encoding="utf-8") as h:
+            h.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return JSONResponse({"ok": True})
     record = {
         "fid": payload["fid"],
         "video": payload["name"],
@@ -242,41 +321,44 @@ button{font-size:15px;margin:3px;padding:9px 12px;border:0;border-radius:8px;bac
 <div class="bar" id="bar"></div>
 <script>
 const EMO=%EMO%;
-const OTOB=[["neutral","нейтр."],["sad","грусть"],["happy","радость"]];
+const OTOB=[["neutral","нейтр."],["sad","грусть"],["happy","радость"],["angry","злость"],["surprise","удивление"],["fearful","страх"]];
 let kto=new URLSearchParams(location.search).get("kto");
 let pool="otobrane",otobEmo="neutral",cur=null,emo=null,startT=null,endT=null;
 const vid=document.getElementById("vid"),bar=document.getElementById("bar");
 function fmt(t){return t==null?"—":t.toFixed(2)+"с";}
 function poolbar(){const b=document.getElementById("poolbar");b.innerHTML="";
- [["otobrane","✅ Отобранное"],["surowe","🎞 Сырьё"]].forEach(p=>{const x=document.createElement("button");x.className="pool"+(pool===p[0]?" sel":"");x.textContent=p[1];x.onclick=()=>{pool=p[0];poolbar();reset();load();stats();};b.appendChild(x);});
+ [["otobrane","✅ Отобранное"],["surowe","🎞 Сырьё"],["double","🔁 Двойная"]].forEach(p=>{const x=document.createElement("button");x.className="pool"+(pool===p[0]?" sel":"");x.textContent=p[1];x.onclick=()=>{pool=p[0];poolbar();reset();load();stats();};b.appendChild(x);});
  if(pool==="otobrane"){b.appendChild(document.createElement("br"));OTOB.forEach(e=>{const x=document.createElement("button");x.className="emo"+(otobEmo===e[0]?" sel":"");x.textContent=e[1];x.onclick=()=>{otobEmo=e[0];poolbar();reset();load();stats();};b.appendChild(x);});}}
 function reset(){emo=null;startT=null;endT=null;}
 function updateBar(){
  bar.innerHTML="";
- const b1=document.createElement("button");b1.className="mk"+(startT!=null?" set":"");b1.textContent="① начало "+fmt(startT);b1.onclick=()=>{startT=vid.currentTime;updateBar();};bar.appendChild(b1);
- const b2=document.createElement("button");b2.className="mk"+(endT!=null?" set":"");b2.textContent="② конец "+fmt(endT);b2.onclick=()=>{endT=vid.currentTime;updateBar();};bar.appendChild(b2);
- const rs=document.createElement("button");rs.textContent="✕ сброс";rs.onclick=()=>{startT=null;endT=null;updateBar();};bar.appendChild(rs);
- bar.appendChild(document.createElement("br"));
+ if(pool!=="double"){
+  const b1=document.createElement("button");b1.className="mk"+(startT!=null?" set":"");b1.textContent="① начало "+fmt(startT);b1.onclick=()=>{startT=vid.currentTime;updateBar();};bar.appendChild(b1);
+  const b2=document.createElement("button");b2.className="mk"+(endT!=null?" set":"");b2.textContent="② конец "+fmt(endT);b2.onclick=()=>{endT=vid.currentTime;updateBar();};bar.appendChild(b2);
+  const rs=document.createElement("button");rs.textContent="✕ сброс";rs.onclick=()=>{startT=null;endT=null;updateBar();};bar.appendChild(rs);
+  bar.appendChild(document.createElement("br"));
+ }
  if(cur&&cur.emotion===null){EMO.forEach(e=>{const b=document.createElement("button");b.className="emo"+(emo===e[0]?" sel":"");b.textContent=e[1];b.onclick=()=>{emo=e[0];updateBar();};bar.appendChild(b);});bar.appendChild(document.createElement("br"));}
  const sk=document.createElement("button");sk.textContent="skip";sk.onclick=()=>save(true);bar.appendChild(sk);
  const need_emo=cur&&cur.emotion===null;
- const s=document.createElement("button");s.id="save";s.textContent="Сохранить →";s.disabled=!((need_emo?emo:true)&&startT!=null&&endT!=null);s.onclick=()=>save(false);bar.appendChild(s);
+ const ok=pool==="double"?!!emo:((need_emo?emo:true)&&startT!=null&&endT!=null);
+ const s=document.createElement("button");s.id="save";s.textContent="Сохранить →";s.disabled=!ok;s.onclick=()=>save(false);bar.appendChild(s);
 }
 async function save(skip){if(!cur)return;
- const body=skip?{annotator:kto,fid:cur.fid,skip:true}:{annotator:kto,fid:cur.fid,name:cur.name,pool:pool,emotion:cur.emotion||emo,start_time:startT,end_time:endT};
+ const body=skip?{annotator:kto,fid:cur.fid,skip:true}:(pool==="double"?{annotator:kto,fid:cur.fid,name:cur.name,pool:"double",emotion:emo}:{annotator:kto,fid:cur.fid,name:cur.name,pool:pool,emotion:cur.emotion||emo,start_time:startT,end_time:endT});
  await fetch("/save",{method:"POST",headers:{"Content-Type":"application/json","ngrok-skip-browser-warning":"1"},body:JSON.stringify(body)});
  reset();load();stats();}
 async function load(){const u="/next?pool="+pool+"&annotator="+kto+(pool==="otobrane"?"&emotion="+otobEmo:"");const r=await fetch(u,{headers:{"ngrok-skip-browser-warning":"1"}});const d=await r.json();
  if(!d.fid){vid.style.display="none";document.getElementById("hdr").innerHTML="Готово в этом режиме.";bar.innerHTML="";return;}
  vid.style.display="";cur=d;
- document.getElementById("hdr").innerHTML=kto+" · "+(pool==="otobrane"?("эмоция: <b>"+d.emotion+"</b>"):"<b>выбери эмоцию</b>")+" · "+d.name.slice(0,40);
+ document.getElementById("hdr").innerHTML=kto+" · "+(pool==="double"?"<b>🔁 оцени эмоцию вслепую</b>":(pool==="otobrane"?("эмоция: <b>"+d.emotion+"</b>"):"<b>выбери эмоцию</b>"))+" · "+d.name.slice(0,40);
  vid.src="/video?fid="+d.fid;vid.load();vid.play().catch(()=>{});updateBar();
  if(d.prefetch)fetch("/warm?fid="+d.prefetch,{headers:{"ngrok-skip-browser-warning":"1"}}).catch(()=>{});}
 async function stats(){const r=await fetch("/stats",{headers:{"ngrok-skip-browser-warning":"1"}});const d=await r.json();
- const p=d.prev||{};let pv="Ранее обработано: <b>"+(p.processed||0)+"</b> видео";const lab=p.labeled||{};const parts=[];for(const e of EMO){if(lab[e[0]])parts.push(e[0]+" "+lab[e[0]]);}if(parts.length)pv+=" · старая разметка: "+parts.join(", ");document.getElementById("prev").innerHTML=pv;
- let h="";
- if(pool==="otobrane"){const o=d.otobrane||{};for(const e of OTOB){const x=o[e[0]]||{done:0,total:0};h+="<span class='"+(x.total>0&&x.done>=x.total?"done":"need")+"'>"+e[0]+" "+x.done+"/"+x.total+"</span>&nbsp;&nbsp; ";}}
- else{const s=d.surowe||{done:0,total:0};h="🎞 Сырьё: размечено <b>"+s.done+"</b> / "+s.total;}
+ const t=d.totals||{};const T=d.target||250;let h="";
+ for(const e of EMO){const n=t[e[0]]||0;h+="<span class='"+(n>=T?"done":"need")+"'>"+e[0]+" "+n+"/"+T+"</span>&nbsp;&nbsp; ";}
+ if(pool==="double")h+="<span style='color:#7bf'>🔁 вторых оценок: "+(d.double||0)+"</span>";
+ document.getElementById("prev").innerHTML="";
  document.getElementById("stats").innerHTML=h;}
 document.addEventListener("keydown",e=>{if(!cur||!kto)return;const k=e.key.toLowerCase();
  if(k>="1"&&k<="9"){const i=+k-1;if(cur.emotion===null&&i<EMO.length){emo=EMO[i][0];updateBar();}}
