@@ -13,10 +13,13 @@ data/labels/dataset_final/select_<kto>.jsonl. Kolejka globalna z rezerwacją.
 """
 
 import json
+import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -47,15 +50,52 @@ MERGE: dict[str, str] = {}
 # Źródła: folder na Drive -> (pool, emocja lub None)
 OTOBRANE = {"DataSet_neutral": "neutral", "DataSet_sad": "sad", "DataSet_happy": "happy",
             "new_angry_dogs": "angry", "new_surprised_dogs": "surprise",
-            "new_happy_dogs": "happy", "angry_dogs_2": "angry", "angry_dogs_3": "angry"}
+            "new_happy_dogs": "happy", "angry_dogs_2": "angry", "angry_dogs_3": "angry",
+            "envato_sad": "sad", "envato_happy": "happy",
+            "envato_fearful": "fearful", "envato_surprise": "surprise",
+            "surprised_dogs_mafin": "surprise",
+            "neutral_dog_masha": "neutral", "angry_dogs_masha": "angry"}
 SUROWE = ["tiktok_playlist_nareski"]
 
 _drive = GoogleDriveUploader(GDRIVE_CREDENTIALS_PATH, GDRIVE_TOKEN_PATH, GDRIVE_FOLDER_ID)
 _drive.authenticate()
-_dl_lock = Lock()
 _LOCK = Lock()
 _CLAIMS: dict[str, float] = {}
 _CLAIM_TTL = 300.0
+
+# Ile wideo naprzód grzejemy w tle (żeby anotator nie czekał na pobranie z Drive).
+PREFETCH_AHEAD = 5
+# Osobny zamek per plik: dwa RÓŻNE wideo mogą pobierać się równolegle, ale to samo
+# — tylko raz. Globalny zamek serializował wszystko i zabijał prefetch.
+_locks_guard = Lock()
+_dl_locks: dict[str, Lock] = {}
+_prefetch_pool = ThreadPoolExecutor(max_workers=2)
+_prefetching: set[str] = set()
+# Klient Drive (httplib2) NIE jest bezpieczny wątkowo — współdzielony między
+# wątkami się wywala (segfault). Każde sięgnięcie do sieci serializujemy.
+_drive_lock = Lock()
+
+
+def _lock_for(fid: str) -> Lock:
+    with _locks_guard:
+        return _dl_locks.setdefault(fid, Lock())
+
+
+def _prefetch(fid: str) -> None:
+    """Zleca pobranie wideo do cache w tle (bez duplikatów, bez blokowania /next)."""
+    with _locks_guard:
+        if (CACHE / f"{fid}.mp4").is_file() or fid in _prefetching:
+            return
+        _prefetching.add(fid)
+
+    def _job() -> None:
+        try:
+            _ensure_cached(fid)
+        finally:
+            with _locks_guard:
+                _prefetching.discard(fid)
+
+    _prefetch_pool.submit(_job)
 
 app = FastAPI()
 
@@ -155,13 +195,26 @@ def next_video(pool: str, annotator: str, emotion: str | None = None) -> JSONRes
         for k in [k for k, t in _CLAIMS.items() if now - t > _CLAIM_TTL]:
             del _CLAIMS[k]
         payload = {"total": len(items), "pool": pool}
+        picked: dict | None = None
+        ahead: list[str] = []
         for it in items:
             if it["fid"] in done or it["fid"] in _CLAIMS:
                 continue
-            _CLAIMS[it["fid"]] = now
-            payload.update({"fid": it["fid"], "name": it["name"], "emotion": it["emotion"]})
-            return JSONResponse(payload)
-        return JSONResponse(payload)
+            if picked is None:
+                _CLAIMS[it["fid"]] = now
+                picked = it
+                continue
+            ahead.append(it["fid"])
+            if len(ahead) >= PREFETCH_AHEAD:
+                break
+    if picked:
+        payload.update({"fid": picked["fid"], "name": picked["name"],
+                        "emotion": picked["emotion"]})
+        if ahead:
+            payload["prefetch"] = ahead[0]
+        for f in ahead:  # grzejemy w tle następne wideo, zanim anotator do nich dojdzie
+            _prefetch(f)
+    return JSONResponse(payload)
 
 
 def _video_codec(path: Path) -> str:
@@ -178,6 +231,30 @@ def _video_codec(path: Path) -> str:
         return ""
 
 
+_VIDEO_EXT = (".mov", ".mp4", ".webm", ".m4v", ".mkv", ".avi")
+
+
+def _unwrap_if_zip(raw: Path, fid: str) -> Path | None:
+    """Część pobrań z Envato to ZIP z wideo w środku (a nie sam plik). Rozpakowuje
+    wideo ze środka; jeśli to nie ZIP — zwraca raw bez zmian. None gdy ZIP bez wideo.
+    """
+    with raw.open("rb") as fh:
+        if fh.read(4) != b"PK\x03\x04":
+            return raw
+    try:
+        with zipfile.ZipFile(raw) as z:
+            vids = [n for n in z.namelist() if n.lower().endswith(_VIDEO_EXT)]
+            if not vids:
+                return None
+            inner = CACHE / f"{fid}.inner"
+            with z.open(vids[0]) as s, inner.open("wb") as d:
+                shutil.copyfileobj(s, d)
+    except Exception:  # noqa: BLE001
+        return None
+    raw.unlink(missing_ok=True)
+    return inner
+
+
 def _ensure_cached(fid: str) -> Path | None:
     """Pobiera plik z Drive po ID (raz) do cache; transkoduje do H.264 jeśli trzeba.
 
@@ -187,29 +264,49 @@ def _ensure_cached(fid: str) -> Path | None:
     dst = CACHE / f"{fid}.mp4"
     if dst.is_file():
         return dst
-    with _dl_lock:
+    with _lock_for(fid):
         if dst.is_file():
             return dst
         raw = CACHE / f"{fid}.raw"
-        try:
-            _drive.download_file(fid, raw)
-        except Exception:  # noqa: BLE001
+        # Drive bywa zrywa połączenie (SSL EOF) — bez ponowienia dawało to 404
+        # i przekreślony player na telefonie. Trzy próby wystarczają.
+        for attempt in range(3):
+            try:
+                with _drive_lock:
+                    _drive.download_file(fid, raw)
+                break
+            except Exception as exc:  # noqa: BLE001
+                print(f"DL FAIL {fid} próba {attempt}: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
+                raw.unlink(missing_ok=True)
+                if attempt == 2:
+                    return None
+                time.sleep(1.5 * (attempt + 1))
+        # Rozpakuj, jeśli Envato oddało wideo w ZIP-ie zamiast samego pliku.
+        src = _unwrap_if_zip(raw, fid)
+        if src is None:
+            print(f"UNZIP FAIL {fid}: ZIP bez wideo", file=sys.stderr, flush=True)
             raw.unlink(missing_ok=True)
             return None
-        if _video_codec(raw) == "h264":
-            raw.rename(dst)
-        else:
-            try:
-                subprocess.run(
-                    ["ffmpeg", "-y", "-i", str(raw), "-c:v", "libx264", "-preset", "veryfast",
-                     "-crf", "23", "-c:a", "aac", "-movflags", "+faststart", str(dst)],
-                    capture_output=True, timeout=300, check=True,
-                )
-            except Exception:  # noqa: BLE001
-                raw.unlink(missing_ok=True)
-                dst.unlink(missing_ok=True)
-                return None
-            raw.unlink(missing_ok=True)
+        # Zawsze przekodowujemy do H.264 720p bez dźwięku: pliki z Envato to h264
+        # 100-200 MB, a przez tunel cloudflare taki plik ładuje się w nieskończoność.
+        # Do wyboru momentu (start/end) 720p w zupełności wystarcza.
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(src), "-vf", "scale='min(1280,iw)':-2",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-an",
+                 "-movflags", "+faststart", str(dst)],
+                capture_output=True, timeout=300, check=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            err = getattr(exc, "stderr", b"")
+            tail = err[-300:].decode("utf-8", "replace") if isinstance(err, bytes) else ""
+            print(f"FFMPEG FAIL {fid}: {type(exc).__name__}: {exc} | {tail}",
+                  file=sys.stderr, flush=True)
+            src.unlink(missing_ok=True)
+            dst.unlink(missing_ok=True)
+            return None
+        src.unlink(missing_ok=True)
     return dst
 
 
