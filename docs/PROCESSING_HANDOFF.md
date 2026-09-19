@@ -24,21 +24,20 @@
 
 ---
 
-## 2. Как делится работа (ГЛАВНОЕ — чтобы не дублировать)
+## 2. Что обрабатывать и как не дублировать
 
-Обработка разбита **по эмоциям**. Основная машина (Colab) считает **`happy` и `sad`**.
-**Твоя задача — остальные:** `neutral`, `angry`, `surprise`, `fearful`.
+**Ты обрабатываешь ВСЕ эмоции**: `neutral`, `sad`, `happy`, `surprise`, `angry`, `fearful`.
+У тебя быстрый GPU, поэтому весь датасет считаешь локально в свою папку `release_participant/`.
 
-Три уровня защиты от двойной обработки:
-1. **Разные эмоции** — ты берёшь только свои (`COLAB_EMOTIONS`), пересечения с happy/sad нет.
-2. **Чекпоинт `done_keys`** — внутри твоего прогона уже обработанные видео пропускаются
-   (можно прерывать и продолжать, чекпоинт лежит в твоей выходной папке).
-3. **Мердж с дедупом** — в конце всё объединяется скриптом `merge_releases.py`, который
-   выкидывает дубли по `source_video`. Даже если случайно посчитаешь чужое видео —
-   при объединении дубль отсеется, ничего страшного.
+От двойной обработки защищают:
+1. **Чекпоинт `done_keys`** — внутри твоего прогона уже обработанные видео пропускаются.
+   Можно прерывать (Ctrl+C, выключение) и запускать ту же команду снова — продолжит с места.
+   Чекпоинт лежит в твоей выходной папке `release_participant/_checkpoint.json`.
+2. **Мердж с дедупом** — если основная команда параллельно что-то посчитала на Colab,
+   финальный `merge_releases.py` объединит всё и выкинет дубли по `source_video`
+   (побеждает вариант с посчитанным AU). Так что пересечения не страшны.
 
-Итог твоей работы — **отдельная папка** `release_participant/`, которую ты отдашь
-основной команде для мерджа. Ты НЕ трогаешь их папку `release_colab`.
+Итог твоей работы — папка `release_participant/`, которую отдашь основной команде.
 
 ---
 
@@ -54,17 +53,28 @@
 
 Если у участника нет доступа к папке `DOGS` — пусть попросит владельца (Маша) расшарить.
 
-### Какие папки скачать под какие эмоции
+### Какие видео скачать — ВСЕ папки с видео из `DOGS/`
 
-| эмоция | папки на Drive (`DOGS/…`) |
-|--------|---------------------------|
-| `neutral`  | `DataSet_neutral`, `neutral_dog_masha` |
-| `angry`    | `new_angry_dogs`, `angry_dogs_2`, `angry_dogs_3`, `angry_dogs_masha` |
-| `surprise` | `new_surprised_dogs`, `envato_surprise`, `surprised_dogs_mafin` |
-| `fearful`  | `envato_fearful` |
+Метка разметки знает только **имя файла** видео (например `pexels_37644121.mp4`), но
+**не** знает, в какой папке оно лежит. Скрипт ищет каждое имя во всех папках, что ты ему
+укажешь. Отсюда правило: **скачай локально все папки с видео из `DOGS/` и укажи их все.**
+Если пропустишь папку — часть видео не найдётся, и ты увидишь меньше, чем должно быть
+(ровно это и есть «нашлось меньше»: недостающие видео идут в счётчик `brak_w_indeksie`).
 
-Скачай их в одну локальную директорию, например `~/dogfacs_videos/`, чтобы получилось
-`~/dogfacs_videos/DataSet_neutral/…`, `~/dogfacs_videos/new_angry_dogs/…` и т.д.
+Как на Drive устроено: расшарен один общий фолдер `DOGS/`, внутри — папки с видео по
+эмоциям (у основной команды happy/sad лежат в `happy_final` и `sad_final`; остальные
+эмоции — в своих папках рядом) плюс служебная `dogfacs_colab/` с весами моделей.
+
+Что делать:
+1. Синхронизируй локально **все подпапки `DOGS/`, в которых есть видео**
+   (`.mp4/.mov/.webm/.m4v/.mkv/.avi`) — в одну директорию, например `~/dogfacs_videos/`.
+2. Служебную папку весов `dogfacs_colab/` и папки готовых результатов (`release_*`)
+   в видео-директорию класть не нужно (веса ставятся отдельно, см. раздел 4).
+
+> Проще всего синхронизировать весь `DOGS/` целиком через `rclone` или Google Drive для
+> десктопа — тогда точно ни одной папки не пропустишь. Лишние папки скрипту не мешают: из
+> каждой он берёт только видеофайлы, чьи имена встречаются в метках. Если не уверен, какие
+> папки с видео есть на Drive — спроси владельца (Маша) или просто скачай **все** подпапки.
 
 ---
 
@@ -98,22 +108,39 @@ python -c "import torch; print('CUDA:', torch.cuda.is_available())"
 Скрипт управляется переменными окружения. Подставь свои пути:
 
 ```bash
-export COLAB_VIDEO_DIRS="$HOME/dogfacs_videos/DataSet_neutral;$HOME/dogfacs_videos/neutral_dog_masha;$HOME/dogfacs_videos/new_angry_dogs;$HOME/dogfacs_videos/angry_dogs_2;$HOME/dogfacs_videos/angry_dogs_3;$HOME/dogfacs_videos/angry_dogs_masha;$HOME/dogfacs_videos/new_surprised_dogs;$HOME/dogfacs_videos/envato_surprise;$HOME/dogfacs_videos/surprised_dogs_mafin;$HOME/dogfacs_videos/envato_fearful"
+# все скачанные подпапки с видео разом — каждая ~/dogfacs_videos/*/ попадёт в поиск
+export COLAB_VIDEO_DIRS="$(ls -d $HOME/dogfacs_videos/*/ | tr '\n' ';')"
 export COLAB_LABELS_DIR="data/labels/dataset_final"
 export COLAB_WORK="release_participant"          # рабочая папка (тут копится результат)
 export COLAB_OUTPUT="release_participant"         # финальная папка = та же, локально
 export COLAB_DEVICE="cuda"                         # сам упадёт на cpu, если GPU нет
-export COLAB_EMOTIONS="neutral,angry,surprise,fearful"
+export COLAB_EMOTIONS="neutral,sad,happy,surprise,angry,fearful"   # все эмоции
 export PYTHONPATH="."
 
 python -m scripts.annotation.build_colab
 ```
 
 Что увидишь:
-- `Etykiet (angry,fearful,neutral,surprise): N | plików wideo w folderach: M`
+- `Etykiet (angry,fearful,happy,neutral,sad,surprise): 1296 | plików wideo w folderach: M`
 - загрузку моделей, `Modele załadowane (cuda)`
-- прогресс каждые 10 видео: `... 50/900 | kadrów 90 | {'ok': 45, ...}`
+- прогресс каждые 10 видео: `... 50/1296 | kadrów 90 | {'ok': 45, ...}`
 - чекпоинт пишется каждые 50 видео в `release_participant/_checkpoint.json`
+
+**Сколько меток должно найтись (это в git, у всех одинаково).** Строка `Etykiet` покажет
+общее число ~**1296**. По эмоциям (сколько видео с этой меткой существует):
+
+| эмоция | меток |
+|--------|-------|
+| neutral  | ~252 |
+| sad      | ~251 |
+| happy    | ~251 |
+| angry    | ~250 |
+| surprise | ~238 |
+| fearful  | ~54 |
+
+Если по какой-то эмоции обрабатывается **заметно меньше** (много `brak_w_indeksie`) —
+значит не хватает папок с видео: докачай недостающие подпапки `DOGS/` и запусти снова
+(уже сделанное пропустится по чекпоинту).
 
 **Можно прерывать в любой момент** (Ctrl+C, выключение). При повторном запуске той же
 команды продолжит с чекпоинта — уже обработанные пропустятся.
@@ -134,8 +161,8 @@ python -m scripts.annotation.build_colab
 ## 6. Результат и передача
 
 По завершении в `release_participant/` будет:
-- `annotations.json` + `annotations_neutral.json` / `annotations_angry.json` / …
-- папки `neutral/`, `angry/`, `surprise/`, `fearful/` с кадрами (jpg)
+- `annotations.json` + по одному `annotations_<эмоция>.json` на каждую эмоцию
+- папки `neutral/`, `sad/`, `happy/`, `surprise/`, `angry/`, `fearful/` с кадрами (jpg)
 - `licenses.csv`, `frames.csv`
 
 **Отдай всю папку `release_participant/`** основной команде — загрузи её на общий Drive
@@ -152,13 +179,16 @@ python -m scripts.annotation.merge_releases release_final release_colab release_
 
 ## 7. Если что-то идёт не так
 
-- **Много `brak_w_indeksie`** — не все папки из таблицы (раздел 3) скачаны локально или
-  пути в `COLAB_VIDEO_DIRS` неверные. Проверь `ls` по каждому пути.
+- **Много `brak_w_indeksie`** — скачаны не все папки с видео из `DOGS/` (раздел 3), или
+  `COLAB_VIDEO_DIRS` собрался пустым. Проверь `echo $COLAB_VIDEO_DIRS` и что в
+  `~/dogfacs_videos/` действительно лежат подпапки с видео. Докачай недостающее и запусти
+  снова — сделанное пропустится по чекпоинту.
 - **`Modele załadowane (cpu)` вместо cuda** — torch не видит GPU. Проверь установку CUDA-сборки
   torch. На CPU тоже сработает, просто медленнее (~1 видео/сек против ~7/сек на GPU).
 - **`brak_neutralnej` у многих** — норма для сложных видео (нет спокойного кадра пса);
   такие видео пропускаются, это ожидаемо.
 - **Скрипт упал на середине** — просто запусти ту же команду снова, продолжит с чекпоинта.
 
-Не меняй папку `happy`/`sad` и не запускай с `COLAB_EMOTIONS=happy,sad` — это делает
-основная машина, чтобы не дублировать.
+Ты считаешь **все эмоции**. Если основная команда параллельно посчитает что-то на Colab —
+не страшно: финальный `merge_releases.py` объединит оба результата и выкинет дубли по
+`source_video` (см. раздел 6).
