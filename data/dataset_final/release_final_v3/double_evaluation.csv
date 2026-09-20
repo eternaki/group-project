@@ -1,0 +1,13 @@
+video_name,source_video,in_release,annotator_1,emotion_1,annotator_2,emotion_2,agree,origin
+angry_006.mp4,16257945-hd_1080_1920_60fps,1,anton,fearful,masha,angry,0,select
+angry_057.mp4,IMG_8130,1,danek,angry,masha,angry,1,select
+happy_056.mp4,dog_4772987,1,anton,happy,danek,happy,1,video
+happy_164.mp4,mixkit-6355__woman-and-her-dog-taking-a-selfie,1,danek,happy,mafin,happy,1,video
+neutral_179.mp4,pexels_28587406,1,anton,neutral,masha,neutral,1,double+select
+neutral_200.mp4,pexels_37644121,1,anton,neutral,masha,neutral,1,double+select
+sad_049.mov,envato_1280307e-7b3b-4515-85d4-157e7f397db0,1,danek,sad,mafin,surprise,0,select
+sad_241.mp4,segment_long_35174438_41,1,anton,sad,masha,surprise,0,video
+surprise_043.mp4,cLDrSXhhPO8_000169,1,danek,surprise,mafin,neutral,0,select+video
+surprise_046.mp4,cLDrSXhhPO8_000975,1,mafin,surprise,masha,surprise,1,select+video
+surprise_047.mp4,cLDrSXhhPO8_001265,1,anton,surprise,mafin,sad,0,select+video
+surprise_052.mp4,cLDrSXhhPO8_002783,1,mafin,surprise,masha,surprise,1,select+video
