@@ -27,5 +27,6 @@ PLIKI
   annotations.json                 wszystko (COCO: bbox, 46 keypoints, rasa, 21 AU)
   annotations_<emocja>.json        per emocja
   annotations_high_resolution.json / annotations_low_resolution.json
-  frames.csv, licenses.csv, video_manifest.csv
+  frames.csv, video_manifest.csv
+  licenses.csv                     licencja i zrodlo kazdego wideo (klucz: video_name)
   double_evaluation.csv            PODWOJNA OCENA emocji przez dwie rozne osoby
