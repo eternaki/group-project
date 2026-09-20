@@ -51,8 +51,7 @@ MERGE: dict[str, str] = {}
 OTOBRANE = {"DataSet_neutral": "neutral", "DataSet_sad": "sad", "DataSet_happy": "happy",
             "new_angry_dogs": "angry", "new_surprised_dogs": "surprise",
             "new_happy_dogs": "happy", "angry_dogs_2": "angry", "angry_dogs_3": "angry",
-            "envato_sad": "sad", "envato_happy": "happy",
-            "envato_fearful": "fearful", "envato_surprise": "surprise",
+            "dog_fearful_anton": "fearful", "dog_fearful_anton_2": "fearful",
             "surprised_dogs_mafin": "surprise",
             "neutral_dog_masha": "neutral", "angry_dogs_masha": "angry"}
 SUROWE = ["tiktok_playlist_nareski"]
